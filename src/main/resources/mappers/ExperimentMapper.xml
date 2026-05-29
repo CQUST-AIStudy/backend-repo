@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tap.backend.academic.dao.ExperimentDao">
+    <!-- 查询结果映射 -->
+    <resultMap id="experimentResultMap" type="com.tap.backend.academic.entity.Experiment">
+        <id property="experiment_id" column="experiment_id"/>
+        <result property="num" column="num"/>
+        <result property="name" column="name"/>
+        <result property="describe" column="describe"/>
+        <result property="deadline" column="deadline"/>
+        <result property="requirements" column="requirements"/>
+        <result property="createdAt" column="created_at"/>
+        <result property="updatedAt" column="updated_at"/>
+        <result property="topic_sum" column="topic_sum"/>
+    </resultMap>
+
+    <!-- 查找所有实验 -->
+    <select id="findAllExperiments" resultMap="experimentResultMap">
+        SELECT * FROM experiment ORDER BY num ASC
+    </select>
+
+    <!-- 根据ID查找实验 -->
+    <select id="findExperimentById" parameterType="int" resultMap="experimentResultMap">
+        SELECT * FROM experiment WHERE experiment_id = #{id}
+    </select>
+
+    <!-- 根据实验编号查找实验 -->
+    <select id="findExperimentByNum" parameterType="int" resultMap="experimentResultMap">
+        SELECT * FROM experiment WHERE num = #{num}
+    </select>
+    
+    <!-- 根据老师ID查找实验列表 -->
+    <select id="findExperimentsByTeacherId" parameterType="string" resultMap="experimentResultMap">
+        SELECT * FROM experiment WHERE teacher_id = #{teacherId} ORDER BY num ASC
+    </select>
+
+    <!-- 保存实验信息 -->
+    <insert id="saveExperiment" parameterType="com.tap.backend.academic.entity.Experiment" useGeneratedKeys="true" keyProperty="experiment_id">
+        INSERT INTO experiment (num, name, deadline, `describe`, requirements, topic_sum, created_at)
+        VALUES (#{num}, #{name}, #{deadline}, #{describe}, #{requirements}, #{topic_sum}, NOW())
+    </insert>
+
+    <!-- 更新实验信息 -->
+    <update id="updateExperiment" parameterType="com.tap.backend.academic.entity.Experiment">
+        UPDATE experiment
+        SET name = #{name},
+            num = #{num},
+            deadline = #{deadline},
+            `describe` = #{describe},
+            requirements = #{requirements},
+            topic_sum = #{topic_sum},
+            updated_at = NOW()
+        WHERE experiment_id = #{experiment_id}
+    </update>
+
+    <!-- 删除实验 -->
+    <delete id="deleteExperiment" parameterType="int">
+        DELETE FROM experiment WHERE experiment_id = #{id}
+    </delete>
+</mapper>
+
+

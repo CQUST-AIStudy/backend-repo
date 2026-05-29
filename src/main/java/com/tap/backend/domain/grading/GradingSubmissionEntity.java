@@ -1,0 +1,94 @@
+package com.tap.backend.domain.grading;
+
+import jakarta.persistence.*;
+import java.math.BigDecimal;
+import java.time.Instant;
+
+@Entity
+@Table(name = "grading_submission")
+public class GradingSubmissionEntity {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @ManyToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "task_id", nullable = false)
+    private GradingTaskEntity task;
+
+    @Column(name = "task_id", insertable = false, updatable = false)
+    private Long taskId;
+
+    @Column(name = "student_id")
+    private Long studentId;
+
+    @Column(name = "student_name", length = 128)
+    private String studentName;
+
+    @Column(name = "class_name", length = 256)
+    private String className;
+
+    @Column(name = "student_no", length = 64)
+    private String studentNo;
+
+    @Column(name = "pdf_object_key", nullable = false, columnDefinition = "text")
+    private String pdfObjectKey;
+
+    @Column(name = "original_filename", length = 512)
+    private String originalFilename;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "status", nullable = false, length = 24)
+    private SubmissionStatus status = SubmissionStatus.PENDING;
+
+    @Column(name = "total_score", precision = 6, scale = 2)
+    private BigDecimal totalScore;
+
+    @Column(name = "error_message", columnDefinition = "text")
+    private String errorMessage;
+
+    @Column(name = "final_review_comment", columnDefinition = "text")
+    private String finalReviewComment;
+
+    @Column(name = "created_at", nullable = false)
+    private Instant createdAt;
+
+    @Column(name = "updated_at", nullable = false)
+    private Instant updatedAt;
+
+    @PrePersist
+    void onCreate() {
+        Instant now = Instant.now();
+        if (createdAt == null) createdAt = now;
+        if (updatedAt == null) updatedAt = now;
+    }
+
+    @PreUpdate
+    void onUpdate() { updatedAt = Instant.now(); }
+
+    public Long getId() { return id; }
+    public GradingTaskEntity getTask() { return task; }
+    public void setTask(GradingTaskEntity task) { this.task = task; }
+    public Long getTaskId() { return taskId; }
+    public Long getStudentId() { return studentId; }
+    public void setStudentId(Long studentId) { this.studentId = studentId; }
+    public String getStudentName() { return studentName; }
+    public void setStudentName(String studentName) { this.studentName = studentName; }
+    public String getClassName() { return className; }
+    public void setClassName(String className) { this.className = className; }
+    public String getStudentNo() { return studentNo; }
+    public void setStudentNo(String studentNo) { this.studentNo = studentNo; }
+    public String getPdfObjectKey() { return pdfObjectKey; }
+    public void setPdfObjectKey(String pdfObjectKey) { this.pdfObjectKey = pdfObjectKey; }
+    public String getOriginalFilename() { return originalFilename; }
+    public void setOriginalFilename(String originalFilename) { this.originalFilename = originalFilename; }
+    public SubmissionStatus getStatus() { return status; }
+    public void setStatus(SubmissionStatus status) { this.status = status; }
+    public BigDecimal getTotalScore() { return totalScore; }
+    public void setTotalScore(BigDecimal totalScore) { this.totalScore = totalScore; }
+    public String getErrorMessage() { return errorMessage; }
+    public void setErrorMessage(String errorMessage) { this.errorMessage = errorMessage; }
+    public String getFinalReviewComment() { return finalReviewComment; }
+    public void setFinalReviewComment(String finalReviewComment) { this.finalReviewComment = finalReviewComment; }
+    public Instant getCreatedAt() { return createdAt; }
+    public Instant getUpdatedAt() { return updatedAt; }
+}

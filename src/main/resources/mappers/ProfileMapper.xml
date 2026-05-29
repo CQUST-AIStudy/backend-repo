@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tap.backend.academic.dao.ProfileDao">
+
+    <!-- 学生在每个实验的聚合统计 -->
+    <select id="getStudentExperimentStats" resultType="map">
+        SELECT
+            ss.experiment_id,
+            ss.experiment_name,
+            COUNT(*) AS total_submissions,
+            SUM(CASE WHEN UPPER(ss.situation) IN ('C', 'AC', 'ACCEPTED') THEN 1 ELSE 0 END) AS ac_count,
+            SUM(CASE WHEN UPPER(ss.situation) IN ('E1', 'CE', 'COMPILE_ERROR', 'COMPILATION_ERROR') THEN 1 ELSE 0 END) AS compile_error_count,
+            SUM(CASE WHEN UPPER(ss.situation) IN ('E3', 'WA', 'WRONG_ANSWER', 'MULTIPLE_ERROR') THEN 1 ELSE 0 END) AS wrong_answer_count,
+            SUM(CASE WHEN UPPER(ss.situation) IN ('E5', 'TLE', 'TIMEOUT', 'TIME_LIMIT_EXCEEDED') THEN 1 ELSE 0 END) AS timeout_count,
+            SUM(CASE WHEN UPPER(ss.situation) IN ('P', 'PA', 'PARTIAL_ACCEPTED', 'PARTIAL') THEN 1 ELSE 0 END) AS partial_count,
+            COUNT(DISTINCT ss.serial_number) AS question_count,
+            AVG(CASE WHEN ss.runtime_ms IS NOT NULL AND ss.runtime_ms != '' AND ss.runtime_ms != '0'
+                 THEN CAST(ss.runtime_ms AS SIGNED) ELSE NULL END) AS avg_runtime_ms,
+            AVG(CASE WHEN ss.memory_kb IS NOT NULL AND ss.memory_kb != '' AND ss.memory_kb != '0'
+                 THEN CAST(ss.memory_kb AS SIGNED) ELSE NULL END) AS avg_memory_kb,
+            MAX(ss.score) AS max_score,
+            AVG(ss.score) AS avg_score
+        FROM submit_situation ss
+        WHERE ss.student_id = #{studentId}
+        GROUP BY ss.experiment_id, ss.experiment_name
+        ORDER BY ss.experiment_id
+    </select>
+
+    <!-- 学生在某实验的错误类型分布 -->
+    <select id="getStudentErrorDistribution" resultType="map">
+        SELECT ss.situation, COUNT(*) AS cnt
+        FROM submit_situation ss
+        WHERE ss.student_id = #{studentId} AND ss.experiment_id = #{experimentId}
+        GROUP BY ss.situation
+        ORDER BY cnt DESC
+    </select>
+
+    <!-- 班级所有学生的实验聚合统计 -->
+    <select id="getClassExperimentStats" resultType="map">
+        SELECT
+            ss.student_id,
+            ss.student_name,
+            ss.experiment_id,
+            ss.experiment_name,
+            COUNT(*) AS total_submissions,
+            SUM(CASE WHEN UPPER(ss.situation) IN ('C', 'AC', 'ACCEPTED') THEN 1 ELSE 0 END) AS ac_count,
+            COUNT(DISTINCT ss.serial_number) AS question_count
+        FROM submit_situation ss
+        JOIN student s ON s.student_id = ss.student_id
+        <where>
+            <if test="className != null and className != ''">
+                AND (s.class_name = #{className} OR s.class_name LIKE CONCAT(#{className}, '%'))
+            </if>
+        </where>
+        GROUP BY ss.student_id, ss.student_name, ss.experiment_id, ss.experiment_name
+        ORDER BY ss.student_id, ss.experiment_id
+    </select>
+
+    <!-- 所有学生列表 -->
+    <select id="getAllStudents" resultType="map">
+        SELECT student_id, name, class_name
+        FROM student
+        <where>
+            <if test="className != null and className != ''">
+                AND (class_name = #{className} OR class_name LIKE CONCAT(#{className}, '%'))
+            </if>
+        </where>
+        ORDER BY student_id
+    </select>
+
+    <!-- 学生基本信息 -->
+    <select id="getStudentInfo" resultType="map">
+        SELECT student_id, name, class_name FROM student WHERE student_id = #{studentId}
+    </select>
+
+    <!-- 学生在某实验的薄弱题目（AC率最低的题） -->
+    <select id="getStudentWeakQuestions" resultType="map">
+        SELECT
+            ss.serial_number,
+            COUNT(*) AS attempts,
+            SUM(CASE WHEN UPPER(ss.situation) IN ('C', 'AC', 'ACCEPTED') THEN 1 ELSE 0 END) AS ac_count,
+            MAX(ss.score) AS best_score
+        FROM submit_situation ss
+        WHERE ss.student_id = #{studentId} AND ss.experiment_id = #{experimentId}
+        GROUP BY ss.serial_number
+        ORDER BY (SUM(CASE WHEN UPPER(ss.situation) IN ('C', 'AC', 'ACCEPTED') THEN 1 ELSE 0 END) / COUNT(*)) ASC
+    </select>
+
+    <!-- 获取学生AI反馈缓存 -->
+    <select id="getAiFeedback" resultType="map">
+        SELECT student_id, feedback, profile_json, created_at, updated_at
+        FROM profile_ai_feedback
+        WHERE student_id = #{studentId}
+    </select>
+
+    <!-- 保存或更新AI反馈缓存 -->
+    <insert id="saveAiFeedback">
+        INSERT INTO profile_ai_feedback (student_id, feedback, profile_json, created_at, updated_at)
+        VALUES (#{studentId}, #{feedback}, #{profileJson}, NOW(), NOW())
+        ON DUPLICATE KEY UPDATE
+            feedback = #{feedback},
+            profile_json = #{profileJson},
+            updated_at = NOW()
+    </insert>
+
+</mapper>

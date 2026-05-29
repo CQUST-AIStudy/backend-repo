@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="com.tap.backend.academic.dao.SubmissionDao">
+    <!-- 查询结果映射 -->
+    <resultMap id="submissionResultMap" type="com.tap.backend.academic.entity.Submission">
+        <id property="submission_id" column="submission_id"/>
+        <result property="username" column="username"/>
+        <result property="experiment_id" column="experiment_id"/>
+        <result property="code" column="code"/>
+        <result property="report" column="report"/>
+        <result property="submit_time" column="submit_time"/>
+    </resultMap>
+
+    <!-- 保存提交记录 -->
+    <insert id="saveSubmission" parameterType="com.tap.backend.academic.entity.Submission" useGeneratedKeys="true" keyProperty="submission_id">
+        INSERT INTO submission (username, experiment_id, code, report, submit_time)
+        VALUES (#{username}, #{experiment_id}, #{code}, #{report}, #{submit_time})
+    </insert>
+
+    <!-- 根据ID查找提交记录 -->
+    <select id="findSubmissionById" parameterType="int" resultMap="submissionResultMap">
+        SELECT * FROM submission WHERE submission_id = #{id}
+    </select>
+
+    <!-- 根据用户名和实验ID查找提交记录 -->
+    <select id="findByUsernameAndExperimentId" resultMap="submissionResultMap">
+        SELECT * FROM submission
+        WHERE username = #{username} AND experiment_id = #{experimentId}
+        ORDER BY submit_time DESC LIMIT 1
+    </select>
+
+    <!-- 根据用户名查找所有提交记录 -->
+    <select id="findSubmissionsByUsername" parameterType="string" resultMap="submissionResultMap">
+        SELECT * FROM submission WHERE username = #{username}
+        ORDER BY submit_time DESC
+    </select>
+
+
+    <select id="findDetailByUsernameAndExperimentId" resultType="com.tap.backend.academic.entity.SubmissionDetailEntity">
+        SELECT stu.student_id as 学号, class_name as 班级, submit_time as 提交时间, `code` as 代码, stu.`name`
+        FROM  student stu,score s, student_code sc
+        WHERE stu.student_id = #{username}
+          and sc.experiment_id = #{experimentId}
+          and stu.username = s.username
+          and s.username = sc.student_id
+        ORDER BY submit_time DESC
+            LIMIT 1
+    </select>
+</mapper>

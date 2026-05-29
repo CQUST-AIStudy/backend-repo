@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tap.backend.academic.dao.StudentSkillStateDao">
+
+    <!-- 结果映射 -->
+    <resultMap id="studentSkillStateResultMap" type="com.tap.backend.academic.entity.StudentSkillState">
+        <id property="id" column="id"/>
+        <result property="studentId" column="student_id"/>
+        <result property="tagName" column="tag_name"/>
+        <result property="masteryScore" column="mastery_score"/>
+        <result property="forgettingScore" column="forgetting_score"/>
+        <result property="confidenceScore" column="confidence_score"/>
+        <result property="attemptCount" column="attempt_count"/>
+        <result property="successCount" column="success_count"/>
+        <result property="avgAttemptsToSuccess" column="avg_attempts_to_success"/>
+        <result property="lastPracticeAt" column="last_practice_at"/>
+        <result property="updatedAt" column="updated_at"/>
+        <result property="createdAt" column="created_at"/>
+    </resultMap>
+
+    <!-- 根据学生ID和标签名查询 -->
+    <select id="findByStudentIdAndTag" resultMap="studentSkillStateResultMap">
+        SELECT * FROM student_skill_state 
+        WHERE student_id = #{studentId} AND tag_name = #{tagName}
+    </select>
+
+    <!-- 根据学生ID查询所有技能状态 -->
+    <select id="findByStudentId" resultMap="studentSkillStateResultMap">
+        SELECT * FROM student_skill_state 
+        WHERE student_id = #{studentId}
+        ORDER BY mastery_score DESC
+    </select>
+
+    <!-- 查询学生的弱项技能 -->
+    <select id="findWeakSkills" resultMap="studentSkillStateResultMap">
+        SELECT * FROM student_skill_state 
+        WHERE student_id = #{studentId}
+        ORDER BY mastery_score ASC, forgetting_score DESC
+        <if test="limit != null">
+            LIMIT #{limit}
+        </if>
+    </select>
+
+    <!-- 查询学生的强项技能 -->
+    <select id="findStrongSkills" resultMap="studentSkillStateResultMap">
+        SELECT * FROM student_skill_state 
+        WHERE student_id = #{studentId}
+        ORDER BY mastery_score DESC, confidence_score DESC
+        <if test="limit != null">
+            LIMIT #{limit}
+        </if>
+    </select>
+
+    <!-- 插入或更新技能状态 -->
+    <insert id="insertOrUpdate" parameterType="com.tap.backend.academic.entity.StudentSkillState" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO student_skill_state (
+            student_id, tag_name, mastery_score, forgetting_score, confidence_score,
+            attempt_count, success_count, avg_attempts_to_success, last_practice_at
+        ) VALUES (
+            #{studentId}, #{tagName}, #{masteryScore}, #{forgettingScore}, #{confidenceScore},
+            #{attemptCount}, #{successCount}, #{avgAttemptsToSuccess}, #{lastPracticeAt}
+        ) ON DUPLICATE KEY UPDATE
+            mastery_score = VALUES(mastery_score),
+            forgetting_score = VALUES(forgetting_score),
+            confidence_score = VALUES(confidence_score),
+            attempt_count = VALUES(attempt_count),
+            success_count = VALUES(success_count),
+            avg_attempts_to_success = VALUES(avg_attempts_to_success),
+            last_practice_at = VALUES(last_practice_at),
+            updated_at = CURRENT_TIMESTAMP
+    </insert>
+    <!-- 批量插入或更新技能状态 -->
+    <insert id="batchInsertOrUpdate" parameterType="java.util.List">
+        INSERT INTO student_skill_state (
+            student_id, tag_name, mastery_score, forgetting_score, confidence_score,
+            attempt_count, success_count, avg_attempts_to_success, last_practice_at
+        ) VALUES
+        <foreach collection="skillStates" item="skill" separator=",">
+            (#{skill.studentId}, #{skill.tagName}, #{skill.masteryScore}, #{skill.forgettingScore}, 
+             #{skill.confidenceScore}, #{skill.attemptCount}, #{skill.successCount}, 
+             #{skill.avgAttemptsToSuccess}, #{skill.lastPracticeAt})
+        </foreach>
+        ON DUPLICATE KEY UPDATE
+            mastery_score = VALUES(mastery_score),
+            forgetting_score = VALUES(forgetting_score),
+            confidence_score = VALUES(confidence_score),
+            attempt_count = VALUES(attempt_count),
+            success_count = VALUES(success_count),
+            avg_attempts_to_success = VALUES(avg_attempts_to_success),
+            last_practice_at = VALUES(last_practice_at),
+            updated_at = CURRENT_TIMESTAMP
+    </insert>
+
+    <!-- 更新技能状态 -->
+    <update id="update" parameterType="com.tap.backend.academic.entity.StudentSkillState">
+        UPDATE student_skill_state SET
+            mastery_score = #{masteryScore},
+            forgetting_score = #{forgettingScore},
+            confidence_score = #{confidenceScore},
+            attempt_count = #{attemptCount},
+            success_count = #{successCount},
+            avg_attempts_to_success = #{avgAttemptsToSuccess},
+            last_practice_at = #{lastPracticeAt},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE student_id = #{studentId} AND tag_name = #{tagName}
+    </update>
+
+    <!-- 删除技能状态 -->
+    <delete id="deleteByStudentIdAndTag">
+        DELETE FROM student_skill_state 
+        WHERE student_id = #{studentId} AND tag_name = #{tagName}
+    </delete>
+
+    <!-- 删除学生的所有技能状态 -->
+    <delete id="deleteByStudentId">
+        DELETE FROM student_skill_state WHERE student_id = #{studentId}
+    </delete>
+
+    <!-- 统计学生的技能数量 -->
+    <select id="countByStudentId" resultType="int">
+        SELECT COUNT(*) FROM student_skill_state WHERE student_id = #{studentId}
+    </select>
+
+    <!-- 查询需要更新遗忘度的技能 -->
+    <select id="findSkillsNeedForgettingUpdate" resultMap="studentSkillStateResultMap">
+        SELECT * FROM student_skill_state 
+        WHERE last_practice_at IS NOT NULL 
+        AND DATEDIFF(NOW(), last_practice_at) >= #{daysSinceLastPractice}
+        AND forgetting_score &lt; 80.00
+        ORDER BY last_practice_at ASC
+    </select>
+
+</mapper>

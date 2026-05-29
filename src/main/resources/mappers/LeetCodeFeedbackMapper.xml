@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tap.backend.academic.dao.LeetCodeFeedbackDao">
+
+    <!-- 反馈结果映射 -->
+    <resultMap id="feedbackResultMap" type="com.tap.backend.academic.entity.LeetCodeRecommendFeedback">
+        <id property="id" column="id"/>
+        <result property="requestId" column="request_id"/>
+        <result property="studentId" column="student_id"/>
+        <result property="problemId" column="problem_id"/>
+        <result property="sessionId" column="session_id"/>
+        <result property="action" column="action"/>
+        <result property="actionAt" column="action_at"/>
+        <result property="extraJson" column="extra_json"/>
+        <result property="createdAt" column="created_at"/>
+    </resultMap>
+
+    <!-- 插入反馈记录 -->
+    <insert id="insertFeedback" parameterType="com.tap.backend.academic.entity.LeetCodeRecommendFeedback" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO leetcode_recommend_feedback (
+            request_id, student_id, problem_id, session_id, action, action_at, extra_json
+        ) VALUES (
+            #{requestId}, #{studentId}, #{problemId}, #{sessionId}, #{action}, #{actionAt}, #{extraJson}
+        )
+    </insert>
+
+    <!-- 根据学生ID查询反馈记录 -->
+    <select id="findByStudentId" resultMap="feedbackResultMap">
+        SELECT * FROM leetcode_recommend_feedback 
+        WHERE student_id = #{studentId}
+        ORDER BY action_at DESC
+        <if test="limit != null">
+            LIMIT #{limit}
+        </if>
+    </select>
+
+    <!-- 根据请求ID查询反馈记录 -->
+    <select id="findByRequestId" resultMap="feedbackResultMap">
+        SELECT * FROM leetcode_recommend_feedback 
+        WHERE request_id = #{requestId}
+        ORDER BY action_at ASC
+    </select>
+
+    <!-- 根据题目ID查询反馈记录 -->
+    <select id="findByProblemId" resultMap="feedbackResultMap">
+        SELECT * FROM leetcode_recommend_feedback 
+        WHERE problem_id = #{problemId}
+        ORDER BY action_at DESC
+        <if test="limit != null">
+            LIMIT #{limit}
+        </if>
+    </select>
+
+    <!-- 统计学生的行为数据 -->
+    <select id="getStudentActionStats" resultType="java.util.Map">
+        SELECT 
+            action,
+            COUNT(*) as actionCount,
+            COUNT(DISTINCT problem_id) as uniqueProblems,
+            COUNT(DISTINCT request_id) as uniqueRequests
+        FROM leetcode_recommend_feedback 
+        WHERE student_id = #{studentId}
+        <if test="days != null">
+            AND action_at >= DATE_SUB(NOW(), INTERVAL #{days} DAY)
+        </if>
+        GROUP BY action
+        ORDER BY actionCount DESC
+    </select>
+    <!-- 统计题目的反馈数据 -->
+    <select id="getProblemFeedbackStats" resultType="java.util.Map">
+        SELECT 
+            action,
+            COUNT(*) as actionCount,
+            COUNT(DISTINCT student_id) as uniqueStudents
+        FROM leetcode_recommend_feedback 
+        WHERE problem_id = #{problemId}
+        GROUP BY action
+        ORDER BY actionCount DESC
+    </select>
+
+    <!-- 删除过期的反馈记录 -->
+    <delete id="deleteExpiredFeedback">
+        DELETE FROM leetcode_recommend_feedback 
+        WHERE created_at &lt; #{beforeDate}
+    </delete>
+
+</mapper>

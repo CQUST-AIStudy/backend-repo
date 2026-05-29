@@ -1,0 +1,279 @@
+package com.tap.backend.academic.dao.teacherexperiment;
+
+import com.tap.backend.academic.teacherexperiment.TeacherExperimentPlagiarismRow;
+import com.tap.backend.academic.teacherexperiment.TeacherExperimentScoreAggregate;
+import com.tap.backend.academic.teacherexperiment.TeacherExperimentScoreRow;
+import com.tap.backend.academic.teacherexperiment.TeacherExperimentSummaryRow;
+import com.tap.backend.academic.teacherexperiment.TeacherStudentAssignmentRow;
+import com.tap.backend.academic.teacherexperiment.TeacherSubmissionProblemRow;
+import java.util.List;
+import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
+
+@Mapper
+public interface TeacherExperimentQueryDao {
+
+    String DATA_STRUCTURE_KEYWORD = "\u6570\u636e\u7ed3\u6784";
+    String C_LANGUAGE_KEYWORD = "C\u8bed\u8a00";
+    String EXPERIMENT_NAME_EXPR = "COALESCE(NULLIF(TRIM(ao.title_override), ''), at.title)";
+    String COURSE_NAME_EXPR = "COALESCE(NULLIF(TRIM(tc.course_name), ''), '')";
+    String DATA_STRUCTURE_SCOPE_PREDICATE =
+            "(" +
+                    EXPERIMENT_NAME_EXPR + " LIKE '%" + DATA_STRUCTURE_KEYWORD + "%' OR " +
+                    "COALESCE(NULLIF(TRIM(tc.pta_keyword), ''), '') LIKE '%" + DATA_STRUCTURE_KEYWORD + "%' OR " +
+                    COURSE_NAME_EXPR + " LIKE '%" + DATA_STRUCTURE_KEYWORD + "%'" +
+                    ") AND NOT (" +
+                    EXPERIMENT_NAME_EXPR + " LIKE '%" + C_LANGUAGE_KEYWORD + "%' OR " +
+                    "COALESCE(NULLIF(TRIM(tc.pta_keyword), ''), '') LIKE '%" + C_LANGUAGE_KEYWORD + "%' OR " +
+                    COURSE_NAME_EXPR + " LIKE '%" + C_LANGUAGE_KEYWORD + "%'" +
+                    ")";
+    String SUBMISSION_ACTIVITY_PREDICATE =
+            "LOWER(COALESCE(sa.submission_status, '')) IN ('graded', 'submitted') " +
+                    "OR COALESCE(sa.completion_evidence, 'NONE') IN ('TRANSCRIPT_SCORE', 'ANSWER_SHEET', 'SCORED_CODE')";
+
+    @Select({
+            "<script>",
+            "SELECT",
+            "  CAST(ao.id AS SIGNED) AS experimentId,",
+            "  " + EXPERIMENT_NAME_EXPR + " AS name,",
+            "  ao.deadline_at AS deadline,",
+            "  ao.created_at AS createdTime,",
+            "  COUNT(sa.id) AS rosterCount,",
+            "  COALESCE(SUM(CASE",
+            "    WHEN " + SUBMISSION_ACTIVITY_PREDICATE + " THEN 1",
+            "    ELSE 0",
+            "  END), 0) AS submissionCount,",
+            "  ROUND(",
+            "    COALESCE(SUM(COALESCE(sa.best_total_score, 0)), 0) / NULLIF(COUNT(sa.id), 0),",
+            "    2",
+            "  ) AS averageScore",
+            "FROM assignment_offering ao",
+            "JOIN assignment_template at ON at.id = ao.template_id",
+            "JOIN teaching_class tc ON tc.id = ao.class_id",
+            "JOIN teacher lt ON lt.teacher_id = #{teacherId}",
+            "JOIN tap_user tu",
+            "  ON tu.username COLLATE utf8mb4_unicode_ci = lt.username COLLATE utf8mb4_unicode_ci",
+            "LEFT JOIN student_assignment sa ON sa.offering_id = ao.id",
+            "WHERE ao.teacher_id = tu.id",
+            "  AND " + DATA_STRUCTURE_SCOPE_PREDICATE,
+            "  <if test='classId != null'>",
+            "    AND ao.class_id = #{classId}",
+            "  </if>",
+            "GROUP BY ao.id, " + EXPERIMENT_NAME_EXPR + ", ao.deadline_at, ao.created_at, ao.seq_no",
+            "ORDER BY",
+            "  CASE WHEN ao.seq_no IS NULL THEN 1 ELSE 0 END,",
+            "  ao.seq_no,",
+            "  ao.id",
+            "</script>"
+    })
+    List<TeacherExperimentSummaryRow> findTeacherExperimentSummaries(
+            @Param("teacherId") Integer teacherId,
+            @Param("classId") Long classId
+    );
+
+    @Select({
+            "<script>",
+            "SELECT",
+            "  CAST(tc.id AS SIGNED) AS classId,",
+            "  sp.student_no AS studentId,",
+            "  sp.real_name AS studentName,",
+            "  COALESCE(NULLIF(TRIM(student_user.username), ''), sp.student_no) AS studentUsername,",
+            "  tc.name AS className,",
+            "  CAST(ao.id AS SIGNED) AS experimentId,",
+            "  " + EXPERIMENT_NAME_EXPR + " AS experimentName,",
+            "  ao.deadline_at AS deadline,",
+            "  COALESCE(sa.last_submit_at, sa.first_submit_at) AS submitTime,",
+            "  COALESCE(sa.best_total_score, sa.latest_total_score) AS score,",
+            "  sa.submission_status AS submissionStatus,",
+            "  sa.transcript_row_present AS transcriptRowPresent,",
+            "  sa.answer_sheet_count AS answerSheetCount,",
+            "  sa.scored_code_count AS scoredCodeCount,",
+            "  sa.submission_attempt_count AS submissionAttemptCount,",
+            "  sa.completion_evidence AS completionEvidence,",
+            "  pct.Plagiarism_Rate AS plagiarismRate",
+            "FROM assignment_offering ao",
+            "JOIN assignment_template at ON at.id = ao.template_id",
+            "JOIN teacher lt ON lt.teacher_id = #{teacherId}",
+            "JOIN tap_user teacher_user",
+            "  ON teacher_user.username COLLATE utf8mb4_unicode_ci = lt.username COLLATE utf8mb4_unicode_ci",
+            "JOIN teaching_class tc ON tc.id = ao.class_id",
+            "JOIN student_assignment sa ON sa.offering_id = ao.id",
+            "JOIN student_profile sp ON sp.id = sa.student_id",
+            "LEFT JOIN tap_user student_user ON student_user.id = sp.user_id",
+            "LEFT JOIN Plagiarism_Check_Table pct",
+            "  ON pct.student_id COLLATE utf8mb4_unicode_ci = sp.student_no COLLATE utf8mb4_unicode_ci",
+            " AND ao.source_offering_key LIKE 'LEGACY_EXPERIMENT_OFFERING:%'",
+            " AND pct.experiment_id = CAST(SUBSTRING_INDEX(ao.source_offering_key, ':', -1) AS SIGNED)",
+            "WHERE ao.teacher_id = teacher_user.id",
+            "  AND " + DATA_STRUCTURE_SCOPE_PREDICATE,
+            "  <if test='classId != null'>",
+            "    AND ao.class_id = #{classId}",
+            "  </if>",
+            "ORDER BY",
+            "  tc.name,",
+            "  sp.student_no,",
+            "  CASE WHEN ao.seq_no IS NULL THEN 1 ELSE 0 END,",
+            "  ao.seq_no,",
+            "  ao.id",
+            "</script>"
+    })
+    List<TeacherStudentAssignmentRow> findTeacherStudentAssignments(
+            @Param("teacherId") Integer teacherId,
+            @Param("classId") Long classId
+    );
+
+    @Select({
+            "<script>",
+            "SELECT",
+            "  CAST(MIN(tc.id) AS SIGNED) AS classId,",
+            "  sp.student_no AS studentId,",
+            "  sp.real_name AS studentName,",
+            "  COALESCE(NULLIF(TRIM(student_user.username), ''), sp.student_no) AS studentUsername,",
+            "  MIN(tc.name) AS className",
+            "FROM teacher lt",
+            "JOIN tap_user teacher_user",
+            "  ON teacher_user.username COLLATE utf8mb4_unicode_ci = lt.username COLLATE utf8mb4_unicode_ci",
+            "JOIN teaching_class tc ON tc.teacher_id = teacher_user.id",
+            "JOIN class_member cm",
+            "  ON cm.class_id = tc.id",
+            " AND cm.member_status = 'ACTIVE'",
+            "JOIN student_profile sp",
+            "  ON sp.id = cm.student_id",
+            " AND sp.status &lt;&gt; 'DELETED'",
+            "LEFT JOIN tap_user student_user ON student_user.id = sp.user_id",
+            "WHERE lt.teacher_id = #{teacherId}",
+            "  <if test='classId != null'>",
+            "    AND tc.id = #{classId}",
+            "  </if>",
+            "GROUP BY sp.id, sp.student_no, sp.real_name, COALESCE(NULLIF(TRIM(student_user.username), ''), sp.student_no)",
+            "ORDER BY className, sp.student_no",
+            "</script>"
+    })
+    List<TeacherStudentAssignmentRow> findTeacherStudentRoster(
+            @Param("teacherId") Integer teacherId,
+            @Param("classId") Long classId
+    );
+
+    @Select({
+            "SELECT",
+            "  sp.student_no AS studentId,",
+            "  sp.real_name AS studentName,",
+            "  COALESCE(NULLIF(TRIM(student_user.username), ''), sp.student_no) AS studentUsername,",
+            "  tc.name AS className,",
+            "  CAST(ao.id AS SIGNED) AS experimentId,",
+            "  " + EXPERIMENT_NAME_EXPR + " AS experimentName,",
+            "  ao.deadline_at AS deadline,",
+            "  COALESCE(sa.last_submit_at, sa.first_submit_at) AS submitTime,",
+            "  COALESCE(sa.best_total_score, sa.latest_total_score) AS score,",
+            "  sa.submission_status AS submissionStatus,",
+            "  sa.transcript_row_present AS transcriptRowPresent,",
+            "  sa.answer_sheet_count AS answerSheetCount,",
+            "  sa.scored_code_count AS scoredCodeCount,",
+            "  sa.submission_attempt_count AS submissionAttemptCount,",
+            "  sa.completion_evidence AS completionEvidence,",
+            "  pct.Plagiarism_Rate AS plagiarismRate",
+            "FROM student_assignment sa",
+            "JOIN assignment_offering ao ON ao.id = sa.offering_id",
+            "JOIN assignment_template at ON at.id = ao.template_id",
+            "JOIN teaching_class tc ON tc.id = ao.class_id",
+            "JOIN student_profile sp ON sp.id = sa.student_id",
+            "LEFT JOIN tap_user student_user ON student_user.id = sp.user_id",
+            "LEFT JOIN Plagiarism_Check_Table pct",
+            "  ON pct.student_id COLLATE utf8mb4_unicode_ci = sp.student_no COLLATE utf8mb4_unicode_ci",
+            " AND ao.source_offering_key LIKE 'LEGACY_EXPERIMENT_OFFERING:%'",
+            " AND pct.experiment_id = CAST(SUBSTRING_INDEX(ao.source_offering_key, ':', -1) AS SIGNED)",
+            "WHERE ao.id = #{experimentId}",
+            "  AND sp.student_no COLLATE utf8mb4_unicode_ci = #{studentId} COLLATE utf8mb4_unicode_ci",
+            "  AND " + DATA_STRUCTURE_SCOPE_PREDICATE,
+            "LIMIT 1"
+    })
+    TeacherStudentAssignmentRow findStudentAssignmentBySubmissionKey(
+            @Param("studentId") String studentId,
+            @Param("experimentId") Integer experimentId
+    );
+
+    @Select({
+            "SELECT",
+            "  CAST(ap.sort_order AS SIGNED) AS sortOrder,",
+            "  ap.problem_no AS problemNo,",
+            "  ap.title AS problemTitle,",
+            "  sps.latest_status AS latestStatus,",
+            "  sps.best_score AS bestScore,",
+            "  sps.attempt_count AS attemptCount,",
+            "  spa.submitted_at AS submitTime,",
+            "  code_artifact.text_content AS code",
+            "FROM student_profile sp",
+            "JOIN student_problem_state sps",
+            "  ON sps.student_id = sp.id",
+            " AND sps.offering_id = #{experimentId}",
+            "JOIN assignment_problem ap ON ap.id = sps.problem_id",
+            "LEFT JOIN student_problem_attempt spa ON spa.id = sps.latest_attempt_id",
+            "LEFT JOIN artifact code_artifact ON code_artifact.id = sps.latest_code_artifact_id",
+            "WHERE sp.student_no COLLATE utf8mb4_unicode_ci = #{studentId} COLLATE utf8mb4_unicode_ci",
+            "ORDER BY ap.sort_order, ap.id"
+    })
+    List<TeacherSubmissionProblemRow> findSubmissionProblemRows(
+            @Param("studentId") String studentId,
+            @Param("experimentId") Integer experimentId
+    );
+
+    @Select({
+            "<script>",
+            "SELECT",
+            "  experiment_id AS experimentId,",
+            "  COUNT(DISTINCT CASE",
+            "    WHEN LOWER(COALESCE(status, '')) = 'completed' OR (score IS NOT NULL AND score &gt; 0)",
+            "    THEN username",
+            "  END) AS submissionCount,",
+            "  COALESCE(SUM(CASE WHEN score IS NOT NULL AND score &gt; 0 THEN score ELSE 0 END), 0) AS totalPositiveScore",
+            "FROM score",
+            "WHERE experiment_id IN",
+            "<foreach item='experimentId' collection='experimentIds' open='(' separator=',' close=')'>",
+            "  #{experimentId}",
+            "</foreach>",
+            "GROUP BY experiment_id",
+            "</script>"
+    })
+    List<TeacherExperimentScoreAggregate> summarizeByExperimentIds(@Param("experimentIds") List<Integer> experimentIds);
+
+    @Select({
+            "<script>",
+            "SELECT",
+            "  username AS username,",
+            "  experiment_id AS experimentId,",
+            "  SUM(score) AS score,",
+            "  MAX(submit_time) AS submitTime,",
+            "  MAX(status) AS status",
+            "FROM score",
+            "WHERE username IN",
+            "<foreach item='username' collection='usernames' open='(' separator=',' close=')'>",
+            "  #{username}",
+            "</foreach>",
+            "GROUP BY username, experiment_id",
+            "</script>"
+    })
+    List<TeacherExperimentScoreRow> findPerExperimentSumScoresByUsernames(@Param("usernames") List<String> usernames);
+
+    @Select({
+            "<script>",
+            "SELECT",
+            "  student_id AS studentId,",
+            "  experiment_id AS experimentId,",
+            "  Plagiarism_Rate AS plagiarismRate",
+            "FROM Plagiarism_Check_Table",
+            "WHERE student_id IN",
+            "<foreach item='studentId' collection='studentIds' open='(' separator=',' close=')'>",
+            "  #{studentId}",
+            "</foreach>",
+            "AND experiment_id IN",
+            "<foreach item='experimentId' collection='experimentIds' open='(' separator=',' close=')'>",
+            "  #{experimentId}",
+            "</foreach>",
+            "</script>"
+    })
+    List<TeacherExperimentPlagiarismRow> findPlagiarismRates(
+            @Param("studentIds") List<String> studentIds,
+            @Param("experimentIds") List<Integer> experimentIds
+    );
+}

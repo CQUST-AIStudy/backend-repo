@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tap.backend.academic.dao.AIRemarksMapper">
+    
+    <!-- 根据学生ID和实验ID查询AI备注 -->
+    <select id="getAIRemarkByStudentAndExperiment" resultType="com.tap.backend.academic.entity.AIRemarks">
+        SELECT 
+            student_id AS studentId,
+            student_name AS studentName,
+            experiment_id AS experimentId,
+            experiment_name AS experimentName,
+            airemark
+        FROM 
+            AI_remarks
+        WHERE 
+            student_id = #{studentId}
+            AND experiment_id = #{experimentId}
+    </select>
+    
+    <!-- 保存或更新AI备注 -->
+    <insert id="saveOrUpdateAIRemark" parameterType="com.tap.backend.academic.entity.AIRemarks">
+        INSERT INTO AI_remarks (
+            student_id,
+            student_name,
+            experiment_id,
+            experiment_name,
+            airemark
+        ) VALUES (
+            #{studentId},
+            #{studentName},
+            #{experimentId},
+            #{experimentName},
+            #{airemark}
+        )
+        ON DUPLICATE KEY UPDATE
+            student_name = #{studentName},
+            experiment_name = #{experimentName},
+            airemark = #{airemark}
+    </insert>
+    
+    <!-- 删除AI备注 -->
+    <delete id="deleteAIRemark">
+        DELETE FROM AI_remarks
+        WHERE 
+            student_id = #{studentId}
+            AND experiment_id = #{experimentId}
+    </delete>
+    
+</mapper>

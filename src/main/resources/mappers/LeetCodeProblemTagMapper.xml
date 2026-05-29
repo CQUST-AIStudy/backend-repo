@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tap.backend.academic.dao.LeetCodeProblemTagDao">
+
+    <!-- 结果映射 -->
+    <resultMap id="LeetCodeProblemTagResultMap" type="com.tap.backend.academic.entity.LeetCodeProblemTag">
+        <id column="id" property="id"/>
+        <result column="problem_id" property="problemId"/>
+        <result column="tag_type" property="tagType"/>
+        <result column="tag_value" property="tagValue"/>
+        <result column="confidence" property="confidence"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <!-- 根据题目ID查找标签 -->
+    <select id="findByProblemId" resultMap="LeetCodeProblemTagResultMap">
+        SELECT * FROM leetcode_problem_tag 
+        WHERE problem_id = #{problemId}
+        ORDER BY tag_type, confidence DESC
+    </select>
+
+    <!-- 根据标签类型和值查找题目ID -->
+    <select id="findProblemIdsByTag" resultType="java.lang.Long">
+        SELECT DISTINCT problem_id FROM leetcode_problem_tag 
+        WHERE tag_type = #{tagType} AND tag_value = #{tagValue}
+        ORDER BY confidence DESC
+    </select>
+
+    <!-- 根据多个标签查找题目ID -->
+    <select id="findProblemIdsByTags" resultType="java.lang.Long">
+        SELECT DISTINCT problem_id FROM leetcode_problem_tag 
+        WHERE tag_type = #{tagType} 
+        AND tag_value IN
+        <foreach collection="tagValues" item="tagValue" open="(" separator="," close=")">
+            #{tagValue}
+        </foreach>
+        ORDER BY confidence DESC
+    </select>
+
+    <!-- 跨标签类型根据标签值查找题目ID -->
+    <select id="findProblemIdsByTagValues" resultType="java.lang.Long">
+        SELECT DISTINCT problem_id FROM leetcode_problem_tag
+        WHERE tag_value IN
+        <foreach collection="tagValues" item="tagValue" open="(" separator="," close=")">
+            #{tagValue}
+        </foreach>
+        ORDER BY confidence DESC
+    </select>
+
+    <!-- 获取所有标签类型 -->
+    <select id="findAllTagTypes" resultType="java.lang.String">
+        SELECT DISTINCT tag_type FROM leetcode_problem_tag 
+        ORDER BY tag_type
+    </select>
+
+    <!-- 根据标签类型获取所有标签值 -->
+    <select id="findTagValuesByType" resultType="java.lang.String">
+        SELECT DISTINCT tag_value FROM leetcode_problem_tag 
+        WHERE tag_type = #{tagType}
+        ORDER BY tag_value
+    </select>
+
+    <!-- 插入标签 -->
+    <insert id="insert" parameterType="com.tap.backend.academic.entity.LeetCodeProblemTag" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO leetcode_problem_tag (problem_id, tag_type, tag_value, confidence)
+        VALUES (#{problemId}, #{tagType}, #{tagValue}, #{confidence})
+    </insert>
+
+    <!-- 批量插入标签 -->
+    <insert id="batchInsert" parameterType="java.util.List">
+        INSERT INTO leetcode_problem_tag (problem_id, tag_type, tag_value, confidence)
+        VALUES
+        <foreach collection="tags" item="tag" separator=",">
+            (#{tag.problemId}, #{tag.tagType}, #{tag.tagValue}, #{tag.confidence})
+        </foreach>
+    </insert>
+
+    <!-- 删除题目的所有标签 -->
+    <delete id="deleteByProblemId">
+        DELETE FROM leetcode_problem_tag WHERE problem_id = #{problemId}
+    </delete>
+
+</mapper>

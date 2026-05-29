@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tap.backend.academic.dao.UserDao">
+    <!-- 查询结果映射 -->
+    <resultMap id="userResultMap" type="com.tap.backend.academic.entity.UserEntity">
+        <id property="id" column="id"/>
+        <result property="username" column="username"/>
+        <result property="password" column="password"/>
+        <result property="email" column="email"/>
+        <result property="role" column="role"/>
+        <result property="usernum" column="usernum"/>
+        <result property="classname" column="classname"/>
+    </resultMap>
+
+    <!-- 根据用户名查找用户 -->
+    <select id="findByUsername" parameterType="string" resultMap="userResultMap">
+        SELECT * FROM user WHERE username = #{username}
+    </select>
+
+    <!-- 根据ID查找用户 -->
+    <select id="findById" parameterType="int" resultMap="userResultMap">
+        SELECT * FROM user WHERE id = #{id}
+    </select>
+
+    <!-- 保存用户信息 -->
+    <insert id="saveUser" parameterType="com.tap.backend.academic.entity.UserEntity" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO user (username, password, email, role, usernum, classname)
+        VALUES (#{username}, #{password}, #{email}, #{role}, #{usernum}, #{classname})
+    </insert>
+
+    <!-- 更新用户信息 -->
+    <update id="updateUser" parameterType="com.tap.backend.academic.entity.UserEntity">
+        UPDATE user
+        SET username = #{username},
+            password = #{password},
+            email = #{email},
+            role = #{role},
+            usernum = #{usernum},
+            classname = #{classname}
+        WHERE id = #{id}
+    </update>
+
+    <!-- 删除用户 -->
+    <delete id="deleteUser" parameterType="int">
+        DELETE FROM user WHERE id = #{id}
+    </delete>
+</mapper>

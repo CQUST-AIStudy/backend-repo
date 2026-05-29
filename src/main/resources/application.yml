@@ -1,0 +1,309 @@
+spring:
+  config:
+    import: optional:classpath:application-local.yml
+  application:
+    name: teaching-assistant-backend
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3307}/${DB_NAME:ptadatabase}?useUnicode=true&characterEncoding=utf-8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&cachePrepStmts=true&prepStmtCacheSize=250&prepStmtCacheSqlLimit=2048&useServerPrepStmts=true&rewriteBatchedStatements=true
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:${DB_PASS:}}
+    hikari:
+      connection-timeout: 20000
+      maximum-pool-size: ${DB_POOL_MAX:30}
+      minimum-idle: ${DB_POOL_MIN:10}
+      idle-timeout: 300000
+      max-lifetime: 1200000
+      leak-detection-threshold: 60000
+      pool-name: HikariPool-Main
+  jpa:
+    database-platform: org.hibernate.dialect.MySQL8Dialect
+    show-sql: false
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: false
+        jdbc:
+          batch_size: 25
+          fetch_size: 50
+        order_inserts: true
+        order_updates: true
+        generate_statistics: false
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    baseline-version: 0
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      lettuce:
+        pool:
+          max-active: ${REDIS_POOL_MAX:16}
+          max-idle: 8
+          min-idle: 4
+          max-wait: 3000ms
+      # 临时禁用Redis以便测试
+      timeout: 1000ms
+      connect-timeout: 1000ms
+  servlet:
+    session:
+      timeout: 3600
+    multipart:
+      max-file-size: 512MB
+      max-request-size: 520MB
+  task:
+    execution:
+      pool:
+        core-size: 8
+        max-size: 32
+        queue-capacity: 200
+        keep-alive: 60s
+      thread-name-prefix: async-
+    scheduling:
+      pool:
+        size: 4
+      thread-name-prefix: sched-
+
+mybatis:
+  configuration:
+    log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
+    map-underscore-to-camel-case: true
+    local-cache-scope: STATEMENT
+  mapper-locations: classpath:/mappers/*.xml
+  type-aliases-package: com.tap.backend.academic.entity
+
+pagehelper:
+  helper-dialect: mysql
+
+logging:
+  level:
+    root: info
+    com.tap.backend: info
+    org:
+      springframework:
+        jdbc: warn
+        transaction: warn
+        web: warn
+
+server:
+  port: 8081
+  servlet:
+    encoding:
+      charset: UTF-8
+      enabled: true
+      force: true
+  tomcat:
+    threads:
+      max: ${TOMCAT_MAX_THREADS:200}
+      min-spare: ${TOMCAT_MIN_SPARE:20}
+    max-connections: ${TOMCAT_MAX_CONNECTIONS:8192}
+    accept-count: ${TOMCAT_ACCEPT_COUNT:100}
+    connection-timeout: 20000
+    keep-alive-timeout: 30000
+    max-keep-alive-requests: 100
+  compression:
+    enabled: true
+    mime-types: application/json,application/xml,text/html,text/plain,text/css,application/javascript
+    min-response-size: 1024
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: always
+
+ark:
+  api:
+    key: ${ARK_API_KEY:}
+
+volcano:
+  api:
+    key: ${VOLCANO_API_KEY:}
+    model: deepseek-r1-250120
+
+# ========== LeetCode 推荐系统配置 ==========
+leetcode:
+  recommendation:
+    # 推荐算法权重配置
+    weights:
+      need-match: 0.45
+      difficulty-fit: 0.20
+      success-prob: 0.15
+      novelty: 0.10
+      quality: 0.10
+      repeat-penalty: 0.15
+    # 召回配置
+    recall:
+      weak-skill-ratio: 0.60
+      difficulty-progression-ratio: 0.25
+      exploration-ratio: 0.15
+    # 多样性配置
+    diversity:
+      min-easy-count: 2
+      min-medium-count: 4
+      max-hard-count: 2
+    # 缓存配置
+    cache:
+      recommendation-ttl-minutes: 30
+      skill-profile-ttl-minutes: 60
+tap:
+  security:
+    jwt:
+      issuer: ${JWT_ISSUER:tap}
+      secret: ${JWT_SECRET:local_dev_only_jwt_secret_change_me_1234567890}
+      access-token-ttl-seconds: ${JWT_TTL_SECONDS:3600}
+    pta-credentials:
+      secret: ${PTA_CREDENTIALS_SECRET:${JWT_SECRET:local_dev_only_jwt_secret_change_me_1234567890}}
+  quota:
+    translation-chars-per-day: ${QUOTA_TRANSLATION_CHARS_PER_DAY:200000}
+    ai-requests-per-day: ${QUOTA_AI_REQUESTS_PER_DAY:200}
+    admin-unlimited: ${QUOTA_ADMIN_UNLIMITED:true}
+  ai:
+    provider: ${AI_PROVIDER:mock}
+    openai:
+      base-url: ${OPENAI_BASE_URL:https://api.deepseek.com/v1}
+      api-key: ${OPENAI_API_KEY:}
+      model: ${OPENAI_MODEL:deepseek-chat}
+    dashscope:
+      base-url: ${DASHSCOPE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+      api-key: ${DASHSCOPE_API_KEY:}
+      model: ${DASHSCOPE_MODEL:qwen-vl-max-latest}
+    arxiv:
+      # Shared paper-search endpoint for all teacher users for now.
+      # Later this should move to admin-managed configuration instead of static app config.
+      enabled: ${ARXIV_API_ENABLED:true}
+      search-base-url: ${ARXIV_SEARCH_BASE_URL:https://export.arxiv.org/api/query}
+      api-key: ${ARXIV_API_KEY:}
+      api-key-header: ${ARXIV_API_KEY_HEADER:}
+      max-results: ${ARXIV_MAX_RESULTS:5}
+      timeout-seconds: ${ARXIV_TIMEOUT_SECONDS:8}
+  teacher:
+    read-path:
+      unified-experiment-queries-enabled: ${TAP_TEACHER_UNIFIED_EXPERIMENT_QUERIES_ENABLED:true}
+      unified-submission-detail-enabled: ${TAP_TEACHER_UNIFIED_SUBMISSION_DETAIL_ENABLED:true}
+      submission-detail-legacy-code-fallback-enabled: ${TAP_TEACHER_SUBMISSION_DETAIL_LEGACY_CODE_FALLBACK_ENABLED:true}
+      submission-detail-legacy-report-fallback-enabled: ${TAP_TEACHER_SUBMISSION_DETAIL_LEGACY_REPORT_FALLBACK_ENABLED:true}
+      submission-detail-legacy-ai-remarks-fallback-enabled: ${TAP_TEACHER_SUBMISSION_DETAIL_LEGACY_AI_REMARKS_FALLBACK_ENABLED:true}
+  documents:
+    extracted-text-max-chars: ${DOC_EXTRACT_MAX_CHARS:20000}
+    store-full-extracted-text-to-minio: ${DOC_STORE_FULL_TEXT_TO_MINIO:true}
+    ocr-enabled: ${DOC_OCR_ENABLED:true}
+    ocr-command: ${DOC_OCR_COMMAND:tesseract}
+    ocr-language: ${DOC_OCR_LANGUAGE:chi_sim+eng}
+    ocr-max-pages: ${DOC_OCR_MAX_PAGES:24}
+    vlm-fallback-enabled: ${DOC_VLM_FALLBACK_ENABLED:true}
+    vlm-max-pages: ${DOC_VLM_MAX_PAGES:8}
+  agent:
+    job-max-concurrency: ${AGENT_JOB_MAX_CONCURRENCY:4}
+    doc-max-concurrency: ${AGENT_DOC_MAX_CONCURRENCY:4}
+    poll-interval-ms: ${AGENT_POLL_INTERVAL_MS:2000}
+    doc-task-max-retries: ${AGENT_DOC_TASK_MAX_RETRIES:3}
+  zip-organize:
+    job-max-concurrency: ${ZIP_ORGANIZE_JOB_MAX_CONCURRENCY:1}
+    item-max-concurrency: ${ZIP_ORGANIZE_ITEM_MAX_CONCURRENCY:3}
+    poll-interval-ms: ${ZIP_ORGANIZE_POLL_INTERVAL_MS:2000}
+    max-files: ${ZIP_ORGANIZE_MAX_FILES:120}
+    max-zip-bytes: ${ZIP_ORGANIZE_MAX_ZIP_BYTES:52428800}
+    extract-text-max-chars: ${ZIP_ORGANIZE_EXTRACT_TEXT_MAX_CHARS:8000}
+    ai-text-max-chars: ${ZIP_ORGANIZE_AI_TEXT_MAX_CHARS:5000}
+    retry-limit: ${ZIP_ORGANIZE_RETRY_LIMIT:2}
+    review-threshold: ${ZIP_ORGANIZE_REVIEW_THRESHOLD:0.6}
+  translation:
+    cache-ttl-seconds: ${TRANS_CACHE_TTL_SECONDS:604800}
+    provider: ${TRANS_PROVIDER:deepl}
+    deepl:
+      api-key: ${DEEPL_API_KEY:}
+      base-url: ${DEEPL_BASE_URL:https://api-free.deepl.com}
+      max-batch-size: ${DEEPL_MAX_BATCH_SIZE:40}
+      min-interval-ms: ${DEEPL_MIN_INTERVAL_MS:0}
+  storage:
+    s3:
+      endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
+      access-key: ${MINIO_ACCESS_KEY:minioadmin}
+      secret-key: ${MINIO_SECRET_KEY:minioadmin}
+      bucket: ${MINIO_BUCKET:tap-files}
+  rag:
+    maintenance-mode: ${RAG_MAINTENANCE_MODE:false}
+    langchain4j:
+      enabled: ${RAG_LANGCHAIN4J_ENABLED:true}
+      use-streaming: ${RAG_LANGCHAIN4J_USE_STREAMING:true}
+      use-embedding-model: ${RAG_LANGCHAIN4J_USE_EMBEDDING_MODEL:true}
+      chat:
+        base-url: ${RAG_LANGCHAIN4J_CHAT_BASE_URL:}
+        api-key: ${RAG_LANGCHAIN4J_CHAT_API_KEY:}
+        model-name: ${RAG_LANGCHAIN4J_CHAT_MODEL_NAME:}
+        timeout-seconds: ${RAG_LANGCHAIN4J_CHAT_TIMEOUT_SECONDS:120}
+      embedding:
+        base-url: ${RAG_LANGCHAIN4J_EMBEDDING_BASE_URL:${RAG_DASHSCOPE_BASE_URL:${DASHSCOPE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}}}
+        api-key: ${RAG_LANGCHAIN4J_EMBEDDING_API_KEY:${DASHSCOPE_API_KEY:}}
+        model-name: ${RAG_LANGCHAIN4J_EMBEDDING_MODEL_NAME:text-embedding-v3}
+        dimensions: ${RAG_LANGCHAIN4J_EMBEDDING_DIMENSIONS:1024}
+        timeout-seconds: ${RAG_LANGCHAIN4J_EMBEDDING_TIMEOUT_SECONDS:30}
+    dashscope:
+      api-key: ${DASHSCOPE_API_KEY:}
+      base-url: ${RAG_DASHSCOPE_BASE_URL:${DASHSCOPE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}}
+      embedding-model: text-embedding-v3
+      embedding-dimensions: 1024
+    milvus:
+      host: ${MILVUS_HOST:127.0.0.1}
+      port: ${MILVUS_PORT:19530}
+      collection: course_chunks
+    retrieval:
+      top-k: 20
+      top-parent: 5
+      score-threshold: 0.5
+    fusion:
+      alpha: 0.5
+      beta: 0.3
+      gamma: 0.1
+      delta: 0.1
+    rerank:
+      enabled: true
+      provider: heuristic
+      endpoint: ${RAG_RERANK_ENDPOINT:http://127.0.0.1:8101/rerank}
+      timeout-ms: 2500
+      cross-encoder-weight: 0.7
+      top-n: 5
+      base-weight: 0.45
+      overlap-weight: 0.4
+      phrase-weight: 0.1
+      annotation-weight: 0.05
+    mmr:
+      lambda: 0.7
+    coverage:
+      threshold: 0.30
+    evidence:
+      max-sentences: 8
+      token-ratio-min: 0.25
+      token-ratio-max: 0.40
+    web:
+      tavily-api-key: ${TAVILY_API_KEY:}
+      enabled: false
+    lucene:
+      index-path: ${LUCENE_INDEX_PATH:./data/lucene-index}
+  grading:
+    export:
+      max-concurrency: ${GRADING_EXPORT_MAX_CONCURRENCY:6}
+      submit-interval-ms: ${GRADING_EXPORT_SUBMIT_INTERVAL_MS:30}
+
+# PTA spider service
+pta:
+  spider-url: ${PTA_SPIDER_URL:http://127.0.0.1:8100}
+  connect-timeout-ms: ${PTA_SPIDER_CONNECT_TIMEOUT_MS:5000}
+  read-timeout-ms: ${PTA_SPIDER_READ_TIMEOUT_MS:20000}
+  scheduler:
+    max-concurrency: ${PTA_SYNC_MAX_CONCURRENCY:3}
+    submit-interval-ms: ${PTA_SYNC_SUBMIT_INTERVAL_MS:200}
+  auto-start: ${PTA_SPIDER_AUTO_START:false}
+  start-script: ${PTA_SPIDER_START_SCRIPT:../services/pta_spider/start_spider_api.ps1}
+  start-timeout-seconds: ${PTA_SPIDER_START_TIMEOUT_SECONDS:25}
+  auto-stop: ${PTA_SPIDER_AUTO_STOP:true}
+  stop-script: ${PTA_SPIDER_STOP_SCRIPT:../services/pta_spider/stop_spider_api.ps1}
+  stop-timeout-seconds: ${PTA_SPIDER_STOP_TIMEOUT_SECONDS:12}

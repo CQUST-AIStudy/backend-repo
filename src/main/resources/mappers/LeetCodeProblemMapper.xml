@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tap.backend.academic.dao.LeetCodeProblemDao">
+
+    <!-- 结果映射 -->
+    <resultMap id="LeetCodeProblemResultMap" type="com.tap.backend.academic.entity.LeetCodeProblem">
+        <id column="id" property="id"/>
+        <result column="source_key" property="sourceKey"/>
+        <result column="problem_code" property="problemCode"/>
+        <result column="numeric_id" property="numericId"/>
+        <result column="title_main" property="titleMain"/>
+        <result column="title_alt" property="titleAlt"/>
+        <result column="problem_text" property="problemText"/>
+        <result column="solution_text" property="solutionText"/>
+        <result column="source_url" property="sourceUrl"/>
+        <result column="difficulty" property="difficulty"/>
+        <result column="estimated_minutes" property="estimatedMinutes"/>
+        <result column="quality_score" property="qualityScore"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <!-- 根据ID查找题目 -->
+    <select id="findById" resultMap="LeetCodeProblemResultMap">
+        SELECT * FROM leetcode_problem_bank WHERE id = #{id}
+    </select>
+
+    <!-- 根据题目代码查找题目 -->
+    <select id="findByProblemCode" resultMap="LeetCodeProblemResultMap">
+        SELECT * FROM leetcode_problem_bank WHERE problem_code = #{problemCode}
+    </select>
+
+    <!-- 获取所有题目 -->
+    <select id="findAll" resultMap="LeetCodeProblemResultMap">
+        SELECT * FROM leetcode_problem_bank ORDER BY numeric_id ASC, id ASC
+    </select>
+
+    <!-- 根据难度查找题目 -->
+    <select id="findByDifficulty" resultMap="LeetCodeProblemResultMap">
+        SELECT * FROM leetcode_problem_bank 
+        WHERE difficulty = #{difficulty}
+        ORDER BY numeric_id ASC, id ASC
+    </select>
+
+    <!-- 批量根据ID查找题目 -->
+    <select id="findByIds" resultMap="LeetCodeProblemResultMap">
+        SELECT * FROM leetcode_problem_bank
+        WHERE id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">
+            #{id}
+        </foreach>
+    </select>
+
+    <!-- 分页查询题目 -->
+    <select id="findByPage" resultMap="LeetCodeProblemResultMap">
+        SELECT * FROM leetcode_problem_bank 
+        ORDER BY numeric_id ASC, id ASC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <!-- 统计题目总数 -->
+    <select id="count" resultType="int">
+        SELECT COUNT(*) FROM leetcode_problem_bank
+    </select>
+
+    <!-- 插入题目 -->
+    <insert id="insert" parameterType="com.tap.backend.academic.entity.LeetCodeProblem" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO leetcode_problem_bank (
+            source_key, problem_code, numeric_id, title_main, title_alt,
+            problem_text, solution_text, source_url, difficulty, 
+            estimated_minutes, quality_score
+        ) VALUES (
+            #{sourceKey}, #{problemCode}, #{numericId}, #{titleMain}, #{titleAlt},
+            #{problemText}, #{solutionText}, #{sourceUrl}, #{difficulty},
+            #{estimatedMinutes}, #{qualityScore}
+        )
+    </insert>
+
+    <!-- 插入或更新题目 -->
+    <insert id="insertOrUpdate" parameterType="com.tap.backend.academic.entity.LeetCodeProblem" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO leetcode_problem_bank (
+            source_key, problem_code, numeric_id, title_main, title_alt,
+            problem_text, solution_text, source_url, difficulty, 
+            estimated_minutes, quality_score
+        ) VALUES (
+            #{sourceKey}, #{problemCode}, #{numericId}, #{titleMain}, #{titleAlt},
+            #{problemText}, #{solutionText}, #{sourceUrl}, #{difficulty},
+            #{estimatedMinutes}, #{qualityScore}
+        ) ON DUPLICATE KEY UPDATE
+            title_main = VALUES(title_main),
+            title_alt = VALUES(title_alt),
+            problem_text = VALUES(problem_text),
+            solution_text = VALUES(solution_text),
+            source_url = VALUES(source_url),
+            difficulty = VALUES(difficulty),
+            estimated_minutes = VALUES(estimated_minutes),
+            quality_score = VALUES(quality_score),
+            updated_at = CURRENT_TIMESTAMP
+    </insert>
+
+    <!-- 更新题目 -->
+    <update id="update" parameterType="com.tap.backend.academic.entity.LeetCodeProblem">
+        UPDATE leetcode_problem_bank SET
+            source_key = #{sourceKey},
+            problem_code = #{problemCode},
+            numeric_id = #{numericId},
+            title_main = #{titleMain},
+            title_alt = #{titleAlt},
+            problem_text = #{problemText},
+            solution_text = #{solutionText},
+            source_url = #{sourceUrl},
+            difficulty = #{difficulty},
+            estimated_minutes = #{estimatedMinutes},
+            quality_score = #{qualityScore},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = #{id}
+    </update>
+
+    <!-- 删除题目 -->
+    <delete id="deleteById">
+        DELETE FROM leetcode_problem_bank WHERE id = #{id}
+    </delete>
+
+</mapper>

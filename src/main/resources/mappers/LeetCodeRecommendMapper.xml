@@ -1,0 +1,170 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tap.backend.academic.dao.LeetCodeRecommendDao">
+
+    <!-- 推荐请求结果映射 -->
+    <resultMap id="recommendRequestResultMap" type="com.tap.backend.academic.entity.LeetCodeRecommendRequest">
+        <id property="id" column="id"/>
+        <result property="requestId" column="request_id"/>
+        <result property="studentId" column="student_id"/>
+        <result property="scene" column="scene"/>
+        <result property="requestLimit" column="request_limit"/>
+        <result property="status" column="status"/>
+        <result property="errorMessage" column="error_message"/>
+        <result property="createdAt" column="created_at"/>
+        <result property="finishedAt" column="finished_at"/>
+    </resultMap>
+
+    <!-- 推荐结果项结果映射 -->
+    <resultMap id="recommendItemResultMap" type="com.tap.backend.academic.entity.LeetCodeRecommendItem">
+        <id property="id" column="id"/>
+        <result property="requestId" column="request_id"/>
+        <result property="studentId" column="student_id"/>
+        <result property="rankNo" column="rank_no"/>
+        <result property="problemId" column="problem_id"/>
+        <result property="scoreTotal" column="score_total"/>
+        <result property="scoreNeedMatch" column="score_need_match"/>
+        <result property="scoreDifficultyFit" column="score_difficulty_fit"/>
+        <result property="scoreSuccessProb" column="score_success_prob"/>
+        <result property="scoreNovelty" column="score_novelty"/>
+        <result property="scoreQuality" column="score_quality"/>
+        <result property="reasonText" column="reason_text"/>
+        <result property="reasonJson" column="reason_json"/>
+        <result property="createdAt" column="created_at"/>
+        <!-- 关联题目信息 -->
+        <association property="problem" javaType="com.tap.backend.academic.entity.LeetCodeProblem">
+            <id property="id" column="p_id"/>
+            <result property="sourceKey" column="p_source_key"/>
+            <result property="problemCode" column="p_problem_code"/>
+            <result property="titleMain" column="p_title_main"/>
+            <result property="difficulty" column="p_difficulty"/>
+            <result property="estimatedMinutes" column="p_estimated_minutes"/>
+            <result property="qualityScore" column="p_quality_score"/>
+        </association>
+    </resultMap>
+
+    <!-- ========== 推荐请求相关 ========== -->
+
+    <!-- 根据requestId查询推荐请求 -->
+    <select id="findRequestById" resultMap="recommendRequestResultMap">
+        SELECT * FROM leetcode_recommend_request WHERE request_id = #{requestId}
+    </select>
+
+    <!-- 根据学生ID查询最近的推荐请求 -->
+    <select id="findRequestsByStudentId" resultMap="recommendRequestResultMap">
+        SELECT * FROM leetcode_recommend_request 
+        WHERE student_id = #{studentId}
+        ORDER BY created_at DESC
+        <if test="limit != null">
+            LIMIT #{limit}
+        </if>
+    </select>
+
+    <!-- 插入推荐请求 -->
+    <insert id="insertRequest" parameterType="com.tap.backend.academic.entity.LeetCodeRecommendRequest" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO leetcode_recommend_request (
+            request_id, student_id, scene, request_limit, status
+        ) VALUES (
+            #{requestId}, #{studentId}, #{scene}, #{requestLimit}, #{status}
+        )
+    </insert>
+
+    <!-- 更新推荐请求状态 -->
+    <update id="updateRequestStatus">
+        UPDATE leetcode_recommend_request SET
+            status = #{status},
+            error_message = #{errorMessage},
+            finished_at = CASE WHEN #{status} IN ('completed', 'failed') THEN NOW() ELSE finished_at END
+        WHERE request_id = #{requestId}
+    </update>
+
+    <!-- 删除推荐请求 -->
+    <delete id="deleteRequest">
+        DELETE FROM leetcode_recommend_request WHERE request_id = #{requestId}
+    </delete>
+    <!-- ========== 推荐结果相关 ========== -->
+
+    <!-- 根据requestId查询推荐结果 -->
+    <select id="findItemsByRequestId" resultMap="recommendItemResultMap">
+        SELECT 
+            i.*,
+            p.id as p_id,
+            p.source_key as p_source_key,
+            p.problem_code as p_problem_code,
+            p.title_main as p_title_main,
+            p.difficulty as p_difficulty,
+            p.estimated_minutes as p_estimated_minutes,
+            p.quality_score as p_quality_score
+        FROM leetcode_recommend_item i
+        LEFT JOIN leetcode_problem_bank p ON i.problem_id = p.id
+        WHERE i.request_id = #{requestId}
+        ORDER BY i.rank_no ASC
+    </select>
+
+    <!-- 根据requestId和排名查询推荐结果 -->
+    <select id="findItemByRequestIdAndRank" resultMap="recommendItemResultMap">
+        SELECT 
+            i.*,
+            p.id as p_id,
+            p.source_key as p_source_key,
+            p.problem_code as p_problem_code,
+            p.title_main as p_title_main,
+            p.difficulty as p_difficulty,
+            p.estimated_minutes as p_estimated_minutes,
+            p.quality_score as p_quality_score
+        FROM leetcode_recommend_item i
+        LEFT JOIN leetcode_problem_bank p ON i.problem_id = p.id
+        WHERE i.request_id = #{requestId} AND i.rank_no = #{rankNo}
+    </select>
+
+    <!-- 插入推荐结果 -->
+    <insert id="insertItem" parameterType="com.tap.backend.academic.entity.LeetCodeRecommendItem" useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO leetcode_recommend_item (
+            request_id, student_id, rank_no, problem_id,
+            score_total, score_need_match, score_difficulty_fit, 
+            score_success_prob, score_novelty, score_quality,
+            reason_text, reason_json
+        ) VALUES (
+            #{requestId}, #{studentId}, #{rankNo}, #{problemId},
+            #{scoreTotal}, #{scoreNeedMatch}, #{scoreDifficultyFit},
+            #{scoreSuccessProb}, #{scoreNovelty}, #{scoreQuality},
+            #{reasonText}, #{reasonJson}
+        )
+    </insert>
+
+    <!-- 批量插入推荐结果 -->
+    <insert id="batchInsertItems" parameterType="java.util.List">
+        INSERT INTO leetcode_recommend_item (
+            request_id, student_id, rank_no, problem_id,
+            score_total, score_need_match, score_difficulty_fit, 
+            score_success_prob, score_novelty, score_quality,
+            reason_text, reason_json
+        ) VALUES
+        <foreach collection="items" item="item" separator=",">
+            (#{item.requestId}, #{item.studentId}, #{item.rankNo}, #{item.problemId},
+             #{item.scoreTotal}, #{item.scoreNeedMatch}, #{item.scoreDifficultyFit},
+             #{item.scoreSuccessProb}, #{item.scoreNovelty}, #{item.scoreQuality},
+             #{item.reasonText}, #{item.reasonJson})
+        </foreach>
+    </insert>
+
+    <!-- 删除推荐结果 -->
+    <delete id="deleteItemsByRequestId">
+        DELETE FROM leetcode_recommend_item WHERE request_id = #{requestId}
+    </delete>
+
+    <!-- 查询学生最近推荐过的题目ID -->
+    <select id="findRecentRecommendedProblemIds" resultType="java.lang.Long">
+        SELECT DISTINCT problem_id 
+        FROM leetcode_recommend_item 
+        WHERE student_id = #{studentId}
+        AND created_at >= DATE_SUB(NOW(), INTERVAL #{days} DAY)
+        ORDER BY created_at DESC
+    </select>
+
+    <!-- 统计推荐结果数量 -->
+    <select id="countItemsByRequestId" resultType="int">
+        SELECT COUNT(*) FROM leetcode_recommend_item WHERE request_id = #{requestId}
+    </select>
+
+</mapper>

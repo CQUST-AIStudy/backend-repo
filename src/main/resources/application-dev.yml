@@ -1,0 +1,21 @@
+# ============================================================
+# Dev-only overrides — activate with: --spring.profiles.active=dev
+# These values are ONLY safe for local development.
+# Production MUST set real values via environment variables.
+# ============================================================
+
+spring:
+  datasource:
+    password: ${DB_PASSWORD:${DB_PASS:123456}}
+
+tap:
+  security:
+    jwt:
+      secret: ${JWT_SECRET:dev_only_jwt_secret_not_for_production_use_1234567890}
+
+pta:
+  auto-start: ${PTA_SPIDER_AUTO_START:true}
+
+logging:
+  level:
+    com.tap.backend.bootstrap: debug

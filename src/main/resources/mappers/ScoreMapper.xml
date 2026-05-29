@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tap.backend.academic.dao.ScoreDao">
+    <!-- 查询结果映射 -->
+    <resultMap id="scoreResultMap" type="com.tap.backend.academic.entity.Score">
+        <id property="score_id" column="score_id"/>
+        <result property="username" column="username"/>
+        <result property="real_name" column="real_name"/>
+        <result property="experiment_id" column="experiment_id"/>
+        <result property="num" column="num"/>
+        <result property="score" column="score"/>
+        <result property="submit_time" column="submit_time"/>
+        <result property="plagiarism_rate" column="plagiarism_rate"/>
+        <result property="status" column="status"/>
+        <result property="serial_number" column="serial_number"/>
+    </resultMap>
+
+    <!-- 根据用户名和实验编号查找成绩 -->
+    <select id="findByUsernameAndExperimentNum" resultMap="scoreResultMap">
+        SELECT * FROM score
+        WHERE username = #{username} AND num = #{experimentNum}
+    </select>
+
+    <!-- 保存成绩信息 -->
+    <insert id="saveScore" parameterType="com.tap.backend.academic.entity.Score" useGeneratedKeys="true" keyProperty="score_id">
+        INSERT INTO score (username, real_name, experiment_id, num, score, submit_time, plagiarism_rate, status)
+        VALUES (#{username}, #{real_name}, #{experiment_id}, #{num}, #{score}, #{submit_time}, #{plagiarism_rate}, #{status})
+    </insert>
+
+    <!-- 更新成绩信息 -->
+    <update id="updateScore" parameterType="com.tap.backend.academic.entity.Score">
+        UPDATE score
+        SET score = #{score},
+            submit_time = #{submit_time},
+            plagiarism_rate = #{plagiarism_rate},
+            status = #{status}
+        WHERE username = #{username} AND num = #{num}
+    </update>
+
+    <!-- 根据用户名查找所有成绩 -->
+    <select id="findScoresByUsername" parameterType="string" resultMap="scoreResultMap">
+        SELECT * FROM score WHERE username = #{username}
+    </select>
+
+    <!--根据实验编号查找所有成绩-->
+    <select id="findByExperimentId" parameterType="int" resultMap="scoreResultMap">
+        SELECT * FROM score WHERE experiment_id = #{experimentId}
+    </select>
+
+    <!-- 根据用户名查询每个实验的总分 -->
+    <select id="findPerExperimentSumScoresByUsername" parameterType="string" resultMap="scoreResultMap">
+        SELECT
+            MIN(score_id) as score_id,
+            username,
+            experiment_id,
+            SUM(score) as score,
+            MAX(submit_time) as submit_time,
+            MAX(plagiarism_rate) as plagiarism_rate,
+            MAX(status) as status,
+            MIN(serial_number) as serial_number
+        FROM score
+        WHERE username = #{username}
+        GROUP BY experiment_id, username
+    </select>
+    <select id="getexperimentPlagiarismRate" resultType="String">
+        SELECT Plagiarism_Rate FROM Plagiarism_Check_Table
+        WHERE student_id = #{studentId} AND experiment_id = #{experimentId}
+    </select>
+</mapper>

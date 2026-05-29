@@ -1,0 +1,13 @@
+.git
+.idea
+.mvn/wrapper/maven-wrapper.jar
+target
+logs
+backend-live.log
+backend-live.err.log
+backend-start.log
+backend-start.err.log
+data
+*.pkl
+*.log
+爬取结果

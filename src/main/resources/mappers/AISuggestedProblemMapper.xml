@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tap.backend.academic.dao.AISuggestedProblemDao">
+    <resultMap id="aiSuggestedProblemResultMap" type="com.tap.backend.academic.entity.AISuggestedProblem">
+        <result property="studentId" column="student_id"/>
+        <result property="studentName" column="student_name"/>
+        <result property="experimentId" column="experiment_id"/>
+        <result property="content" column="content"/>
+    </resultMap>
+
+    <select id="findByStudentIdAndExperimentId" resultMap="aiSuggestedProblemResultMap">
+        SELECT
+            CAST(student_id AS SIGNED) AS student_id,
+            student_name,
+            experiment_id,
+            suggested_problems AS content
+        FROM ai_suggested_problems
+        WHERE student_id = #{studentId}
+          AND experiment_id = #{experimentId}
+    </select>
+
+    <select id="findByStudentId" resultMap="aiSuggestedProblemResultMap">
+        SELECT
+            CAST(s.student_id AS SIGNED) AS student_id,
+            ap.student_name,
+            NULL AS experiment_id,
+            ap.PTAURLS AS content
+        FROM ai_pta_suggested_url ap
+        JOIN student s ON ap.student_name = s.name
+        WHERE s.student_id = #{studentId}
+    </select>
+</mapper>

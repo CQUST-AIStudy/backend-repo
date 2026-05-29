@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tap.backend.academic.dao.StudentDao">
+    <!-- 查询结果映射 -->
+    <resultMap id="studentResultMap" type="com.tap.backend.academic.entity.Student">
+        <id property="student_id" column="student_id"/>
+        <result property="username" column="username"/>
+        <result property="password" column="password"/>
+        <result property="name" column="name"/>
+        <result property="class_name" column="class_name"/>
+        <result property="createdAt" column="created_at"/>
+    </resultMap>
+    
+    <!-- 学生代码结果映射 -->
+    <resultMap id="studentCodeResultMap" type="com.tap.backend.academic.entity.StudentCode">
+        <id property="experiment_id" column="experiment_id"/>
+        <id property="student_id" column="student_id"/>
+        <result property="experiment_name" column="experiment_name"/>
+        <result property="student_name" column="student_name"/>
+        <result property="code" column="code"/>
+    </resultMap>
+    
+    <!-- 根据User表的username查找对应的Student ID -->
+    <select id="findStudentIdByUsername" parameterType="string" resultType="int">
+        SELECT s.student_id 
+        FROM student s
+        INNER JOIN user u ON s.username = u.username
+        WHERE u.username = #{username}
+    </select>
+    
+    <!-- 根据用户名查询学生信息 -->
+    <select id="findByUsername" parameterType="string" resultMap="studentResultMap">
+        SELECT * FROM student WHERE username = #{username}
+    </select>
+    
+    <!-- 根据学生ID查询学生信息 -->
+    <select id="findByStudentId" parameterType="int" resultMap="studentResultMap">
+        SELECT * FROM student WHERE student_id = #{studentId}
+    </select>
+    
+    <!-- 查询所有学生 -->
+    <select id="findAllStudents" resultMap="studentResultMap">
+        SELECT * FROM student
+    </select>
+    
+    <!-- 根据学生ID查询其所有代码 -->
+    <select id="findCodeByStudentId" parameterType="int" resultMap="studentCodeResultMap">
+        SELECT experiment_id, experiment_name, student_id, student_name, code
+        FROM student_code
+        WHERE student_id = #{studentId}
+    </select>
+    
+    <!-- 根据学生ID和实验ID查询特定的代码 -->
+    <select id="findCodeByStudentIdAndExperimentId" resultMap="studentCodeResultMap">
+        SELECT experiment_id, experiment_name, student_id, student_name, code
+        FROM student_code
+        WHERE student_id = #{studentId} AND experiment_id = #{experimentId}
+    </select>
+    
+    <!-- 根据老师用户名获取对应班级的学生人数 -->
+    <select id="getStudentCountByTeacher" parameterType="string" resultType="int">
+        SELECT COUNT(DISTINCT s.student_id) 
+        FROM user u
+        JOIN user t ON u.classname = t.classname AND t.role = 'teacher' 
+        JOIN student s ON s.username = u.username
+        WHERE t.username = #{teacherUsername} AND u.role = 'student'
+    </select>
+
+    <!-- 根据班级名称查询学生数量 -->
+    <select id="getStudentCountByClassName" resultType="java.lang.Integer">
+        SELECT COUNT(*) FROM student WHERE class_name = #{className}
+    </select>
+    
+    <!-- 根据老师ID查询该老师所教班级的学生数量 -->
+    <select id="getStudentCountByTeacherId" resultType="java.lang.Integer">
+        SELECT COUNT(DISTINCT cm.student_id)
+        FROM teacher lt
+        JOIN tap_user teacher_user
+          ON teacher_user.username COLLATE utf8mb4_unicode_ci = lt.username COLLATE utf8mb4_unicode_ci
+        JOIN teaching_class tc
+          ON tc.teacher_id = teacher_user.id
+        JOIN class_member cm
+          ON cm.class_id = tc.id
+         AND cm.member_status = 'ACTIVE'
+        JOIN student_profile sp
+          ON sp.id = cm.student_id
+         AND sp.status &lt;&gt; 'DELETED'
+        WHERE lt.teacher_id = #{teacherId}
+    </select>
+
+    <!-- 根据老师ID获取该老师班级所有学生的ID -->
+    <select id="getStudentIdsByTeacherId" resultType="java.lang.Long">
+        SELECT DISTINCT
+          CASE
+            WHEN sp.student_no REGEXP '^[1-9][0-9]*$' THEN CAST(sp.student_no AS SIGNED)
+            ELSE CAST(sp.id AS SIGNED)
+          END AS student_id
+        FROM teacher lt
+        JOIN tap_user teacher_user
+          ON teacher_user.username COLLATE utf8mb4_unicode_ci = lt.username COLLATE utf8mb4_unicode_ci
+        JOIN teaching_class tc
+          ON tc.teacher_id = teacher_user.id
+        JOIN class_member cm
+          ON cm.class_id = tc.id
+         AND cm.member_status = 'ACTIVE'
+        JOIN student_profile sp
+          ON sp.id = cm.student_id
+         AND sp.status &lt;&gt; 'DELETED'
+        WHERE lt.teacher_id = #{teacherId}
+        ORDER BY student_id
+    </select>
+    <!-- 根据老师ID获取该老师班级所有学生信息 -->
+    <select id="getStudentsByTeacherId" resultMap="studentResultMap">
+        SELECT
+          CASE
+            WHEN sp.student_no REGEXP '^[1-9][0-9]*$' THEN CAST(sp.student_no AS SIGNED)
+            ELSE CAST(sp.id AS SIGNED)
+          END AS student_id,
+          tu.username AS username,
+          NULL AS password,
+          sp.real_name AS name,
+          MIN(tc.name) AS class_name,
+          MIN(sp.created_at) AS created_at
+        FROM teacher lt
+        JOIN tap_user teacher_user
+          ON teacher_user.username COLLATE utf8mb4_unicode_ci = lt.username COLLATE utf8mb4_unicode_ci
+        JOIN teaching_class tc
+          ON tc.teacher_id = teacher_user.id
+        JOIN class_member cm
+          ON cm.class_id = tc.id
+         AND cm.member_status = 'ACTIVE'
+        JOIN student_profile sp
+          ON sp.id = cm.student_id
+         AND sp.status &lt;&gt; 'DELETED'
+        LEFT JOIN tap_user tu
+          ON tu.id = sp.user_id
+        WHERE lt.teacher_id = #{teacherId}
+        GROUP BY sp.id, sp.student_no, tu.username, sp.real_name
+        ORDER BY student_id
+    </select>
+
+    <select id="getStudentsByClassName" resultMap="studentResultMap">
+        SELECT * FROM student WHERE class_name = #{className}
+    </select>
+
+    <!-- 通过学号绑定用户名 -->
+    <update id="bindUsernameByStudentId">
+        UPDATE student SET username = #{username} WHERE student_id = #{studentId}
+    </update>
+
+    <!-- 插入新学生 -->
+    <insert id="insertStudent">
+        INSERT INTO student (student_id, username, name, class_name)
+        VALUES (#{studentId}, #{username}, #{name}, #{className})
+    </insert>
+</mapper>

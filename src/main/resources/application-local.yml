@@ -1,0 +1,10 @@
+# Local-only convenience overrides.
+# Real secrets should come from `local.env.ps1` or the process environment.
+
+tap:
+  ai:
+    provider: ${AI_PROVIDER:openai}
+    dashscope:
+      base-url: ${DASHSCOPE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+      api-key: ${DASHSCOPE_API_KEY:}
+      model: ${DASHSCOPE_MODEL:qwen-vl-max-latest}
