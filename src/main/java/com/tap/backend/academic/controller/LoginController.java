@@ -6,7 +6,6 @@ import com.tap.backend.academic.service.UserService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
 import java.util.HashMap;
-import java.util.Locale;
 import java.util.Map;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
@@ -70,13 +69,6 @@ public class LoginController {
             if (!passwordMatches(loginUser.getPassword(), user.getPassword())) {
                 response.put("success", false);
                 response.put("message", "invalid password");
-                return ResponseEntity.ok(response);
-            }
-
-            String roleMismatchMessage = resolveRoleMismatchMessage(user.getRole(), loginUser.getRole());
-            if (roleMismatchMessage != null) {
-                response.put("success", false);
-                response.put("message", roleMismatchMessage);
                 return ResponseEntity.ok(response);
             }
 
@@ -223,35 +215,6 @@ public class LoginController {
 
     private boolean isBlank(String value) {
         return value == null || value.isBlank();
-    }
-
-    private String resolveRoleMismatchMessage(String actualRole, String requestedRole) {
-        String expectedRole = normalizeRole(requestedRole);
-        if (expectedRole == null) {
-            return null;
-        }
-        String normalizedActualRole = normalizeRole(actualRole);
-        if (expectedRole.equals(normalizedActualRole)) {
-            return null;
-        }
-        return switch (expectedRole) {
-            case "admin" -> "该账号不是管理员账号，请切换正确身份登录";
-            case "teacher" -> "该账号不是教师账号，请切换正确身份登录";
-            case "student" -> "该账号不是学生账号，请切换正确身份登录";
-            default -> "不支持的登录身份：" + requestedRole;
-        };
-    }
-
-    private String normalizeRole(String role) {
-        if (role == null || role.isBlank()) {
-            return null;
-        }
-        return switch (role.trim().toLowerCase(Locale.ROOT)) {
-            case "admin", "administrator" -> "admin";
-            case "teacher" -> "teacher";
-            case "student" -> "student";
-            default -> role.trim().toLowerCase(Locale.ROOT);
-        };
     }
 
     private boolean passwordMatches(String rawPassword, String storedPassword) {

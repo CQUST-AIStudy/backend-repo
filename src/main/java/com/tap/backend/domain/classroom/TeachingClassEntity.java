@@ -40,27 +40,6 @@ public class TeachingClassEntity {
     @Column(name = "pta_keyword", length = 128)
     private String ptaKeyword;
 
-    @Column(name = "pta_problem_set_id", length = 64)
-    private String ptaProblemSetId;
-
-    @Column(name = "pta_problem_set_name", length = 256)
-    private String ptaProblemSetName;
-
-    @Column(name = "pta_group_id", length = 64)
-    private String ptaGroupId;
-
-    @Column(name = "pta_group_name", length = 256)
-    private String ptaGroupName;
-
-    @Column(name = "pta_binding_verified_at")
-    private Instant ptaBindingVerifiedAt;
-
-    @Column(name = "pta_binding_verify_status", length = 32)
-    private String ptaBindingVerifyStatus;
-
-    @Column(name = "pta_binding_verify_message", length = 512)
-    private String ptaBindingVerifyMessage;
-
     @Column(name = "sync_enabled", nullable = false)
     private Boolean syncEnabled = false;
 
@@ -115,27 +94,6 @@ public class TeachingClassEntity {
 
     public String getPtaKeyword() { return ptaKeyword; }
     public void setPtaKeyword(String ptaKeyword) { this.ptaKeyword = ptaKeyword; }
-
-    public String getPtaProblemSetId() { return ptaProblemSetId; }
-    public void setPtaProblemSetId(String ptaProblemSetId) { this.ptaProblemSetId = ptaProblemSetId; }
-
-    public String getPtaProblemSetName() { return ptaProblemSetName; }
-    public void setPtaProblemSetName(String ptaProblemSetName) { this.ptaProblemSetName = ptaProblemSetName; }
-
-    public String getPtaGroupId() { return ptaGroupId; }
-    public void setPtaGroupId(String ptaGroupId) { this.ptaGroupId = ptaGroupId; }
-
-    public String getPtaGroupName() { return ptaGroupName; }
-    public void setPtaGroupName(String ptaGroupName) { this.ptaGroupName = ptaGroupName; }
-
-    public Instant getPtaBindingVerifiedAt() { return ptaBindingVerifiedAt; }
-    public void setPtaBindingVerifiedAt(Instant ptaBindingVerifiedAt) { this.ptaBindingVerifiedAt = ptaBindingVerifiedAt; }
-
-    public String getPtaBindingVerifyStatus() { return ptaBindingVerifyStatus; }
-    public void setPtaBindingVerifyStatus(String ptaBindingVerifyStatus) { this.ptaBindingVerifyStatus = ptaBindingVerifyStatus; }
-
-    public String getPtaBindingVerifyMessage() { return ptaBindingVerifyMessage; }
-    public void setPtaBindingVerifyMessage(String ptaBindingVerifyMessage) { this.ptaBindingVerifyMessage = ptaBindingVerifyMessage; }
 
     public Boolean getSyncEnabled() { return syncEnabled; }
     public void setSyncEnabled(Boolean syncEnabled) { this.syncEnabled = syncEnabled; }

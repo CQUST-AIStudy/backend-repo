@@ -29,14 +29,7 @@ public class PtaSyncController {
         this.teacherPrincipalResolver = teacherPrincipalResolver;
     }
 
-    record SyncConfigRequest(
-            String ptaKeyword,
-            Boolean syncEnabled,
-            String ptaProblemSetId,
-            String ptaProblemSetName,
-            String ptaGroupId,
-            String ptaGroupName
-    ) {}
+    record SyncConfigRequest(String ptaKeyword, Boolean syncEnabled) {}
 
     @PutMapping
     public ApiResponse<Map<String, Object>> updateConfig(
@@ -45,26 +38,10 @@ public class PtaSyncController {
             @RequestBody SyncConfigRequest req
     ) {
         Long teacherId = teacherPrincipalResolver.requireTeacherId(principal);
-        return ApiResponse.of(syncService.updateSyncConfig(
-                classId,
-                teacherId,
-                req.ptaKeyword(),
-                req.syncEnabled(),
-                req.ptaProblemSetId(),
-                req.ptaProblemSetName(),
-                req.ptaGroupId(),
-                req.ptaGroupName()));
+        return ApiResponse.of(syncService.updateSyncConfig(classId, teacherId, req.ptaKeyword(), req.syncEnabled()));
     }
 
     record TriggerRequest(String ptaUsername, String ptaPassword, String ptaKeyword, String mode, Boolean force) {}
-
-    record ConnectionTestRequest(
-            String ptaUsername,
-            String ptaPassword,
-            String ptaKeyword,
-            String ptaProblemSetId,
-            String ptaGroupId
-    ) {}
 
     @PostMapping("/trigger")
     public ApiResponse<Map<String, Object>> trigger(
@@ -83,23 +60,6 @@ public class PtaSyncController {
                 req == null ? null : req.force()));
     }
 
-    @PostMapping("/test")
-    public ApiResponse<Map<String, Object>> testConnection(
-            @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long classId,
-            @RequestBody(required = false) ConnectionTestRequest req
-    ) {
-        Long teacherId = teacherPrincipalResolver.requireTeacherId(principal);
-        return ApiResponse.of(syncService.testConnection(
-                classId,
-                teacherId,
-                req == null ? null : req.ptaUsername(),
-                req == null ? null : req.ptaPassword(),
-                req == null ? null : req.ptaKeyword(),
-                req == null ? null : req.ptaProblemSetId(),
-                req == null ? null : req.ptaGroupId()));
-    }
-
     @GetMapping("/status")
     public ApiResponse<Map<String, Object>> status(
             @AuthenticationPrincipal UserPrincipal principal,
@@ -107,15 +67,6 @@ public class PtaSyncController {
     ) {
         Long teacherId = teacherPrincipalResolver.requireTeacherId(principal);
         return ApiResponse.of(syncService.getSyncStatus(classId, teacherId));
-    }
-
-    @GetMapping("/snapshot")
-    public ApiResponse<Map<String, Object>> snapshot(
-            @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long classId
-    ) {
-        Long teacherId = teacherPrincipalResolver.requireTeacherId(principal);
-        return ApiResponse.of(syncService.getSnapshotIntegrity(classId, teacherId));
     }
 
     @PostMapping("/import-students")

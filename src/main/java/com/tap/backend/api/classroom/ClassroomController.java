@@ -13,13 +13,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
-import org.apache.poi.ss.usermodel.Cell;
-import org.apache.poi.ss.usermodel.DataFormatter;
-import org.apache.poi.ss.usermodel.Row;
-import org.apache.poi.ss.usermodel.Sheet;
-import org.apache.poi.ss.usermodel.Workbook;
-import org.apache.poi.ss.usermodel.WorkbookFactory;
-import org.springframework.http.MediaType;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -28,9 +21,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.web.multipart.MultipartFile;
 
 @RestController
 @RequestMapping("/api/classes")
@@ -186,48 +177,10 @@ public class ClassroomController {
         );
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("id", student.getId());
-        result.put("classId", resolveClassId(student));
         result.put("studentName", student.getStudentName());
         result.put("studentNum", student.getStudentNum());
-        result.put("userId", student.getUserId());
         result.put("joinedAt", student.getJoinedAt());
         return ApiResponse.of(result);
-    }
-
-    record ImportStudentAccountRequest(
-            List<TeachingClassService.StudentAccountImportItem> students,
-            String defaultPassword
-    ) {}
-
-    @PostMapping("/{id}/students/import-accounts")
-    public ApiResponse<TeachingClassService.StudentAccountImportResult> importStudentAccounts(
-            @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long id,
-            @RequestBody ImportStudentAccountRequest req
-    ) {
-        UserEntity user = requireUser(principal);
-        return ApiResponse.of(classService.importStudentAccountsForTeacher(
-                id,
-                user.getId(),
-                req == null ? List.of() : req.students(),
-                req == null ? null : req.defaultPassword()
-        ));
-    }
-
-    @PostMapping(value = "/{id}/students/import-accounts/excel", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public ApiResponse<TeachingClassService.StudentAccountImportResult> importStudentAccountsFromExcel(
-            @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long id,
-            @RequestPart("file") MultipartFile file,
-            @RequestPart(value = "defaultPassword", required = false) String defaultPassword
-    ) throws Exception {
-        UserEntity user = requireUser(principal);
-        return ApiResponse.of(classService.importStudentAccountsForTeacher(
-                id,
-                user.getId(),
-                parseStudentAccountExcel(file),
-                defaultPassword
-        ));
     }
 
     @DeleteMapping("/{classId}/students/{studentId}")
@@ -239,77 +192,6 @@ public class ClassroomController {
         UserEntity user = requireUser(principal);
         classService.removeStudentForTeacher(classId, studentId, user.getId());
         return ApiResponse.of(null);
-    }
-
-    private List<TeachingClassService.StudentAccountImportItem> parseStudentAccountExcel(MultipartFile file) throws Exception {
-        if (file == null || file.isEmpty()) {
-            throw new IllegalArgumentException("import file is required");
-        }
-
-        try (Workbook workbook = WorkbookFactory.create(file.getInputStream())) {
-            Sheet sheet = workbook.getNumberOfSheets() == 0 ? null : workbook.getSheetAt(0);
-            if (sheet == null) {
-                throw new IllegalArgumentException("import file has no sheet");
-            }
-            DataFormatter formatter = new DataFormatter();
-            Row header = sheet.getRow(sheet.getFirstRowNum());
-            if (header == null) {
-                throw new IllegalArgumentException("import file has no header row");
-            }
-            Map<String, Integer> columns = resolveImportColumns(header, formatter);
-            List<TeachingClassService.StudentAccountImportItem> items = new ArrayList<>();
-            for (int i = sheet.getFirstRowNum() + 1; i <= sheet.getLastRowNum(); i++) {
-                Row row = sheet.getRow(i);
-                if (row == null) {
-                    continue;
-                }
-                String username = readCell(row, columns.get("username"), formatter);
-                String studentName = readCell(row, columns.get("studentName"), formatter);
-                String studentNum = readCell(row, columns.get("studentNum"), formatter);
-                String password = readCell(row, columns.get("password"), formatter);
-                if (isBlank(username) && isBlank(studentName) && isBlank(studentNum) && isBlank(password)) {
-                    continue;
-                }
-                items.add(new TeachingClassService.StudentAccountImportItem(username, studentName, studentNum, password));
-            }
-            return items;
-        }
-    }
-
-    private Map<String, Integer> resolveImportColumns(Row header, DataFormatter formatter) {
-        Map<String, Integer> columns = new LinkedHashMap<>();
-        for (Cell cell : header) {
-            String value = formatter.formatCellValue(cell).trim();
-            String key = switch (value) {
-                case "username", "账号", "登录账号", "用户名" -> "username";
-                case "studentName", "姓名", "学生姓名" -> "studentName";
-                case "studentNum", "学号", "学生学号" -> "studentNum";
-                case "password", "密码", "初始密码" -> "password";
-                default -> null;
-            };
-            if (key != null && !columns.containsKey(key)) {
-                columns.put(key, cell.getColumnIndex());
-            }
-        }
-        if (!columns.containsKey("username")) {
-            throw new IllegalArgumentException("import file must contain username/账号 column");
-        }
-        if (!columns.containsKey("studentName")) {
-            throw new IllegalArgumentException("import file must contain studentName/姓名 column");
-        }
-        return columns;
-    }
-
-    private String readCell(Row row, Integer index, DataFormatter formatter) {
-        if (index == null) {
-            return null;
-        }
-        Cell cell = row.getCell(index);
-        return cell == null ? null : formatter.formatCellValue(cell).trim();
-    }
-
-    private boolean isBlank(String value) {
-        return value == null || value.isBlank();
     }
 
     record JoinClassRequest(String classCode, String password, String studentName, String studentNum) {}
@@ -328,22 +210,10 @@ public class ClassroomController {
         );
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("id", student.getId());
-        result.put("classId", resolveClassId(student));
+        result.put("classId", student.getClassId());
         result.put("studentName", student.getStudentName());
-        result.put("studentNum", student.getStudentNum());
-        result.put("userId", student.getUserId());
         result.put("joinedAt", student.getJoinedAt());
         return ApiResponse.of(result);
-    }
-
-    private Long resolveClassId(ClassStudentEntity student) {
-        if (student.getClassId() != null) {
-            return student.getClassId();
-        }
-        if (student.getTeachingClass() != null) {
-            return student.getTeachingClass().getId();
-        }
-        return null;
     }
 
     private Map<String, Object> toMap(TeachingClassEntity teachingClass) {
@@ -358,13 +228,6 @@ public class ClassroomController {
         result.put("description", teachingClass.getDescription());
         result.put("studentCount", studentCount);
         result.put("ptaKeyword", teachingClass.getPtaKeyword());
-        result.put("ptaProblemSetId", teachingClass.getPtaProblemSetId());
-        result.put("ptaProblemSetName", teachingClass.getPtaProblemSetName());
-        result.put("ptaGroupId", teachingClass.getPtaGroupId());
-        result.put("ptaGroupName", teachingClass.getPtaGroupName());
-        result.put("ptaBindingVerifiedAt", teachingClass.getPtaBindingVerifiedAt());
-        result.put("ptaBindingVerifyStatus", teachingClass.getPtaBindingVerifyStatus());
-        result.put("ptaBindingVerifyMessage", teachingClass.getPtaBindingVerifyMessage());
         result.put("syncEnabled", teachingClass.getSyncEnabled());
         result.put("lastSyncAt", teachingClass.getLastSyncAt());
         result.put("syncStatus", teachingClass.getSyncStatus());

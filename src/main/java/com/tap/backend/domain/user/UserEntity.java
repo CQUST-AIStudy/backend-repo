@@ -38,9 +38,6 @@ public class UserEntity {
   @Column(name = "pta_password_ciphertext", length = 1024)
   private String ptaPasswordCiphertext;
 
-  @Column(name = "enabled", nullable = false)
-  private Boolean enabled = true;
-
   @Column(name = "created_at", nullable = false)
   private Instant createdAt;
 
@@ -53,14 +50,12 @@ public class UserEntity {
     if (createdAt == null) createdAt = now;
     if (updatedAt == null) updatedAt = now;
     if (role == null) role = UserRole.TEACHER;
-    if (enabled == null) enabled = true;
   }
 
   @PreUpdate
   void onUpdate() {
     updatedAt = Instant.now();
     if (role == null) role = UserRole.TEACHER;
-    if (enabled == null) enabled = true;
   }
 
   public Long getId() {
@@ -121,13 +116,5 @@ public class UserEntity {
 
   public void setPtaPasswordCiphertext(String ptaPasswordCiphertext) {
     this.ptaPasswordCiphertext = ptaPasswordCiphertext;
-  }
-
-  public Boolean getEnabled() {
-    return enabled;
-  }
-
-  public void setEnabled(Boolean enabled) {
-    this.enabled = enabled;
   }
 }

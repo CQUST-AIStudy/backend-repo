@@ -43,13 +43,10 @@ public class SecurityConfig {
       "/api/course-spaces/**",
       "/api/annotations/**",
       "/api/classes/**",
-      "/api/student-classes/**",
       "/api/grading/**",
       "/api/rag/**",
-      "/api/student-rag/**",
       "/api/pta-cookie/**",
       "/api/teachers/**",
-      "/api/users/**",
       "/api/analytics/**"
   };
 
@@ -92,18 +89,15 @@ public class SecurityConfig {
         .requestMatchers("/api/course-spaces/**").hasAnyRole(UserRole.TEACHER.name(), UserRole.ADMIN.name())
         .requestMatchers("/api/annotations/**").hasAnyRole(UserRole.TEACHER.name(), UserRole.ADMIN.name())
         .requestMatchers(HttpMethod.POST, "/api/classes/join").permitAll()
-        .requestMatchers("/api/student-classes/**").hasRole(UserRole.STUDENT.name())
         .requestMatchers(HttpMethod.PUT, "/api/classes/*/pta-sync/callback").permitAll()
         .requestMatchers(HttpMethod.PUT, "/api/pta-cookie/status").permitAll()
-        .requestMatchers("/api/pta-cookie/**").hasAnyRole(UserRole.TEACHER.name(), UserRole.ADMIN.name())
-        .requestMatchers("/api/teachers/**").hasAnyRole(UserRole.TEACHER.name(), UserRole.ADMIN.name())
-        .requestMatchers("/api/users/**").hasRole(UserRole.ADMIN.name())
-        .requestMatchers("/api/grading/**").hasAnyRole(UserRole.TEACHER.name(), UserRole.ADMIN.name())
+        .requestMatchers("/api/pta-cookie/**").authenticated()
+        .requestMatchers("/api/teachers/**").authenticated()
+        .requestMatchers("/api/grading/**").authenticated()
         .requestMatchers("/api/rag/**").hasAnyRole(UserRole.TEACHER.name(), UserRole.ADMIN.name())
-        .requestMatchers("/api/student-rag/**").hasRole(UserRole.STUDENT.name())
-        .requestMatchers("/api/classes/**").hasAnyRole(UserRole.TEACHER.name(), UserRole.ADMIN.name())
-        .requestMatchers("/api/analytics/student/**").hasRole(UserRole.STUDENT.name())
-        .requestMatchers("/api/analytics/**").hasAnyRole(UserRole.TEACHER.name(), UserRole.ADMIN.name())
+        .requestMatchers("/api/classes/**").authenticated()
+        .requestMatchers("/api/analytics/student/**").authenticated()
+        .requestMatchers("/api/analytics/**").authenticated()
         .anyRequest().authenticated()
     );
     http.addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
