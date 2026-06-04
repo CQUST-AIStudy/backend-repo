@@ -6,6 +6,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.util.List;
+import com.tap.backend.repo.UserRepository;
 import org.springframework.http.HttpHeaders;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
@@ -16,9 +17,11 @@ import org.springframework.web.filter.OncePerRequestFilter;
 @Component
 public class JwtAuthFilter extends OncePerRequestFilter {
   private final JwtService jwtService;
+  private final UserRepository userRepository;
 
-  public JwtAuthFilter(JwtService jwtService) {
+  public JwtAuthFilter(JwtService jwtService, UserRepository userRepository) {
     this.jwtService = jwtService;
+    this.userRepository = userRepository;
   }
 
   @Override
@@ -32,6 +35,14 @@ public class JwtAuthFilter extends OncePerRequestFilter {
     String token = header.substring("Bearer ".length()).trim();
     try {
       UserPrincipal principal = jwtService.parse(token);
+      boolean enabled = userRepository.findById(principal.userId())
+          .map(user -> Boolean.TRUE.equals(user.getEnabled()))
+          .orElse(false);
+      if (!enabled) {
+        SecurityContextHolder.clearContext();
+        filterChain.doFilter(request, response);
+        return;
+      }
       var auth = new UsernamePasswordAuthenticationToken(
           principal,
           null,

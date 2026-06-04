@@ -3,13 +3,18 @@ package com.tap.backend.service;
 import com.tap.backend.domain.classroom.ClassStudentEntity;
 import com.tap.backend.domain.classroom.TeachingClassEntity;
 import com.tap.backend.domain.user.UserEntity;
+import com.tap.backend.domain.user.UserRole;
 import com.tap.backend.repo.ClassStudentRepository;
 import com.tap.backend.repo.TeachingClassRepository;
+import com.tap.backend.repo.UserRepository;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.LinkedHashSet;
 import java.util.NoSuchElementException;
+import java.util.Optional;
 import java.util.Set;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -18,17 +23,53 @@ public class TeachingClassService {
 
     private final TeachingClassRepository classRepo;
     private final ClassStudentRepository studentRepo;
+    private final UserRepository userRepo;
+    private final PasswordEncoder passwordEncoder;
     private final LegacyPtaRosterService legacyPtaRosterService;
 
     public TeachingClassService(
             TeachingClassRepository classRepo,
             ClassStudentRepository studentRepo,
+            UserRepository userRepo,
+            PasswordEncoder passwordEncoder,
             LegacyPtaRosterService legacyPtaRosterService
     ) {
         this.classRepo = classRepo;
         this.studentRepo = studentRepo;
+        this.userRepo = userRepo;
+        this.passwordEncoder = passwordEncoder;
         this.legacyPtaRosterService = legacyPtaRosterService;
     }
+
+    public record StudentAccountImportItem(
+            String username,
+            String studentName,
+            String studentNum,
+            String password
+    ) {}
+
+    public record StudentAccountImportRow(
+            int rowIndex,
+            String username,
+            String studentName,
+            String studentNum,
+            Long userId,
+            Long classStudentId,
+            String action,
+            String message
+    ) {}
+
+    public record StudentAccountImportResult(
+            Long classId,
+            String className,
+            int totalCount,
+            int createdUserCount,
+            int reusedUserCount,
+            int createdClassStudentCount,
+            int updatedClassStudentCount,
+            int skippedCount,
+            List<StudentAccountImportRow> rows
+    ) {}
 
     @Transactional(readOnly = true)
     public List<TeachingClassEntity> listByTeacher(Long teacherId) {
@@ -125,15 +166,20 @@ public class TeachingClassService {
 
     @Transactional
     public ClassStudentEntity addStudent(Long classId, String studentName, String studentNum, Long userId) {
-        if (studentNum != null && studentRepo.existsByClassIdAndStudentNum(classId, studentNum)) {
+        String normalizedStudentName = blankToNull(studentName);
+        if (normalizedStudentName == null) {
+            throw new IllegalArgumentException("studentName is required");
+        }
+        String normalizedStudentNum = blankToNull(studentNum);
+        if (normalizedStudentNum != null && studentRepo.existsByClassIdAndStudentNum(classId, normalizedStudentNum)) {
             throw new IllegalArgumentException("student number already exists in this class");
         }
         TeachingClassEntity teachingClass = classRepo.findById(classId)
                 .orElseThrow(() -> new NoSuchElementException("class not found"));
         ClassStudentEntity student = new ClassStudentEntity();
         student.setTeachingClass(teachingClass);
-        student.setStudentName(studentName);
-        student.setStudentNum(studentNum);
+        student.setStudentName(normalizedStudentName);
+        student.setStudentNum(normalizedStudentNum);
         student.setUserId(userId);
         return studentRepo.save(student);
     }
@@ -147,7 +193,142 @@ public class TeachingClassService {
             Long userId
     ) {
         requireOwnedClass(classId, teacherId);
-        return addStudent(classId, studentName, studentNum, userId);
+        String normalizedStudentNum = blankToNull(studentNum);
+        if (normalizedStudentNum == null) {
+            throw new IllegalArgumentException("studentNum is required when adding a student manually");
+        }
+        Long resolvedUserId = userId == null ? resolveRequiredStudentUserId(normalizedStudentNum) : userId;
+        return addStudent(classId, studentName, normalizedStudentNum, resolvedUserId);
+    }
+
+    @Transactional
+    public StudentAccountImportResult importStudentAccountsForTeacher(
+            Long classId,
+            Long teacherId,
+            List<StudentAccountImportItem> items,
+            String defaultPassword
+    ) {
+        TeachingClassEntity teachingClass = requireOwnedClass(classId, teacherId);
+        if (items == null || items.isEmpty()) {
+            throw new IllegalArgumentException("student import rows cannot be empty");
+        }
+        if (items.size() > 1000) {
+            throw new IllegalArgumentException("student import rows cannot exceed 1000");
+        }
+
+        String normalizedDefaultPassword = blankToNull(defaultPassword);
+        List<StudentAccountImportRow> rows = new ArrayList<>();
+        Set<String> seenUsernames = new LinkedHashSet<>();
+        Set<String> seenStudentNums = new LinkedHashSet<>();
+        int createdUserCount = 0;
+        int reusedUserCount = 0;
+        int createdClassStudentCount = 0;
+        int updatedClassStudentCount = 0;
+        int skippedCount = 0;
+
+        for (int index = 0; index < items.size(); index++) {
+            StudentAccountImportItem item = items.get(index);
+            int rowIndex = index + 1;
+            String username = normalizeUsername(item == null ? null : item.username());
+            String studentName = normalizeRequiredText(item == null ? null : item.studentName(), "studentName");
+            String studentNum = blankToNull(item == null ? null : item.studentNum());
+            String password = blankToNull(item == null ? null : item.password());
+            if (password == null) {
+                password = normalizedDefaultPassword;
+            }
+
+            if (username == null) {
+                rows.add(new StudentAccountImportRow(rowIndex, null, studentName, studentNum, null, null, "SKIPPED", "username is required"));
+                skippedCount++;
+                continue;
+            }
+            if (studentName == null) {
+                rows.add(new StudentAccountImportRow(rowIndex, username, null, studentNum, null, null, "SKIPPED", "studentName is required"));
+                skippedCount++;
+                continue;
+            }
+            if (password == null || password.length() < 6) {
+                rows.add(new StudentAccountImportRow(rowIndex, username, studentName, studentNum, null, null, "SKIPPED", "password must be at least 6 characters"));
+                skippedCount++;
+                continue;
+            }
+            if (!seenUsernames.add(username)) {
+                rows.add(new StudentAccountImportRow(rowIndex, username, studentName, studentNum, null, null, "SKIPPED", "duplicate username in request"));
+                skippedCount++;
+                continue;
+            }
+            if (studentNum != null && !seenStudentNums.add(studentNum)) {
+                rows.add(new StudentAccountImportRow(rowIndex, username, studentName, studentNum, null, null, "SKIPPED", "duplicate studentNum in request"));
+                skippedCount++;
+                continue;
+            }
+
+            UserEntity user = userRepo.findByUsername(username).orElse(null);
+            boolean createdUser = false;
+            if (user == null) {
+                user = new UserEntity();
+                user.setUsername(username);
+                user.setDisplayName(studentName);
+                user.setRole(UserRole.STUDENT);
+                user.setPasswordHash(passwordEncoder.encode(password));
+                user.setEnabled(true);
+                user = userRepo.save(user);
+                createdUser = true;
+                createdUserCount++;
+            } else {
+                if (user.getRole() != UserRole.STUDENT) {
+                    rows.add(new StudentAccountImportRow(rowIndex, username, studentName, studentNum, user.getId(), null, "SKIPPED", "username exists but role is not STUDENT"));
+                    skippedCount++;
+                    continue;
+                }
+                if (!Boolean.TRUE.equals(user.getEnabled())) {
+                    user.setEnabled(true);
+                }
+                if (blankToNull(user.getDisplayName()) == null) {
+                    user.setDisplayName(studentName);
+                }
+                user = userRepo.save(user);
+                reusedUserCount++;
+            }
+
+            ClassStudentEntity classStudent = null;
+            if (studentNum != null) {
+                classStudent = studentRepo.findByClassIdAndStudentNum(classId, studentNum).orElse(null);
+            }
+            if (classStudent == null) {
+                classStudent = new ClassStudentEntity();
+                classStudent.setTeachingClass(teachingClass);
+                classStudent.setStudentNum(studentNum);
+                classStudent.setStudentName(studentName);
+                classStudent.setUserId(user.getId());
+                classStudent = studentRepo.save(classStudent);
+                createdClassStudentCount++;
+                rows.add(new StudentAccountImportRow(rowIndex, username, studentName, studentNum, user.getId(), classStudent.getId(), createdUser ? "CREATED" : "BOUND", null));
+            } else {
+                if (classStudent.getUserId() != null && !classStudent.getUserId().equals(user.getId())) {
+                    rows.add(new StudentAccountImportRow(rowIndex, username, studentName, studentNum, user.getId(), classStudent.getId(), "SKIPPED", "studentNum is already bound to another user"));
+                    skippedCount++;
+                    continue;
+                }
+                classStudent.setStudentName(studentName);
+                classStudent.setUserId(user.getId());
+                classStudent = studentRepo.save(classStudent);
+                updatedClassStudentCount++;
+                rows.add(new StudentAccountImportRow(rowIndex, username, studentName, studentNum, user.getId(), classStudent.getId(), createdUser ? "CREATED_AND_UPDATED" : "UPDATED", null));
+            }
+        }
+
+        return new StudentAccountImportResult(
+                teachingClass.getId(),
+                teachingClass.getName(),
+                items.size(),
+                createdUserCount,
+                reusedUserCount,
+                createdClassStudentCount,
+                updatedClassStudentCount,
+                skippedCount,
+                rows
+        );
     }
 
     @Transactional
@@ -177,7 +358,7 @@ public class TeachingClassService {
         TeachingClassEntity teachingClass = classRepo.findByClassCode(classCode)
                 .orElseThrow(() -> new NoSuchElementException("class code not found"));
         if (!teachingClass.getJoinPassword().equals(password)) {
-            throw new SecurityException("invalid class password");
+            throw new InvalidClassPasswordException();
         }
         String normalizedStudentNum = studentNum == null ? null : studentNum.trim();
         if (normalizedStudentNum != null && !normalizedStudentNum.isBlank()) {
@@ -229,6 +410,49 @@ public class TeachingClassService {
     }
 
     @Transactional
+    public List<TeachingClassEntity> listClassesByStudent(Long userId, String studentNum) {
+        Set<Long> classIds = new LinkedHashSet<>();
+        if (userId != null) {
+            studentRepo.findAllByUserId(userId).stream()
+                    .map(ClassStudentEntity::getClassId)
+                    .forEach(classIds::add);
+        }
+        String normalizedStudentNum = blankToNull(studentNum);
+        if (normalizedStudentNum != null) {
+            studentRepo.findAllByStudentNum(normalizedStudentNum).stream()
+                    .peek(student -> bindStudentAccountIfNeeded(student, userId))
+                    .map(ClassStudentEntity::getClassId)
+                    .forEach(classIds::add);
+        }
+        if (classIds.isEmpty()) {
+            return List.of();
+        }
+        return classRepo.findAllById(classIds);
+    }
+
+    @Transactional
+    public int bindStudentAccountByStudentNum(Long userId, String studentNum) {
+        if (userId == null) {
+            return 0;
+        }
+        String normalizedStudentNum = blankToNull(studentNum);
+        if (normalizedStudentNum == null) {
+            return 0;
+        }
+
+        int boundCount = 0;
+        for (ClassStudentEntity student : studentRepo.findAllByStudentNum(normalizedStudentNum)) {
+            if (student.getUserId() != null) {
+                continue;
+            }
+            student.setUserId(userId);
+            studentRepo.save(student);
+            boundCount++;
+        }
+        return boundCount;
+    }
+
+    @Transactional
     public java.util.Map<String, Object> importStudentsFromPta(Long classId, Long teacherId) {
         TeachingClassEntity teachingClass = requireOwnedClass(classId, teacherId);
         List<LegacyPtaRosterService.RosterStudent> roster = legacyPtaRosterService.findRoster(
@@ -241,13 +465,24 @@ public class TeachingClassService {
         int unchangedCount = 0;
 
         for (LegacyPtaRosterService.RosterStudent item : roster) {
-            var existing = studentRepo.findByClassIdAndStudentNum(classId, item.studentNum());
+            String studentNum = blankToNull(item.studentNum());
+            String studentName = blankToNull(item.studentName());
+            Long userId = findActiveStudentUserIdByUsername(studentNum);
+            var existing = studentNum == null
+                    ? Optional.<ClassStudentEntity>empty()
+                    : studentRepo.findByClassIdAndStudentNum(classId, studentNum);
             if (existing.isPresent()) {
                 ClassStudentEntity student = existing.get();
-                if (item.studentName() != null
-                        && !item.studentName().isBlank()
-                        && !item.studentName().equals(student.getStudentName())) {
-                    student.setStudentName(item.studentName());
+                boolean changed = false;
+                if (studentName != null && !studentName.equals(student.getStudentName())) {
+                    student.setStudentName(studentName);
+                    changed = true;
+                }
+                if (student.getUserId() == null && userId != null) {
+                    student.setUserId(userId);
+                    changed = true;
+                }
+                if (changed) {
                     studentRepo.save(student);
                     updatedCount++;
                 } else {
@@ -258,8 +493,9 @@ public class TeachingClassService {
 
             ClassStudentEntity student = new ClassStudentEntity();
             student.setTeachingClass(teachingClass);
-            student.setStudentNum(item.studentNum());
-            student.setStudentName(item.studentName());
+            student.setStudentNum(studentNum);
+            student.setStudentName(studentName);
+            student.setUserId(userId);
             studentRepo.save(student);
             createdCount++;
         }
@@ -289,5 +525,69 @@ public class TeachingClassService {
             return ptaKeyword.trim();
         }
         return className == null ? null : className.trim();
+    }
+
+    private Long findActiveStudentUserIdByUsername(String username) {
+        String normalizedUsername = blankToNull(username);
+        if (normalizedUsername == null) {
+            return null;
+        }
+        UserEntity user = userRepo.findByUsername(normalizedUsername).orElse(null);
+        if (user == null || user.getRole() != UserRole.STUDENT || !Boolean.TRUE.equals(user.getEnabled())) {
+            return null;
+        }
+        return user.getId();
+    }
+
+    private Long resolveRequiredStudentUserId(String username) {
+        String normalizedUsername = blankToNull(username);
+        if (normalizedUsername == null) {
+            throw new IllegalArgumentException("studentNum is required when adding a student manually");
+        }
+        UserEntity user = userRepo.findByUsername(normalizedUsername).orElse(null);
+        if (user == null) {
+            throw new IllegalArgumentException("学生账号不存在，不需要添加");
+        }
+        if (user.getRole() != UserRole.STUDENT) {
+            throw new IllegalArgumentException("matched account is not a STUDENT role: " + normalizedUsername);
+        }
+        if (!Boolean.TRUE.equals(user.getEnabled())) {
+            throw new IllegalArgumentException("student account is disabled: " + normalizedUsername);
+        }
+        return user.getId();
+    }
+
+    private void bindStudentAccountIfNeeded(ClassStudentEntity student, Long userId) {
+        if (student == null || userId == null || student.getUserId() != null) {
+            return;
+        }
+        student.setUserId(userId);
+        studentRepo.save(student);
+    }
+
+    private String normalizeUsername(String value) {
+        String normalized = blankToNull(value);
+        if (normalized == null) {
+            return null;
+        }
+        if (normalized.length() > 64) {
+            throw new IllegalArgumentException("username cannot exceed 64 characters");
+        }
+        return normalized;
+    }
+
+    private String normalizeRequiredText(String value, String fieldName) {
+        String normalized = blankToNull(value);
+        if (normalized != null && normalized.length() > 128) {
+            throw new IllegalArgumentException(fieldName + " cannot exceed 128 characters");
+        }
+        return normalized;
+    }
+
+    private String blankToNull(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        return value.trim();
     }
 }
