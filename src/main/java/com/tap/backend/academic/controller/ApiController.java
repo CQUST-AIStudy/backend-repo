@@ -376,6 +376,44 @@ public class ApiController {
         return experimentService.findAllExperiments();
     }
 
+    @PostMapping("/api/experiments")
+    public ResponseEntity<Map<String, Object>> createExperiment(@RequestBody ExperimentCreateRequest request) {
+        Map<String, Object> response = new HashMap<>();
+
+        if (request == null || isBlank(request.getName())) {
+            response.put("success", false);
+            response.put("message", "实验名称不能为空");
+            return ResponseEntity.badRequest().body(response);
+        }
+
+        try {
+            Experiment experiment = new Experiment();
+            experiment.setName(request.getName().trim());
+            experiment.setDeadline(trimToNull(request.getDeadline()));
+            experiment.setDescribe(trimToNull(request.getDescription()));
+            experiment.setRequirements(joinRequirements(request.getRequirements()));
+            experiment.setTopic_sum(0);
+            experiment.setNum(nextExperimentNum());
+
+            boolean saved = experimentService.saveExperiment(experiment);
+            if (!saved) {
+                response.put("success", false);
+                response.put("message", "创建实验失败");
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
+            }
+
+            response.put("success", true);
+            response.put("id", experiment.getExperiment_id());
+            response.put("data", experiment);
+            response.put("message", "实验创建成功");
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            response.put("success", false);
+            response.put("message", "创建实验失败: " + e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
+        }
+    }
+
     @GetMapping("/api/experiments")
     public ResponseEntity<Map<String, Object>> getExperimentList(HttpServletRequest request) {
         if (useUnifiedStudentExperimentReadPath()) {
@@ -1642,6 +1680,97 @@ public class ApiController {
             }
         }
         return null;
+    }
+
+    private int nextExperimentNum() {
+        List<Experiment> experiments = experimentService.findAllExperiments();
+        if (experiments == null || experiments.isEmpty()) {
+            return 1;
+        }
+        return experiments.stream()
+                .mapToInt(Experiment::getNum)
+                .max()
+                .orElse(0) + 1;
+    }
+
+    private String joinRequirements(List<String> requirements) {
+        if (requirements == null) {
+            return "";
+        }
+        return requirements.stream()
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(item -> !item.isEmpty())
+                .collect(Collectors.joining("\n"));
+    }
+
+    private String trimToNull(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.trim().isEmpty();
+    }
+
+    public static class ExperimentCreateRequest {
+        private String name;
+        private String deadline;
+        private String description;
+        private List<String> requirements;
+        private List<Object> classes;
+        private String status;
+
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name;
+        }
+
+        public String getDeadline() {
+            return deadline;
+        }
+
+        public void setDeadline(String deadline) {
+            this.deadline = deadline;
+        }
+
+        public String getDescription() {
+            return description;
+        }
+
+        public void setDescription(String description) {
+            this.description = description;
+        }
+
+        public List<String> getRequirements() {
+            return requirements;
+        }
+
+        public void setRequirements(List<String> requirements) {
+            this.requirements = requirements;
+        }
+
+        public List<Object> getClasses() {
+            return classes;
+        }
+
+        public void setClasses(List<Object> classes) {
+            this.classes = classes;
+        }
+
+        public String getStatus() {
+            return status;
+        }
+
+        public void setStatus(String status) {
+            this.status = status;
+        }
     }
 
 }

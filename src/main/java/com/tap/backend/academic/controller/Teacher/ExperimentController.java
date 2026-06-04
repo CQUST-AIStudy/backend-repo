@@ -1,9 +1,11 @@
 package com.tap.backend.academic.controller.Teacher;
 
 import com.tap.backend.academic.dao.StudentDao;
+import com.tap.backend.academic.entity.Experiment;
 import com.tap.backend.academic.entity.Student;
 import com.tap.backend.academic.entity.teacher.Teacher;
 import com.tap.backend.academic.security.TeacherSessionResolver;
+import com.tap.backend.academic.service.ExperimentService;
 import com.tap.backend.academic.service.teacherexperiment.TeacherExperimentQueryService;
 import com.tap.backend.academic.teacherexperiment.TeacherExperimentListResult;
 import com.tap.backend.academic.teacherexperiment.TeacherStudentExperimentResult;
@@ -13,8 +15,11 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -25,6 +30,9 @@ public class ExperimentController {
 
     @Autowired
     private TeacherExperimentQueryService teacherExperimentQueryService;
+
+    @Autowired
+    private ExperimentService experimentService;
 
     @Autowired
     private StudentDao studentDao;
@@ -52,6 +60,48 @@ public class ExperimentController {
             return ResponseEntity.ok(response);
         } catch (Exception e) {
             return error("failed to load teacher experiments: " + e.getMessage());
+        }
+    }
+
+    @PostMapping("/experiments")
+    public ResponseEntity<Map<String, Object>> createTeacherExperiment(
+            @RequestBody Map<String, Object> request,
+            HttpServletRequest servletRequest
+    ) {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            Teacher teacher = requireCurrentTeacher(servletRequest);
+            String name = getTrimmedString(request, "name");
+            if (name == null) {
+                response.put("success", false);
+                response.put("message", "experiment name is required");
+                return ResponseEntity.badRequest().body(response);
+            }
+
+            Experiment experiment = new Experiment();
+            experiment.setName(name);
+            experiment.setDeadline(getTrimmedString(request, "deadline"));
+            experiment.setDescribe(getTrimmedString(request, "description"));
+            experiment.setRequirements(joinRequirements(request == null ? null : request.get("requirements")));
+            experiment.setTopic_sum(0);
+            experiment.setNum(nextExperimentNum());
+
+            if (!experimentService.saveExperiment(experiment)) {
+                response.put("success", false);
+                response.put("message", "failed to create experiment");
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
+            }
+
+            response.put("success", true);
+            response.put("id", experiment.getExperiment_id());
+            response.put("data", experiment);
+            response.put("teacherInfo", teacher);
+            response.put("message", "experiment created successfully");
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            response.put("success", false);
+            response.put("message", "failed to create experiment: " + e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
         }
     }
 
@@ -132,6 +182,44 @@ public class ExperimentController {
         response.put("status", "error");
         response.put("message", message);
         return ResponseEntity.badRequest().body(response);
+    }
+
+    private int nextExperimentNum() {
+        List<Experiment> experiments = experimentService.findAllExperiments();
+        int maxNum = 0;
+        if (experiments != null) {
+            for (Experiment experiment : experiments) {
+                if (experiment != null && experiment.getNum() > maxNum) {
+                    maxNum = experiment.getNum();
+                }
+            }
+        }
+        return maxNum + 1;
+    }
+
+    private String getTrimmedString(Map<String, Object> request, String key) {
+        if (request == null || request.get(key) == null) {
+            return null;
+        }
+        String value = String.valueOf(request.get(key)).trim();
+        return value.isEmpty() ? null : value;
+    }
+
+    private String joinRequirements(Object rawRequirements) {
+        if (!(rawRequirements instanceof List<?> requirements)) {
+            return null;
+        }
+        List<String> normalized = new ArrayList<>();
+        for (Object requirement : requirements) {
+            if (requirement == null) {
+                continue;
+            }
+            String value = String.valueOf(requirement).trim();
+            if (!value.isEmpty()) {
+                normalized.add(value);
+            }
+        }
+        return normalized.isEmpty() ? null : String.join("\n", normalized);
     }
 
     private List<Student> sanitizeStudents(List<Student> students) {
