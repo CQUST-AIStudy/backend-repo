@@ -34,13 +34,14 @@ public class ExperimentAnalyticsController {
     private static final String DATA_STRUCTURE_KEYWORD = "\u6570\u636e\u7ed3\u6784";
     private static final String C_LANGUAGE_KEYWORD = "C\u8bed\u8a00";
 
-    private static final String EXPERIMENT_NAME_EXPR =
-            "COALESCE(NULLIF(TRIM(ao.title_override), ''), at.title)";
-    private static final String COURSE_NAME_EXPR =
-            "COALESCE(NULLIF(TRIM(c.name), ''), NULLIF(TRIM(tc.course_name), ''), '')";
-    private static final String PREFIX_SOURCE_EXPR =
-            "COALESCE(NULLIF(TRIM(tc.pta_keyword), ''), " + EXPERIMENT_NAME_EXPR + ", tc.name)";
     private static final String COLL = " COLLATE utf8mb4_0900_ai_ci";
+    private static final String EMPTY_STR = "_utf8mb4'' COLLATE utf8mb4_0900_ai_ci";
+    private static final String EXPERIMENT_NAME_EXPR =
+            "COALESCE(NULLIF(TRIM(ao.title_override), " + EMPTY_STR + "), at.title)";
+    private static final String COURSE_NAME_EXPR =
+            "COALESCE(NULLIF(TRIM(c.name), " + EMPTY_STR + "), NULLIF(TRIM(tc.course_name), " + EMPTY_STR + "), '')";
+    private static final String PREFIX_SOURCE_EXPR =
+            "COALESCE(NULLIF(TRIM(tc.pta_keyword), " + EMPTY_STR + "), " + EXPERIMENT_NAME_EXPR + ", tc.name)";
     private static final String DATA_STRUCTURE_SQL_LITERAL =
             "_utf8mb4'" + DATA_STRUCTURE_KEYWORD + "' COLLATE utf8mb4_0900_ai_ci";
     private static final String C_LANGUAGE_SQL_LITERAL =
@@ -63,14 +64,14 @@ public class ExperimentAnalyticsController {
     private static final String DATA_STRUCTURE_SCOPE_PREDICATE =
             "(" +
                     EXPERIMENT_NAME_EXPR_COLL + " LIKE " + DATA_STRUCTURE_LIKE_PATTERN + " OR " +
-                    "COALESCE(NULLIF(TRIM(tc.pta_keyword), ''), '')" + COLL + " LIKE " + DATA_STRUCTURE_LIKE_PATTERN + " OR " +
-                    "COALESCE(NULLIF(TRIM(tc.course_name), ''), '')" + COLL + " LIKE " + DATA_STRUCTURE_LIKE_PATTERN + " OR " +
-                    "COALESCE(NULLIF(TRIM(c.name), ''), '')" + COLL + " LIKE " + DATA_STRUCTURE_LIKE_PATTERN +
+                    "COALESCE(NULLIF(TRIM(tc.pta_keyword), " + EMPTY_STR + "), '')" + COLL + " LIKE " + DATA_STRUCTURE_LIKE_PATTERN + " OR " +
+                    "COALESCE(NULLIF(TRIM(tc.course_name), " + EMPTY_STR + "), '')" + COLL + " LIKE " + DATA_STRUCTURE_LIKE_PATTERN + " OR " +
+                    "COALESCE(NULLIF(TRIM(c.name), " + EMPTY_STR + "), '')" + COLL + " LIKE " + DATA_STRUCTURE_LIKE_PATTERN +
                     ") AND NOT (" +
                     EXPERIMENT_NAME_EXPR_COLL + " LIKE " + C_LANGUAGE_LIKE_PATTERN + " OR " +
-                    "COALESCE(NULLIF(TRIM(tc.pta_keyword), ''), '')" + COLL + " LIKE " + C_LANGUAGE_LIKE_PATTERN + " OR " +
-                    "COALESCE(NULLIF(TRIM(tc.course_name), ''), '')" + COLL + " LIKE " + C_LANGUAGE_LIKE_PATTERN + " OR " +
-                    "COALESCE(NULLIF(TRIM(c.name), ''), '')" + COLL + " LIKE " + C_LANGUAGE_LIKE_PATTERN +
+                    "COALESCE(NULLIF(TRIM(tc.pta_keyword), " + EMPTY_STR + "), '')" + COLL + " LIKE " + C_LANGUAGE_LIKE_PATTERN + " OR " +
+                    "COALESCE(NULLIF(TRIM(tc.course_name), " + EMPTY_STR + "), '')" + COLL + " LIKE " + C_LANGUAGE_LIKE_PATTERN + " OR " +
+                    "COALESCE(NULLIF(TRIM(c.name), " + EMPTY_STR + "), '')" + COLL + " LIKE " + C_LANGUAGE_LIKE_PATTERN +
                     ")";
     private static final String SUBMISSION_ACTIVITY_PREDICATE =
             "LOWER(COALESCE(sa.submission_status, '')) IN ('graded', 'submitted') " +
@@ -99,7 +100,7 @@ public class ExperimentAnalyticsController {
                 .append("  ").append(EXPERIMENT_NAME_EXPR).append(" AS name, ")
                 .append("  ").append(CLASS_PREFIX_EXPR).append(" AS classPrefix, ")
                 .append("  tc.name AS className, ")
-                .append("  NULLIF(TRIM(").append(COURSE_NAME_EXPR).append("), '') AS courseName, ")
+                .append("  NULLIF(TRIM(").append(COURSE_NAME_EXPR).append("), ").append(EMPTY_STR).append(") AS courseName, ")
                 .append("  COUNT(DISTINCT sa.id) AS rosterCount, ")
                 .append("  COUNT(DISTINCT CASE WHEN ").append(SUBMISSION_ACTIVITY_PREDICATE).append(" THEN sa.id END) AS submittedCount, ")
                 .append("  COUNT(DISTINCT ap.id) AS topicSum ")
@@ -118,14 +119,14 @@ public class ExperimentAnalyticsController {
                     .append(CLASS_PREFIX_EXPR).append(" = ?2 ")
                     .append("   OR tc.name").append(COLL).append(" LIKE ?3 ")
                     .append("   OR ").append(EXPERIMENT_NAME_EXPR_COLL).append(" LIKE ?3 ")
-                    .append("   OR COALESCE(NULLIF(TRIM(tc.pta_keyword), ''), '')").append(COLL).append(" LIKE ?3")
+                    .append("   OR COALESCE(NULLIF(TRIM(tc.pta_keyword), ").append(EMPTY_STR).append("), '')").append(COLL).append(" LIKE ?3")
                     .append(") ");
         }
 
         sql.append("GROUP BY ao.id, ")
                 .append(EXPERIMENT_NAME_EXPR).append(", ")
                 .append(CLASS_PREFIX_EXPR).append(", ")
-                .append("tc.name, NULLIF(TRIM(").append(COURSE_NAME_EXPR).append("), ''), ao.seq_no ")
+                .append("tc.name, NULLIF(TRIM(").append(COURSE_NAME_EXPR).append("), ").append(EMPTY_STR).append("), ao.seq_no ")
                 .append("ORDER BY CASE WHEN ao.seq_no IS NULL THEN 1 ELSE 0 END, ao.seq_no, ao.id");
 
         var query = em.createNativeQuery(sql.toString());
@@ -238,7 +239,7 @@ public class ExperimentAnalyticsController {
                 "  " + EXPERIMENT_NAME_EXPR + " AS experimentName, " +
                 "  " + CLASS_PREFIX_EXPR + " AS classPrefix, " +
                 "  tc.name AS className, " +
-                "  NULLIF(TRIM(" + COURSE_NAME_EXPR + "), '') AS courseName, " +
+                "  NULLIF(TRIM(" + COURSE_NAME_EXPR + "), " + EMPTY_STR + ") AS courseName, " +
                 "  COUNT(DISTINCT ap.id) AS problemCount " +
                 "FROM assignment_offering ao " +
                 "JOIN assignment_template at ON at.id = ao.template_id " +
@@ -248,7 +249,7 @@ public class ExperimentAnalyticsController {
                 "WHERE ao.id = ?1 " +
                 "  AND ao.teacher_id = ?2 " +
                 "  AND " + DATA_STRUCTURE_SCOPE_PREDICATE + " " +
-                "GROUP BY ao.id, " + EXPERIMENT_NAME_EXPR + ", " + CLASS_PREFIX_EXPR + ", tc.name, NULLIF(TRIM(" + COURSE_NAME_EXPR + "), '')";
+                "GROUP BY ao.id, " + EXPERIMENT_NAME_EXPR + ", " + CLASS_PREFIX_EXPR + ", tc.name, NULLIF(TRIM(" + COURSE_NAME_EXPR + "), " + EMPTY_STR + ")";
 
         @SuppressWarnings("unchecked")
         List<Object[]> rows = em.createNativeQuery(sql)
@@ -418,8 +419,8 @@ public class ExperimentAnalyticsController {
         @SuppressWarnings("unchecked")
         List<Object[]> rows = em.createNativeQuery(
                 "SELECT " +
-                        "  COALESCE(NULLIF(TRIM(ap.problem_no), ''), CAST(ap.sort_order AS CHAR), CAST(ap.id AS CHAR)) AS problem_label, " +
-                        "  COALESCE(NULLIF(TRIM(ap.title), ''), 'PTA Problem') AS problem_title, " +
+                        "  COALESCE(NULLIF(TRIM(ap.problem_no), " + EMPTY_STR + "), CAST(ap.sort_order AS CHAR), CAST(ap.id AS CHAR)) AS problem_label, " +
+                        "  COALESCE(NULLIF(TRIM(ap.title), " + EMPTY_STR + "), 'PTA Problem') AS problem_title, " +
                         "  COALESCE(ap.max_score, 0) AS full_score, " +
                         "  AVG(COALESCE(sps.best_score, 0)) AS avg_score, " +
                         "  COUNT(sa.id) AS student_count, " +
