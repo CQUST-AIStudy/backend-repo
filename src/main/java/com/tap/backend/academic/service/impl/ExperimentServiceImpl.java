@@ -51,6 +51,11 @@ public class ExperimentServiceImpl implements ExperimentService {
     }
 
     @Override
+    public List<Experiment> findExperimentsByClassKeyword(String classKeyword, String teacherId) {
+        return experimentDao.findExperimentsByClassKeyword(classKeyword, teacherId);
+    }
+
+    @Override
     public boolean saveExperiment(Experiment experiment) {
         return experimentDao.saveExperiment(experiment) > 0;
     }

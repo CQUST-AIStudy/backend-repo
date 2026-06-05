@@ -5,7 +5,7 @@ import com.tap.backend.academic.teacherexperiment.TeacherStudentExperimentResult
 
 public interface TeacherExperimentQueryService {
 
-    TeacherExperimentListResult getTeacherExperimentList(Integer teacherId, Long classId);
+    TeacherExperimentListResult getTeacherExperimentList(Integer teacherId, Long classId, String classKeyword);
 
-    TeacherStudentExperimentResult getAllStudentExperiments(Integer teacherId, Long classId);
+    TeacherStudentExperimentResult getAllStudentExperiments(Integer teacherId, Long classId, String classKeyword);
 }

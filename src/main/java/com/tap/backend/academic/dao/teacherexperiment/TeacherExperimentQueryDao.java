@@ -18,6 +18,10 @@ public interface TeacherExperimentQueryDao {
     String C_LANGUAGE_KEYWORD = "C\u8bed\u8a00";
     String EXPERIMENT_NAME_EXPR = "COALESCE(NULLIF(TRIM(ao.title_override), ''), at.title)";
     String COURSE_NAME_EXPR = "COALESCE(NULLIF(TRIM(tc.course_name), ''), '')";
+    String NORMALIZED_PTA_KEYWORD_EXPR =
+            "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(tc.pta_keyword, ''), ' ', ''), '　', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '')";
+    String NORMALIZED_CLASS_NAME_EXPR =
+            "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(tc.name, ''), ' ', ''), '　', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '')";
     String DATA_STRUCTURE_SCOPE_PREDICATE =
             "(" +
                     EXPERIMENT_NAME_EXPR + " LIKE '%" + DATA_STRUCTURE_KEYWORD + "%' OR " +
@@ -60,6 +64,12 @@ public interface TeacherExperimentQueryDao {
             "  <if test='classId != null'>",
             "    AND ao.class_id = #{classId}",
             "  </if>",
+            "  <if test='classKeyword != null and classKeyword != \"\"'>",
+            "    AND (",
+            "      " + NORMALIZED_PTA_KEYWORD_EXPR + " COLLATE utf8mb4_unicode_ci = #{classKeyword} COLLATE utf8mb4_unicode_ci",
+            "      OR " + NORMALIZED_CLASS_NAME_EXPR + " COLLATE utf8mb4_unicode_ci = #{classKeyword} COLLATE utf8mb4_unicode_ci",
+            "    )",
+            "  </if>",
             "GROUP BY ao.id, " + EXPERIMENT_NAME_EXPR + ", ao.deadline_at, ao.created_at, ao.seq_no",
             "ORDER BY",
             "  CASE WHEN ao.seq_no IS NULL THEN 1 ELSE 0 END,",
@@ -69,7 +79,8 @@ public interface TeacherExperimentQueryDao {
     })
     List<TeacherExperimentSummaryRow> findTeacherExperimentSummaries(
             @Param("teacherId") Integer teacherId,
-            @Param("classId") Long classId
+            @Param("classId") Long classId,
+            @Param("classKeyword") String classKeyword
     );
 
     @Select({
@@ -110,6 +121,12 @@ public interface TeacherExperimentQueryDao {
             "  <if test='classId != null'>",
             "    AND ao.class_id = #{classId}",
             "  </if>",
+            "  <if test='classKeyword != null and classKeyword != \"\"'>",
+            "    AND (",
+            "      " + NORMALIZED_PTA_KEYWORD_EXPR + " COLLATE utf8mb4_unicode_ci = #{classKeyword} COLLATE utf8mb4_unicode_ci",
+            "      OR " + NORMALIZED_CLASS_NAME_EXPR + " COLLATE utf8mb4_unicode_ci = #{classKeyword} COLLATE utf8mb4_unicode_ci",
+            "    )",
+            "  </if>",
             "ORDER BY",
             "  tc.name,",
             "  sp.student_no,",
@@ -120,7 +137,8 @@ public interface TeacherExperimentQueryDao {
     })
     List<TeacherStudentAssignmentRow> findTeacherStudentAssignments(
             @Param("teacherId") Integer teacherId,
-            @Param("classId") Long classId
+            @Param("classId") Long classId,
+            @Param("classKeyword") String classKeyword
     );
 
     @Select({

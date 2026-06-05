@@ -41,13 +41,21 @@ public class TeacherExperimentQueryServiceImpl implements TeacherExperimentQuery
     private boolean unifiedExperimentQueriesEnabled;
 
     @Override
-    public TeacherExperimentListResult getTeacherExperimentList(Integer teacherId, Long classId) {
+    public TeacherExperimentListResult getTeacherExperimentList(Integer teacherId, Long classId, String classKeyword) {
+        String normalizedClassKeyword = normalizeClassKeyword(classKeyword);
+        if (hasText(normalizedClassKeyword)) {
+            TeacherExperimentListResult legacyResult = getLegacyTeacherExperimentList(teacherId, classId, normalizedClassKeyword);
+            if (!legacyResult.getExperiments().isEmpty()) {
+                return legacyResult;
+            }
+        }
+
         if (!unifiedExperimentQueriesEnabled) {
-            return getLegacyTeacherExperimentList(teacherId, classId);
+            return getLegacyTeacherExperimentList(teacherId, classId, normalizedClassKeyword);
         }
 
         List<TeacherExperimentSummaryRow> summaries = teacherExperimentQueryDao
-                .findTeacherExperimentSummaries(teacherId, classId);
+                .findTeacherExperimentSummaries(teacherId, classId, normalizedClassKeyword);
         if (summaries == null || summaries.isEmpty()) {
             return new TeacherExperimentListResult(Collections.emptyList(), 0);
         }
@@ -76,14 +84,18 @@ public class TeacherExperimentQueryServiceImpl implements TeacherExperimentQuery
     }
 
     @Override
-    public TeacherStudentExperimentResult getAllStudentExperiments(Integer teacherId, Long classId) {
+    public TeacherStudentExperimentResult getAllStudentExperiments(Integer teacherId, Long classId, String classKeyword) {
+        String normalizedClassKeyword = normalizeClassKeyword(classKeyword);
         if (!unifiedExperimentQueriesEnabled) {
-            return getLegacyAllStudentExperiments(teacherId, classId);
+            return getLegacyAllStudentExperiments(teacherId, classId, normalizedClassKeyword);
         }
 
         List<TeacherStudentAssignmentRow> assignments = teacherExperimentQueryDao
-                .findTeacherStudentAssignments(teacherId, classId);
+                .findTeacherStudentAssignments(teacherId, classId, normalizedClassKeyword);
         if (assignments == null || assignments.isEmpty()) {
+            if (hasText(normalizedClassKeyword)) {
+                return getLegacyAllStudentExperiments(teacherId, classId, normalizedClassKeyword);
+            }
             return new TeacherStudentExperimentResult(getStudentCount(teacherId) > 0, Collections.emptyList());
         }
 
@@ -123,13 +135,11 @@ public class TeacherExperimentQueryServiceImpl implements TeacherExperimentQuery
         return new TeacherStudentExperimentResult(true, rows);
     }
 
-    private TeacherExperimentListResult getLegacyTeacherExperimentList(Integer teacherId, Long classId) {
+    private TeacherExperimentListResult getLegacyTeacherExperimentList(Integer teacherId, Long classId, String classKeyword) {
         List<TeacherStudentAssignmentRow> roster = teacherExperimentQueryDao.findTeacherStudentRoster(teacherId, classId);
         int studentCount = roster == null ? 0 : roster.size();
 
-        List<Experiment> experiments = teacherId == null
-                ? Collections.emptyList()
-                : experimentService.findExperimentsByTeacherId(String.valueOf(teacherId));
+        List<Experiment> experiments = loadLegacyExperiments(teacherId, classKeyword);
         if (experiments == null || experiments.isEmpty()) {
             return new TeacherExperimentListResult(Collections.emptyList(), studentCount);
         }
@@ -173,15 +183,13 @@ public class TeacherExperimentQueryServiceImpl implements TeacherExperimentQuery
         return new TeacherExperimentListResult(teacherExperiments, studentCount);
     }
 
-    private TeacherStudentExperimentResult getLegacyAllStudentExperiments(Integer teacherId, Long classId) {
+    private TeacherStudentExperimentResult getLegacyAllStudentExperiments(Integer teacherId, Long classId, String classKeyword) {
         List<TeacherStudentAssignmentRow> roster = teacherExperimentQueryDao.findTeacherStudentRoster(teacherId, classId);
         if (roster == null || roster.isEmpty()) {
             return new TeacherStudentExperimentResult(false, Collections.emptyList());
         }
 
-        List<Experiment> experiments = teacherId == null
-                ? Collections.emptyList()
-                : experimentService.findExperimentsByTeacherId(String.valueOf(teacherId));
+        List<Experiment> experiments = loadLegacyExperiments(teacherId, classKeyword);
         if (experiments == null || experiments.isEmpty()) {
             return new TeacherStudentExperimentResult(true, Collections.emptyList());
         }
@@ -269,9 +277,24 @@ public class TeacherExperimentQueryServiceImpl implements TeacherExperimentQuery
         return new TeacherStudentExperimentResult(true, rows);
     }
 
+    private List<Experiment> loadLegacyExperiments(Integer teacherId, String classKeyword) {
+        if (teacherId == null) {
+            return Collections.emptyList();
+        }
+        String teacherIdText = String.valueOf(teacherId);
+        if (hasText(classKeyword)) {
+            return experimentService.findExperimentsByClassKeyword(classKeyword, teacherIdText);
+        }
+        return experimentService.findExperimentsByTeacherId(teacherIdText);
+    }
+
     private int getStudentCount(Integer teacherId) {
         Integer studentCount = teacherId == null ? null : studentDao.getStudentCountByTeacherId(teacherId);
         return studentCount == null ? 0 : studentCount;
+    }
+
+    private String normalizeClassKeyword(String classKeyword) {
+        return hasText(classKeyword) ? classKeyword.replaceAll("[\\s\\u3000]+", "") : null;
     }
 
     private boolean hasText(String value) {

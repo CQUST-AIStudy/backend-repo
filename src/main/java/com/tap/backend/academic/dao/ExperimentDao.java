@@ -2,6 +2,7 @@ package com.tap.backend.academic.dao;
 
 import com.tap.backend.academic.entity.Experiment;
 import java.util.List;
+import org.apache.ibatis.annotations.Param;
 
 public interface ExperimentDao {
     
@@ -31,6 +32,11 @@ public interface ExperimentDao {
      * @return 实验列表
      */
     List<Experiment> findExperimentsByTeacherId(String teacherId);
+
+    List<Experiment> findExperimentsByClassKeyword(
+            @Param("classKeyword") String classKeyword,
+            @Param("teacherId") String teacherId
+    );
     
     /**
      * 保存实验信息

@@ -70,4 +70,6 @@ public interface ExperimentService {
      * @return 实验列表
      */
     List<Experiment> findExperimentsByTeacherId(String teacherId);
+
+    List<Experiment> findExperimentsByClassKeyword(String classKeyword, String teacherId);
 }

@@ -9,6 +9,8 @@ import com.tap.backend.academic.service.ExperimentService;
 import com.tap.backend.academic.service.teacherexperiment.TeacherExperimentQueryService;
 import com.tap.backend.academic.teacherexperiment.TeacherExperimentListResult;
 import com.tap.backend.academic.teacherexperiment.TeacherStudentExperimentResult;
+import com.tap.backend.domain.classroom.TeachingClassEntity;
+import com.tap.backend.repo.TeachingClassRepository;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -40,15 +42,21 @@ public class ExperimentController {
     @Autowired
     private TeacherSessionResolver teacherSessionResolver;
 
+    @Autowired
+    private TeachingClassRepository teachingClassRepository;
+
     @GetMapping("/experiments")
     public ResponseEntity<Map<String, Object>> getTeacherExperimentList(
             @RequestParam(value = "classId", required = false) Long classId,
+            @RequestParam(value = "class", required = false) String classKeyword,
+            @RequestParam(value = "classKeyword", required = false) String classKeywordAlias,
             HttpServletRequest request
     ) {
         try {
             Teacher teacher = requireCurrentTeacher(request);
+            String keyword = resolveClassKeywordForQuery(teacher, classId, normalizeKeyword(classKeyword, classKeywordAlias));
             TeacherExperimentListResult result = teacherExperimentQueryService
-                    .getTeacherExperimentList(teacher.getTeacher_id(), classId);
+                    .getTeacherExperimentList(teacher.getTeacher_id(), classId, keyword);
 
             Map<String, Object> response = new HashMap<>();
             response.put("status", "success");
@@ -56,6 +64,7 @@ public class ExperimentController {
             response.put("total", result.getExperiments().size());
             response.put("studentCount", result.getStudentCount());
             response.put("classId", classId);
+            response.put("class", keyword);
             response.put("teacherInfo", teacher);
             return ResponseEntity.ok(response);
         } catch (Exception e) {
@@ -83,6 +92,7 @@ public class ExperimentController {
             experiment.setDeadline(getTrimmedString(request, "deadline"));
             experiment.setDescribe(getTrimmedString(request, "description"));
             experiment.setRequirements(joinRequirements(request == null ? null : request.get("requirements")));
+            experiment.setClassName(resolveExperimentClassKeyword(request));
             experiment.setTopic_sum(0);
             experiment.setNum(nextExperimentNum());
 
@@ -108,18 +118,22 @@ public class ExperimentController {
     @GetMapping("/allStudentExperiments")
     public ResponseEntity<Map<String, Object>> getAllStudentExperiments(
             @RequestParam(value = "classId", required = false) Long classId,
+            @RequestParam(value = "class", required = false) String classKeyword,
+            @RequestParam(value = "classKeyword", required = false) String classKeywordAlias,
             HttpServletRequest request
     ) {
         Map<String, Object> response = new HashMap<>();
         try {
             Teacher teacher = requireCurrentTeacher(request);
+            String keyword = resolveClassKeywordForQuery(teacher, classId, normalizeKeyword(classKeyword, classKeywordAlias));
             TeacherStudentExperimentResult result = teacherExperimentQueryService
-                    .getAllStudentExperiments(teacher.getTeacher_id(), classId);
+                    .getAllStudentExperiments(teacher.getTeacher_id(), classId, keyword);
             if (!result.hasStudents()) {
                 response.put("success", true);
                 response.put("data", new ArrayList<>());
                 response.put("message", "no students found");
                 response.put("classId", classId);
+                response.put("class", keyword);
                 response.put("teacherInfo", teacher);
                 return ResponseEntity.ok(response);
             }
@@ -128,6 +142,7 @@ public class ExperimentController {
             response.put("data", result.getData());
             response.put("total", result.getData().size());
             response.put("classId", classId);
+            response.put("class", keyword);
             response.put("teacherInfo", teacher);
             return ResponseEntity.ok(response);
         } catch (Exception e) {
@@ -203,6 +218,106 @@ public class ExperimentController {
         }
         String value = String.valueOf(request.get(key)).trim();
         return value.isEmpty() ? null : value;
+    }
+
+    private String normalizeKeyword(String value, String fallback) {
+        String normalized = value == null ? null : value.trim();
+        if (normalized != null && !normalized.isEmpty()) {
+            return removeKeywordWhitespace(normalized);
+        }
+        normalized = fallback == null ? null : fallback.trim();
+        return normalized == null || normalized.isEmpty() ? null : removeKeywordWhitespace(normalized);
+    }
+
+    private String removeKeywordWhitespace(String value) {
+        return value == null ? null : value.replaceAll("[\\s\\u3000]+", "");
+    }
+
+    private String resolveClassKeywordForQuery(Teacher teacher, Long classId, String keyword) {
+        if (teacher == null) {
+            return keyword;
+        }
+        if (classId != null) {
+            return teachingClassRepository.findById(classId)
+                    .filter(teachingClass -> Long.valueOf(teacher.getTeacher_id()).equals(teachingClass.getTeacherId()))
+                    .map(this::resolvePtaKeyword)
+                    .orElse(keyword);
+        }
+        if (keyword == null || keyword.isBlank()) {
+            return keyword;
+        }
+        String normalizedKeyword = removeKeywordWhitespace(keyword);
+        List<TeachingClassEntity> classes = teachingClassRepository.findAllByTeacherId(Long.valueOf(teacher.getTeacher_id()));
+        for (TeachingClassEntity teachingClass : classes) {
+            String className = removeKeywordWhitespace(teachingClass.getName());
+            String ptaKeyword = removeKeywordWhitespace(teachingClass.getPtaKeyword());
+            if (normalizedKeyword.equals(className) || normalizedKeyword.equals(ptaKeyword)) {
+                return resolvePtaKeyword(teachingClass);
+            }
+        }
+        return normalizedKeyword;
+    }
+
+    private String resolveExperimentClassKeyword(Map<String, Object> request) {
+        String direct = getTrimmedString(request, "class");
+        if (direct != null) {
+            return normalizeKeyword(direct, null);
+        }
+        direct = getTrimmedString(request, "className");
+        if (direct != null) {
+            return normalizeKeyword(direct, null);
+        }
+        direct = getTrimmedString(request, "ptaKeyword");
+        if (direct != null) {
+            return normalizeKeyword(direct, null);
+        }
+
+        Long classId = firstClassId(request == null ? null : request.get("classes"));
+        if (classId == null) {
+            classId = firstClassId(request == null ? null : request.get("classIds"));
+        }
+        if (classId == null) {
+            classId = parseLong(request == null ? null : request.get("classId"));
+        }
+        if (classId == null) {
+            return null;
+        }
+        return teachingClassRepository.findById(classId)
+                .map(this::resolvePtaKeyword)
+                .orElse(null);
+    }
+
+    private String resolvePtaKeyword(TeachingClassEntity teachingClass) {
+        String keyword = teachingClass.getPtaKeyword();
+        if (keyword != null && !keyword.isBlank()) {
+            return normalizeKeyword(keyword, null);
+        }
+        String name = teachingClass.getName();
+        return normalizeKeyword(name, null);
+    }
+
+    private Long firstClassId(Object rawClasses) {
+        if (!(rawClasses instanceof List<?> classes) || classes.isEmpty()) {
+            return null;
+        }
+        for (Object item : classes) {
+            Long classId = parseLong(item);
+            if (classId != null) {
+                return classId;
+            }
+        }
+        return null;
+    }
+
+    private Long parseLong(Object rawValue) {
+        if (rawValue == null) {
+            return null;
+        }
+        try {
+            return Long.parseLong(String.valueOf(rawValue).trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     private String joinRequirements(Object rawRequirements) {
