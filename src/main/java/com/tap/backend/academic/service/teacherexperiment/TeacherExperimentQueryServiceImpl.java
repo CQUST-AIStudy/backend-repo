@@ -84,17 +84,17 @@ public class TeacherExperimentQueryServiceImpl implements TeacherExperimentQuery
     }
 
     @Override
-    public TeacherStudentExperimentResult getAllStudentExperiments(Integer teacherId, Long classId, String classKeyword) {
+    public TeacherStudentExperimentResult getAllStudentExperiments(Integer teacherId, Long classId, String classKeyword, Integer experimentId) {
         String normalizedClassKeyword = normalizeClassKeyword(classKeyword);
         if (!unifiedExperimentQueriesEnabled) {
-            return getLegacyAllStudentExperiments(teacherId, classId, normalizedClassKeyword);
+            return getLegacyAllStudentExperiments(teacherId, classId, normalizedClassKeyword, experimentId);
         }
 
         List<TeacherStudentAssignmentRow> assignments = teacherExperimentQueryDao
-                .findTeacherStudentAssignments(teacherId, classId, normalizedClassKeyword);
+                .findTeacherStudentAssignments(teacherId, classId, normalizedClassKeyword, experimentId);
         if (assignments == null || assignments.isEmpty()) {
-            if (hasText(normalizedClassKeyword)) {
-                return getLegacyAllStudentExperiments(teacherId, classId, normalizedClassKeyword);
+            if (hasText(normalizedClassKeyword) || experimentId != null) {
+                return getLegacyAllStudentExperiments(teacherId, classId, normalizedClassKeyword, experimentId);
             }
             return new TeacherStudentExperimentResult(getStudentCount(teacherId) > 0, Collections.emptyList());
         }
@@ -183,13 +183,36 @@ public class TeacherExperimentQueryServiceImpl implements TeacherExperimentQuery
         return new TeacherExperimentListResult(teacherExperiments, studentCount);
     }
 
-    private TeacherStudentExperimentResult getLegacyAllStudentExperiments(Integer teacherId, Long classId, String classKeyword) {
+    private TeacherStudentExperimentResult getLegacyAllStudentExperiments(Integer teacherId, Long classId, String classKeyword, Integer experimentId) {
         List<TeacherStudentAssignmentRow> roster = teacherExperimentQueryDao.findTeacherStudentRoster(teacherId, classId);
+
+        // 兜底：class_member 没有学生记录，但 experimentId 指定了，直接从 submit_situation 查学生
+        if ((roster == null || roster.isEmpty()) && experimentId != null) {
+            roster = teacherExperimentQueryDao.findStudentRosterFromSubmitSituation(experimentId);
+        }
         if (roster == null || roster.isEmpty()) {
             return new TeacherStudentExperimentResult(false, Collections.emptyList());
         }
 
         List<Experiment> experiments = loadLegacyExperiments(teacherId, classKeyword);
+
+        // 当 experimentId 明确指定时，只保留该实验；若未从教师实验列表中查到，直接按 ID 加载
+        if (experimentId != null) {
+            if (experiments != null && !experiments.isEmpty()) {
+                List<Experiment> filtered = experiments.stream()
+                        .filter(e -> e != null && experimentId.equals(e.getExperiment_id()))
+                        .collect(Collectors.toList());
+                experiments = filtered.isEmpty() ? Collections.emptyList() : filtered;
+            }
+            // 如果实验列表里没有这个实验（或列表为空），尝试直接按 ID 加载
+            if (experiments == null || experiments.isEmpty()) {
+                Experiment singleExperiment = experimentService.findExperimentById(experimentId);
+                experiments = singleExperiment == null
+                        ? Collections.emptyList()
+                        : Collections.singletonList(singleExperiment);
+            }
+        }
+
         if (experiments == null || experiments.isEmpty()) {
             return new TeacherStudentExperimentResult(true, Collections.emptyList());
         }
@@ -222,6 +245,26 @@ public class TeacherExperimentQueryServiceImpl implements TeacherExperimentQuery
                         (left, right) -> preferLegacyScoreRow(left, right),
                         LinkedHashMap::new
                 ));
+
+        // 从 submit_situation 表查询，作为 score 表数据不足时的兜底数据源
+        // submit_situation 是最完整的原始提交记录（3620条 vs score 的 1900条）
+        Map<String, TeacherExperimentScoreRow> submitSituationByCompositeKey = lookupKeys.isEmpty()
+                ? Collections.emptyMap()
+                : teacherExperimentQueryDao.findPerExperimentSumScoresFromSubmitSituation(
+                        new ArrayList<>(lookupKeys), experimentId)
+                .stream()
+                .filter(Objects::nonNull)
+                .collect(Collectors.toMap(
+                        row -> buildCompositeKey(row.getUsername(), row.getExperimentId()),
+                        row -> row,
+                        (left, right) -> preferLegacyScoreRow(left, right),
+                        LinkedHashMap::new
+                ));
+
+        // 合并两个数据源：score 表优先，submit_situation 兜底补充缺失的 (student, experiment) 组合
+        for (Map.Entry<String, TeacherExperimentScoreRow> entry : submitSituationByCompositeKey.entrySet()) {
+            scoreByCompositeKey.putIfAbsent(entry.getKey(), entry.getValue());
+        }
 
         Map<String, TeacherExperimentPlagiarismRow> plagiarismByCompositeKey =
                 studentIds.isEmpty() || experimentIds.isEmpty()
@@ -338,17 +381,22 @@ public class TeacherExperimentQueryServiceImpl implements TeacherExperimentQuery
             Map<String, TeacherExperimentScoreRow> scoreByCompositeKey,
             TeacherStudentAssignmentRow student,
             Integer experimentId) {
-        if (student == null || experimentId == null || scoreByCompositeKey.isEmpty()) {
+        if (student == null || experimentId == null) {
             return null;
         }
-        TeacherExperimentScoreRow scoreRow = null;
-        if (hasText(student.getStudentId())) {
-            scoreRow = scoreByCompositeKey.get(buildCompositeKey(student.getStudentId(), experimentId));
+        if (!scoreByCompositeKey.isEmpty()) {
+            TeacherExperimentScoreRow scoreRow = null;
+            if (hasText(student.getStudentId())) {
+                scoreRow = scoreByCompositeKey.get(buildCompositeKey(student.getStudentId(), experimentId));
+            }
+            if (scoreRow == null && hasText(student.getStudentUsername())) {
+                scoreRow = scoreByCompositeKey.get(buildCompositeKey(student.getStudentUsername(), experimentId));
+            }
+            if (scoreRow != null) {
+                return scoreRow;
+            }
         }
-        if (scoreRow == null && hasText(student.getStudentUsername())) {
-            scoreRow = scoreByCompositeKey.get(buildCompositeKey(student.getStudentUsername(), experimentId));
-        }
-        return scoreRow;
+        return null;
     }
 
     private TeacherExperimentScoreRow preferLegacyScoreRow(

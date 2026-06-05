@@ -127,6 +127,7 @@ public class ExperimentController {
             @RequestParam(value = "classId", required = false) Long classId,
             @RequestParam(value = "class", required = false) String classKeyword,
             @RequestParam(value = "classKeyword", required = false) String classKeywordAlias,
+            @RequestParam(value = "experimentId", required = false) Integer experimentId,
             HttpServletRequest request
     ) {
         Map<String, Object> response = new HashMap<>();
@@ -134,7 +135,7 @@ public class ExperimentController {
             Teacher teacher = requireCurrentTeacher(request);
             String keyword = resolveClassKeywordForQuery(teacher, classId, normalizeKeyword(classKeyword, classKeywordAlias));
             TeacherStudentExperimentResult result = teacherExperimentQueryService
-                    .getAllStudentExperiments(teacher.getTeacher_id(), classId, keyword);
+                    .getAllStudentExperiments(teacher.getTeacher_id(), classId, keyword, experimentId);
             if (!result.hasStudents()) {
                 response.put("success", true);
                 response.put("data", new ArrayList<>());

@@ -40,23 +40,37 @@ public class ExperimentAnalyticsController {
             "COALESCE(NULLIF(TRIM(c.name), ''), NULLIF(TRIM(tc.course_name), ''), '')";
     private static final String PREFIX_SOURCE_EXPR =
             "COALESCE(NULLIF(TRIM(tc.pta_keyword), ''), " + EXPERIMENT_NAME_EXPR + ", tc.name)";
+    private static final String COLL = " COLLATE utf8mb4_0900_ai_ci";
+    private static final String DATA_STRUCTURE_SQL_LITERAL =
+            "_utf8mb4'" + DATA_STRUCTURE_KEYWORD + "' COLLATE utf8mb4_0900_ai_ci";
+    private static final String C_LANGUAGE_SQL_LITERAL =
+            "_utf8mb4'" + C_LANGUAGE_KEYWORD + "' COLLATE utf8mb4_0900_ai_ci";
+    private static final String DATA_STRUCTURE_LIKE_PATTERN =
+            "CONCAT('%', " + DATA_STRUCTURE_SQL_LITERAL + ", '%')";
+    private static final String C_LANGUAGE_LIKE_PATTERN =
+            "CONCAT('%', " + C_LANGUAGE_SQL_LITERAL + ", '%')";
+
+    private static final String EXPERIMENT_NAME_EXPR_COLL = EXPERIMENT_NAME_EXPR + COLL;
+    private static final String PREFIX_SOURCE_EXPR_COLL = PREFIX_SOURCE_EXPR + COLL;
+
     private static final String CLASS_PREFIX_EXPR =
             "TRIM(CASE " +
-                    "WHEN " + PREFIX_SOURCE_EXPR + " LIKE '%" + DATA_STRUCTURE_KEYWORD + "%' " +
-                    "THEN SUBSTRING_INDEX(" + PREFIX_SOURCE_EXPR + ", '" + DATA_STRUCTURE_KEYWORD + "', 1) " +
-                    "ELSE tc.name " +
-                    "END)";
+                    "WHEN " + PREFIX_SOURCE_EXPR_COLL + " LIKE " + DATA_STRUCTURE_LIKE_PATTERN + " " +
+                    "THEN SUBSTRING_INDEX(" + PREFIX_SOURCE_EXPR_COLL + ", " + DATA_STRUCTURE_SQL_LITERAL + ", 1) " +
+                    "ELSE tc.name COLLATE utf8mb4_0900_ai_ci " +
+                    "END COLLATE utf8mb4_0900_ai_ci)";
+
     private static final String DATA_STRUCTURE_SCOPE_PREDICATE =
             "(" +
-                    EXPERIMENT_NAME_EXPR + " LIKE '%" + DATA_STRUCTURE_KEYWORD + "%' OR " +
-                    "COALESCE(NULLIF(TRIM(tc.pta_keyword), ''), '') LIKE '%" + DATA_STRUCTURE_KEYWORD + "%' OR " +
-                    "COALESCE(NULLIF(TRIM(tc.course_name), ''), '') LIKE '%" + DATA_STRUCTURE_KEYWORD + "%' OR " +
-                    "COALESCE(NULLIF(TRIM(c.name), ''), '') LIKE '%" + DATA_STRUCTURE_KEYWORD + "%'" +
+                    EXPERIMENT_NAME_EXPR_COLL + " LIKE " + DATA_STRUCTURE_LIKE_PATTERN + " OR " +
+                    "COALESCE(NULLIF(TRIM(tc.pta_keyword), ''), '')" + COLL + " LIKE " + DATA_STRUCTURE_LIKE_PATTERN + " OR " +
+                    "COALESCE(NULLIF(TRIM(tc.course_name), ''), '')" + COLL + " LIKE " + DATA_STRUCTURE_LIKE_PATTERN + " OR " +
+                    "COALESCE(NULLIF(TRIM(c.name), ''), '')" + COLL + " LIKE " + DATA_STRUCTURE_LIKE_PATTERN +
                     ") AND NOT (" +
-                    EXPERIMENT_NAME_EXPR + " LIKE '%" + C_LANGUAGE_KEYWORD + "%' OR " +
-                    "COALESCE(NULLIF(TRIM(tc.pta_keyword), ''), '') LIKE '%" + C_LANGUAGE_KEYWORD + "%' OR " +
-                    "COALESCE(NULLIF(TRIM(tc.course_name), ''), '') LIKE '%" + C_LANGUAGE_KEYWORD + "%' OR " +
-                    "COALESCE(NULLIF(TRIM(c.name), ''), '') LIKE '%" + C_LANGUAGE_KEYWORD + "%'" +
+                    EXPERIMENT_NAME_EXPR_COLL + " LIKE " + C_LANGUAGE_LIKE_PATTERN + " OR " +
+                    "COALESCE(NULLIF(TRIM(tc.pta_keyword), ''), '')" + COLL + " LIKE " + C_LANGUAGE_LIKE_PATTERN + " OR " +
+                    "COALESCE(NULLIF(TRIM(tc.course_name), ''), '')" + COLL + " LIKE " + C_LANGUAGE_LIKE_PATTERN + " OR " +
+                    "COALESCE(NULLIF(TRIM(c.name), ''), '')" + COLL + " LIKE " + C_LANGUAGE_LIKE_PATTERN +
                     ")";
     private static final String SUBMISSION_ACTIVITY_PREDICATE =
             "LOWER(COALESCE(sa.submission_status, '')) IN ('graded', 'submitted') " +
@@ -102,9 +116,9 @@ public class ExperimentAnalyticsController {
         if (hasPrefix) {
             sql.append("  AND (")
                     .append(CLASS_PREFIX_EXPR).append(" = ?2 ")
-                    .append("   OR tc.name LIKE ?3 ")
-                    .append("   OR ").append(EXPERIMENT_NAME_EXPR).append(" LIKE ?3 ")
-                    .append("   OR COALESCE(NULLIF(TRIM(tc.pta_keyword), ''), '') LIKE ?3")
+                    .append("   OR tc.name").append(COLL).append(" LIKE ?3 ")
+                    .append("   OR ").append(EXPERIMENT_NAME_EXPR_COLL).append(" LIKE ?3 ")
+                    .append("   OR COALESCE(NULLIF(TRIM(tc.pta_keyword), ''), '')").append(COLL).append(" LIKE ?3")
                     .append(") ");
         }
 

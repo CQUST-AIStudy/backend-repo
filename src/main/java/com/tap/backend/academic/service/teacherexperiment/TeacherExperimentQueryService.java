@@ -7,5 +7,5 @@ public interface TeacherExperimentQueryService {
 
     TeacherExperimentListResult getTeacherExperimentList(Integer teacherId, Long classId, String classKeyword);
 
-    TeacherStudentExperimentResult getAllStudentExperiments(Integer teacherId, Long classId, String classKeyword);
+    TeacherStudentExperimentResult getAllStudentExperiments(Integer teacherId, Long classId, String classKeyword, Integer experimentId);
 }
