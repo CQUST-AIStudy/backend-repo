@@ -1,11 +1,13 @@
 package com.tap.backend.api.classroom;
 
+import com.tap.backend.academic.security.LegacySessionAccessResolver;
 import com.tap.backend.domain.classroom.ClassStudentEntity;
 import com.tap.backend.domain.classroom.TeachingClassEntity;
 import com.tap.backend.security.StudentPrincipalResolver;
 import com.tap.backend.security.UserPrincipal;
 import com.tap.backend.service.TeachingClassService;
 import com.tap.common.api.ApiResponse;
+import jakarta.servlet.http.HttpServletRequest;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -21,27 +23,32 @@ import org.springframework.web.bind.annotation.RestController;
 public class StudentClassroomController {
 
     private final StudentPrincipalResolver studentPrincipalResolver;
+    private final LegacySessionAccessResolver legacySessionAccessResolver;
     private final TeachingClassService teachingClassService;
 
     public StudentClassroomController(StudentPrincipalResolver studentPrincipalResolver,
+                                      LegacySessionAccessResolver legacySessionAccessResolver,
                                       TeachingClassService teachingClassService) {
         this.studentPrincipalResolver = studentPrincipalResolver;
+        this.legacySessionAccessResolver = legacySessionAccessResolver;
         this.teachingClassService = teachingClassService;
     }
 
     record JoinClassRequest(String classCode, String password) {}
 
     @GetMapping
-    public ApiResponse<List<Map<String, Object>>> listJoinedClasses(@AuthenticationPrincipal UserPrincipal principal) {
-        StudentPrincipalResolver.ResolvedStudent student = studentPrincipalResolver.requireStudent(principal);
+    public ApiResponse<List<Map<String, Object>>> listJoinedClasses(@AuthenticationPrincipal UserPrincipal principal,
+                                                                    HttpServletRequest request) {
+        StudentPrincipalResolver.ResolvedStudent student = requireStudent(principal, request);
         List<TeachingClassEntity> classes = teachingClassService.listClassesByStudent(student.userId(), student.studentNum());
         return ApiResponse.of(classes.stream().map(this::toClassMap).toList());
     }
 
     @PostMapping("/join")
     public ApiResponse<Map<String, Object>> joinClass(@AuthenticationPrincipal UserPrincipal principal,
+                                                      HttpServletRequest request,
                                                       @RequestBody JoinClassRequest joinClassRequest) {
-        StudentPrincipalResolver.ResolvedStudent student = studentPrincipalResolver.requireStudent(principal);
+        StudentPrincipalResolver.ResolvedStudent student = requireStudent(principal, request);
         ClassStudentEntity joined = teachingClassService.joinClass(
                 joinClassRequest.classCode(),
                 joinClassRequest.password(),
@@ -54,6 +61,13 @@ public class StudentClassroomController {
                 .findFirst()
                 .orElseThrow(() -> new IllegalStateException("joined class not found"));
         return ApiResponse.of(toClassMap(teachingClass));
+    }
+
+    private StudentPrincipalResolver.ResolvedStudent requireStudent(UserPrincipal principal, HttpServletRequest request) {
+        if (principal != null) {
+            return studentPrincipalResolver.requireStudent(principal);
+        }
+        return studentPrincipalResolver.requireStudent(legacySessionAccessResolver.requireAuthenticated(request));
     }
 
     private Long resolveClassId(ClassStudentEntity student) {

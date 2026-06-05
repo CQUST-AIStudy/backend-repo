@@ -1,5 +1,6 @@
 package com.tap.backend.security;
 
+import com.tap.backend.domain.user.UserEntity;
 import com.tap.backend.domain.user.UserRole;
 import com.tap.backend.repo.UserRepository;
 import jakarta.persistence.EntityManager;
@@ -7,6 +8,7 @@ import jakarta.persistence.PersistenceContext;
 import java.util.List;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 @Component
@@ -34,6 +36,47 @@ public class StudentPrincipalResolver {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN, "student id missing");
     }
     return new ResolvedStudent(user.getId(), user.getUsername(), user.getDisplayName(), resolveCanonicalStudentNo(studentNum));
+  }
+
+  @Transactional
+  public ResolvedStudent requireStudent(com.tap.backend.academic.entity.UserEntity legacyUser) {
+    if (legacyUser == null) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "authentication required");
+    }
+    if (!"student".equals(normalize(legacyUser.getRole()))) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, "student role required");
+    }
+
+    String username = normalize(legacyUser.getUsername());
+    if (username == null) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, "student username missing");
+    }
+    String studentNum = normalize(legacyUser.getUsernum());
+    if (studentNum == null) {
+      studentNum = resolveStudentNum(username);
+    }
+    if (studentNum == null) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, "student id missing");
+    }
+
+    UserEntity tapUser = userRepository.findByUsername(username).orElseGet(UserEntity::new);
+    if (tapUser.getId() == null) {
+      tapUser.setUsername(username);
+      tapUser.setRole(UserRole.STUDENT);
+      tapUser.setEnabled(true);
+    }
+    if (tapUser.getRole() != UserRole.STUDENT) {
+      throw new ResponseStatusException(HttpStatus.FORBIDDEN, "student role required");
+    }
+    if (!Boolean.TRUE.equals(tapUser.getEnabled())) {
+      throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "user account is disabled");
+    }
+    if (normalize(tapUser.getDisplayName()) == null) {
+      tapUser.setDisplayName(username);
+    }
+    tapUser = userRepository.save(tapUser);
+
+    return new ResolvedStudent(tapUser.getId(), tapUser.getUsername(), tapUser.getDisplayName(), resolveCanonicalStudentNo(studentNum));
   }
 
   public String requireStudentId(UserPrincipal principal) {
@@ -91,6 +134,10 @@ public class StudentPrincipalResolver {
   }
 
   private String normalizeStudentId(String value) {
+    return normalize(value);
+  }
+
+  private String normalize(String value) {
     if (value == null) {
       return null;
     }

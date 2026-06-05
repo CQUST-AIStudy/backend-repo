@@ -92,7 +92,9 @@ public class SecurityConfig {
         .requestMatchers("/api/course-spaces/**").hasAnyRole(UserRole.TEACHER.name(), UserRole.ADMIN.name())
         .requestMatchers("/api/annotations/**").hasAnyRole(UserRole.TEACHER.name(), UserRole.ADMIN.name())
         .requestMatchers(HttpMethod.POST, "/api/classes/join").permitAll()
-        .requestMatchers("/api/student-classes/**").hasRole(UserRole.STUDENT.name())
+        // The student class page still uses the legacy session cookie. The controller
+        // validates either JWT or a legacy STUDENT session to avoid frontend changes.
+        .requestMatchers("/api/student-classes/**").permitAll()
         .requestMatchers(HttpMethod.PUT, "/api/classes/*/pta-sync/callback").permitAll()
         .requestMatchers(HttpMethod.PUT, "/api/pta-cookie/status").permitAll()
         .requestMatchers("/api/pta-cookie/**").hasAnyRole(UserRole.TEACHER.name(), UserRole.ADMIN.name())
