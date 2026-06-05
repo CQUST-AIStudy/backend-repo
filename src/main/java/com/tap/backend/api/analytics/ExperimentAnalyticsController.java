@@ -230,7 +230,29 @@ public class ExperimentAnalyticsController {
 
     private Integer requireCurrentTeacherId(HttpServletRequest request) {
         Teacher teacher = teacherSessionResolver.requireCurrentTeacher(request);
-        return teacher == null ? null : teacher.getTeacher_id();
+        if (teacher == null) {
+            return null;
+        }
+        Integer userId = resolveTapUserId(teacher.getUsername());
+        return userId == null ? teacher.getTeacher_id() : userId;
+    }
+
+    private Integer resolveTapUserId(String username) {
+        if (!hasText(username)) {
+            return null;
+        }
+        @SuppressWarnings("unchecked")
+        List<Number> rows = em.createNativeQuery(
+                "SELECT CAST(id AS SIGNED) " +
+                        "FROM tap_user " +
+                        "WHERE username COLLATE utf8mb4_unicode_ci = ?1 COLLATE utf8mb4_unicode_ci " +
+                        "LIMIT 1"
+        ).setParameter(1, username.trim()).getResultList();
+
+        if (rows.isEmpty() || rows.get(0) == null) {
+            return null;
+        }
+        return rows.get(0).intValue();
     }
 
     private Map<String, Object> requireScopedExperiment(int experimentId, Integer teacherId) {
