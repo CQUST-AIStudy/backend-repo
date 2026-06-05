@@ -71,7 +71,8 @@ public class SecurityConfig {
   @Order(1)
   public SecurityFilterChain tapSecurityFilterChain(
       HttpSecurity http,
-      JwtAuthFilter jwtAuthFilter) throws Exception {
+      JwtAuthFilter jwtAuthFilter,
+      LegacySessionAuthFilter legacySessionAuthFilter) throws Exception {
     http.securityMatcher(TAP_API_MATCHERS);
     http.csrf(csrf -> csrf.disable());
     http.cors(cors -> {});
@@ -109,6 +110,7 @@ public class SecurityConfig {
         .anyRequest().authenticated()
     );
     http.addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
+    http.addFilterAfter(legacySessionAuthFilter, JwtAuthFilter.class);
     return http.build();
   }
 
@@ -118,7 +120,10 @@ public class SecurityConfig {
    */
   @Bean
   @Order(2)
-  public SecurityFilterChain aiDsSecurityFilterChain(HttpSecurity http, LegacySessionAuthFilter legacySessionAuthFilter)
+  public SecurityFilterChain aiDsSecurityFilterChain(
+      HttpSecurity http,
+      JwtAuthFilter jwtAuthFilter,
+      LegacySessionAuthFilter legacySessionAuthFilter)
       throws Exception {
     http.securityMatcher("/**");
     http.csrf(csrf -> csrf.disable());
@@ -132,7 +137,8 @@ public class SecurityConfig {
         .requestMatchers(HttpMethod.POST, "/api/login", "/api/register", "/logout", "/api/logout").permitAll()
         .anyRequest().authenticated()
     );
-    http.addFilterBefore(legacySessionAuthFilter, UsernamePasswordAuthenticationFilter.class);
+    http.addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
+    http.addFilterAfter(legacySessionAuthFilter, JwtAuthFilter.class);
     return http.build();
   }
 

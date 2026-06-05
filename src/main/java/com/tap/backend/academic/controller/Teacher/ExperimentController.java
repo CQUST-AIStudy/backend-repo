@@ -11,11 +11,14 @@ import com.tap.backend.academic.teacherexperiment.TeacherExperimentListResult;
 import com.tap.backend.academic.teacherexperiment.TeacherStudentExperimentResult;
 import com.tap.backend.domain.classroom.TeachingClassEntity;
 import com.tap.backend.repo.TeachingClassRepository;
+import com.tap.backend.repo.UserRepository;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -44,6 +47,9 @@ public class ExperimentController {
 
     @Autowired
     private TeachingClassRepository teachingClassRepository;
+
+    @Autowired
+    private UserRepository userRepository;
 
     @GetMapping("/experiments")
     public ResponseEntity<Map<String, Object>> getTeacherExperimentList(
@@ -92,7 +98,8 @@ public class ExperimentController {
             experiment.setDeadline(getTrimmedString(request, "deadline"));
             experiment.setDescribe(getTrimmedString(request, "description"));
             experiment.setRequirements(joinRequirements(request == null ? null : request.get("requirements")));
-            experiment.setClassName(resolveExperimentClassKeyword(request));
+            experiment.setClassName(resolveExperimentClassKeyword(teacher, request));
+            experiment.setTeacherId(String.valueOf(teacher.getTeacher_id()));
             experiment.setTopic_sum(0);
             experiment.setNum(nextExperimentNum());
 
@@ -239,7 +246,7 @@ public class ExperimentController {
         }
         if (classId != null) {
             return teachingClassRepository.findById(classId)
-                    .filter(teachingClass -> Long.valueOf(teacher.getTeacher_id()).equals(teachingClass.getTeacherId()))
+                    .filter(teachingClass -> ownsTeachingClass(teacher, teachingClass))
                     .map(this::resolvePtaKeyword)
                     .orElse(keyword);
         }
@@ -247,7 +254,11 @@ public class ExperimentController {
             return keyword;
         }
         String normalizedKeyword = removeKeywordWhitespace(keyword);
-        List<TeachingClassEntity> classes = teachingClassRepository.findAllByTeacherId(Long.valueOf(teacher.getTeacher_id()));
+        Long tapTeacherId = resolveTapTeacherId(teacher);
+        if (tapTeacherId == null) {
+            return normalizedKeyword;
+        }
+        List<TeachingClassEntity> classes = teachingClassRepository.findAllByTeacherId(tapTeacherId);
         for (TeachingClassEntity teachingClass : classes) {
             String className = removeKeywordWhitespace(teachingClass.getName());
             String ptaKeyword = removeKeywordWhitespace(teachingClass.getPtaKeyword());
@@ -258,7 +269,7 @@ public class ExperimentController {
         return normalizedKeyword;
     }
 
-    private String resolveExperimentClassKeyword(Map<String, Object> request) {
+    private String resolveExperimentClassKeyword(Teacher teacher, Map<String, Object> request) {
         String direct = getTrimmedString(request, "class");
         if (direct != null) {
             return normalizeKeyword(direct, null);
@@ -272,19 +283,23 @@ public class ExperimentController {
             return normalizeKeyword(direct, null);
         }
 
-        Long classId = firstClassId(request == null ? null : request.get("classes"));
-        if (classId == null) {
-            classId = firstClassId(request == null ? null : request.get("classIds"));
+        Set<Long> classIds = new LinkedHashSet<>();
+        classIds.addAll(parseClassIds(request == null ? null : request.get("classes")));
+        classIds.addAll(parseClassIds(request == null ? null : request.get("classIds")));
+        Long singleClassId = parseLong(request == null ? null : request.get("classId"));
+        if (singleClassId != null) {
+            classIds.add(singleClassId);
         }
-        if (classId == null) {
-            classId = parseLong(request == null ? null : request.get("classId"));
+
+        Set<String> keywords = new LinkedHashSet<>();
+        for (Long classId : classIds) {
+            teachingClassRepository.findById(classId)
+                    .filter(teachingClass -> ownsTeachingClass(teacher, teachingClass))
+                    .map(this::resolvePtaKeyword)
+                    .filter(keyword -> keyword != null && !keyword.isBlank())
+                    .ifPresent(keywords::add);
         }
-        if (classId == null) {
-            return null;
-        }
-        return teachingClassRepository.findById(classId)
-                .map(this::resolvePtaKeyword)
-                .orElse(null);
+        return keywords.isEmpty() ? null : String.join(",", keywords);
     }
 
     private String resolvePtaKeyword(TeachingClassEntity teachingClass) {
@@ -307,6 +322,41 @@ public class ExperimentController {
             }
         }
         return null;
+    }
+
+    private List<Long> parseClassIds(Object rawClasses) {
+        List<Long> classIds = new ArrayList<>();
+        if (rawClasses instanceof List<?> classes) {
+            for (Object item : classes) {
+                Long classId = parseLong(item);
+                if (classId != null) {
+                    classIds.add(classId);
+                }
+            }
+            return classIds;
+        }
+        Long classId = parseLong(rawClasses);
+        if (classId != null) {
+            classIds.add(classId);
+        }
+        return classIds;
+    }
+
+    private boolean ownsTeachingClass(Teacher teacher, TeachingClassEntity teachingClass) {
+        Long tapTeacherId = resolveTapTeacherId(teacher);
+        return teacher != null
+                && teachingClass != null
+                && tapTeacherId != null
+                && tapTeacherId.equals(teachingClass.getTeacherId());
+    }
+
+    private Long resolveTapTeacherId(Teacher teacher) {
+        if (teacher == null || teacher.getUsername() == null) {
+            return null;
+        }
+        return userRepository.findByUsername(teacher.getUsername().trim())
+                .map(com.tap.backend.domain.user.UserEntity::getId)
+                .orElseGet(() -> teacher.getTeacher_id() == null ? null : Long.valueOf(teacher.getTeacher_id()));
     }
 
     private Long parseLong(Object rawValue) {

@@ -13,6 +13,7 @@
         <result property="updatedAt" column="updated_at"/>
         <result property="topic_sum" column="topic_sum"/>
         <result property="className" column="class"/>
+        <result property="teacherId" column="teacher_id"/>
     </resultMap>
 
     <!-- 查找所有实验 -->
@@ -38,15 +39,21 @@
     <select id="findExperimentsByClassKeyword" resultMap="experimentResultMap">
         SELECT *
         FROM experiment
-        WHERE REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(`class`, ''), ' ', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '') = #{classKeyword}
+        WHERE (
+            FIND_IN_SET(
+                #{classKeyword},
+                REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(`class`, ''), ' ', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '')
+            ) > 0
+            OR (teacher_id = #{teacherId} AND (`class` IS NULL OR TRIM(`class`) = ''))
+          )
           AND (teacher_id = #{teacherId} OR teacher_id IS NULL)
         ORDER BY num ASC, experiment_id ASC
     </select>
 
     <!-- 保存实验信息 -->
     <insert id="saveExperiment" parameterType="com.tap.backend.academic.entity.Experiment" useGeneratedKeys="true" keyProperty="experiment_id">
-        INSERT INTO experiment (num, name, deadline, `describe`, requirements, topic_sum, `class`, created_at)
-        VALUES (#{num}, #{name}, #{deadline}, #{describe}, #{requirements}, #{topic_sum}, #{className}, NOW())
+        INSERT INTO experiment (num, name, deadline, `describe`, requirements, topic_sum, teacher_id, `class`, created_at)
+        VALUES (#{num}, #{name}, #{deadline}, #{describe}, #{requirements}, #{topic_sum}, #{teacherId}, #{className}, NOW())
     </insert>
 
     <!-- 更新实验信息 -->

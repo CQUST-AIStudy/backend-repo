@@ -1,9 +1,11 @@
 package com.tap.backend.academic.controller;
 
 import com.tap.backend.academic.entity.UserEntity;
+import com.tap.backend.academic.security.LegacyAuthTokenService;
 import com.tap.backend.academic.security.LegacySessionAccessResolver;
 import com.tap.backend.academic.service.UserService;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
 import java.util.HashMap;
 import java.util.Locale;
@@ -27,6 +29,9 @@ public class LoginController {
 
     @Autowired
     private LegacySessionAccessResolver legacySessionAccessResolver;
+
+    @Autowired
+    private LegacyAuthTokenService legacyAuthTokenService;
 
     @Autowired
     private PasswordEncoder passwordEncoder;
@@ -57,7 +62,8 @@ public class LoginController {
     @PostMapping("/api/login")
     public ResponseEntity<Map<String, Object>> login(
             @RequestBody UserEntity loginUser,
-            HttpServletRequest request) {
+            HttpServletRequest request,
+            HttpServletResponse servletResponse) {
         Map<String, Object> response = new HashMap<>();
         try {
             UserEntity user = userService.findByUsername(loginUser.getUsername());
@@ -87,6 +93,7 @@ public class LoginController {
             session.setAttribute("username", user.getUsername());
             session.setAttribute("userId", user.getId());
             session.setAttribute("userRole", user.getRole());
+            legacyAuthTokenService.writeCookie(servletResponse, user);
 
             response.put("success", true);
             response.put("message", "login success");
@@ -157,12 +164,13 @@ public class LoginController {
     }
 
     @PostMapping({"/logout", "/api/logout"})
-    public ResponseEntity<Map<String, Object>> logout(HttpServletRequest request) {
+    public ResponseEntity<Map<String, Object>> logout(HttpServletRequest request, HttpServletResponse servletResponse) {
         Map<String, Object> response = new HashMap<>();
         HttpSession session = request.getSession(false);
         if (session != null) {
             session.invalidate();
         }
+        legacyAuthTokenService.clearCookie(servletResponse);
 
         response.put("success", true);
         response.put("message", "logout success");

@@ -19,6 +19,7 @@ public class Experiment {
     private List<String> requirementsList;
     private int topic_sum;
     private String className;
+    private String teacherId;
 
     public int getTopic_sum() {
         return topic_sum;
@@ -34,6 +35,14 @@ public class Experiment {
 
     public void setClassName(String className) {
         this.className = className;
+    }
+
+    public String getTeacherId() {
+        return teacherId;
+    }
+
+    public void setTeacherId(String teacherId) {
+        this.teacherId = teacherId;
     }
 
     public Experiment() {
@@ -56,6 +65,7 @@ public class Experiment {
                 ", describe='" + describe + '\'' +
                 ", deadline='" + deadline + '\'' +
                 ", className='" + className + '\'' +
+                ", teacherId='" + teacherId + '\'' +
                 ", requirements='" + requirements + '\'' +
                 ", status='" + status + '\'' +
                 ", score=" + score +

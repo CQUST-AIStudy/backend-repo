@@ -57,7 +57,7 @@ public class TeacherExperimentQueryServiceImpl implements TeacherExperimentQuery
         List<TeacherExperimentSummaryRow> summaries = teacherExperimentQueryDao
                 .findTeacherExperimentSummaries(teacherId, classId, normalizedClassKeyword);
         if (summaries == null || summaries.isEmpty()) {
-            return new TeacherExperimentListResult(Collections.emptyList(), 0);
+            return getLegacyTeacherExperimentList(teacherId, classId, normalizedClassKeyword);
         }
         List<TeacherExperiment> teacherExperiments = new ArrayList<>();
         int studentCount = 0;
