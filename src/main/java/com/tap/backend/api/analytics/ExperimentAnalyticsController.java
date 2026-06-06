@@ -462,6 +462,89 @@ public class ExperimentAnalyticsController {
                         "ORDER BY ap.sort_order, ap.id"
         ).setParameter(1, experimentId).getResultList();
 
+        if (rows.isEmpty()) {
+            return computeLegacyProblemAccuracy(experimentId);
+        }
+
+        List<Double> legacyFullScores = null;
+        boolean needsLegacyFallback = false;
+        for (Object[] row : rows) {
+            if (toDouble(row[2]) <= 0) {
+                needsLegacyFallback = true;
+                break;
+            }
+        }
+        if (needsLegacyFallback) {
+            legacyFullScores = queryLegacyProblemFullScores(experimentId);
+        }
+
+        List<Map<String, Object>> result = new ArrayList<>(rows.size());
+        for (int i = 0; i < rows.size(); i++) {
+            Object[] row = rows.get(i);
+            double fullScore = toDouble(row[2]);
+            if (fullScore <= 0 && legacyFullScores != null && i < legacyFullScores.size()) {
+                fullScore = legacyFullScores.get(i);
+            }
+            double avgScore = toDouble(row[3]);
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("label", row[0]);
+            item.put("type", row[1]);
+            item.put("fullScore", round2(fullScore));
+            item.put("avgScore", round2(avgScore));
+            item.put("accuracyRate", fullScore > 0 ? round2(avgScore / fullScore * 100) : 0);
+            item.put("studentCount", toInt(row[4]));
+            item.put("fullMarkCount", toInt(row[5]));
+            item.put("zeroCount", toInt(row[6]));
+            result.add(item);
+        }
+        return result;
+    }
+
+    private List<Double> queryLegacyProblemFullScores(int offeringId) {
+        Integer legacyExperimentId = resolveLegacyExperimentId(offeringId);
+        if (legacyExperimentId == null) {
+            return Collections.emptyList();
+        }
+        @SuppressWarnings("unchecked")
+        List<Number> rows = em.createNativeQuery(
+                "SELECT MAX(COALESCE(max_score, 0)) AS full_score " +
+                        "FROM problem_score_detail " +
+                        "WHERE experiment_id = ?1 " +
+                        "GROUP BY problem_label " +
+                        "ORDER BY CAST(problem_label AS UNSIGNED), problem_label"
+        ).setParameter(1, legacyExperimentId).getResultList();
+
+        List<Double> scores = new ArrayList<>(rows.size());
+        for (Number row : rows) {
+            scores.add(row == null ? 0.0 : row.doubleValue());
+        }
+        return scores;
+    }
+
+    private List<Map<String, Object>> computeLegacyProblemAccuracy(int offeringId) {
+        Integer legacyExperimentId = resolveLegacyExperimentId(offeringId);
+        if (legacyExperimentId == null) {
+            return Collections.emptyList();
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = em.createNativeQuery(
+                "SELECT " +
+                        "  problem_label, " +
+                        "  COALESCE(NULLIF(TRIM(problem_type), " + EMPTY_STR + "), 'PTA Problem') AS problem_type, " +
+                        "  MAX(COALESCE(max_score, 0)) AS full_score, " +
+                        "  AVG(COALESCE(actual_score, 0)) AS avg_score, " +
+                        "  COUNT(DISTINCT student_id) AS student_count, " +
+                        "  SUM(CASE " +
+                        "        WHEN COALESCE(max_score, 0) > 0 AND COALESCE(actual_score, 0) >= COALESCE(max_score, 0) " +
+                        "        THEN 1 ELSE 0 END) AS full_mark_count, " +
+                        "  SUM(CASE WHEN COALESCE(actual_score, 0) = 0 THEN 1 ELSE 0 END) AS zero_count " +
+                        "FROM problem_score_detail " +
+                        "WHERE experiment_id = ?1 " +
+                        "GROUP BY problem_label, problem_type " +
+                        "ORDER BY CAST(problem_label AS UNSIGNED), problem_label"
+        ).setParameter(1, legacyExperimentId).getResultList();
+
         List<Map<String, Object>> result = new ArrayList<>(rows.size());
         for (Object[] row : rows) {
             double fullScore = toDouble(row[2]);
@@ -489,9 +572,47 @@ public class ExperimentAnalyticsController {
         ).setParameter(1, experimentId).getResultList();
 
         if (rows.isEmpty() || rows.get(0) == null) {
+            return queryLegacyFullScore(experimentId);
+        }
+        double fullScore = rows.get(0).doubleValue();
+        return fullScore > 0 ? fullScore : queryLegacyFullScore(experimentId);
+    }
+
+    private double queryLegacyFullScore(int offeringId) {
+        Integer legacyExperimentId = resolveLegacyExperimentId(offeringId);
+        if (legacyExperimentId == null) {
+            return 0;
+        }
+        @SuppressWarnings("unchecked")
+        List<Number> rows = em.createNativeQuery(
+                "SELECT SUM(full_score) FROM (" +
+                        "  SELECT problem_label, MAX(COALESCE(max_score, 0)) AS full_score " +
+                        "  FROM problem_score_detail " +
+                        "  WHERE experiment_id = ?1 " +
+                        "  GROUP BY problem_label" +
+                        ") problem_scores"
+        ).setParameter(1, legacyExperimentId).getResultList();
+        if (rows.isEmpty() || rows.get(0) == null) {
             return 0;
         }
         return rows.get(0).doubleValue();
+    }
+
+    private Integer resolveLegacyExperimentId(int offeringId) {
+        @SuppressWarnings("unchecked")
+        List<Object> rows = em.createNativeQuery(
+                "SELECT CAST(SUBSTRING_INDEX(source_offering_key, ':', -1) AS SIGNED) " +
+                        "FROM assignment_offering " +
+                        "WHERE id = ?1 " +
+                        "  AND source_system = 'LEGACY_TAP' " +
+                        "  AND source_offering_key LIKE 'LEGACY_EXPERIMENT_OFFERING:%' " +
+                        "LIMIT 1"
+        ).setParameter(1, offeringId).getResultList();
+
+        if (rows.isEmpty() || rows.get(0) == null) {
+            return null;
+        }
+        return toInt(rows.get(0));
     }
 
     private static boolean hasText(String value) {
