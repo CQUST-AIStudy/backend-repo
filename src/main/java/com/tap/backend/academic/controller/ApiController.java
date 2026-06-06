@@ -223,6 +223,64 @@ public class ApiController {
         }
     }
 
+    /**
+     * Fallback: 从 artifact 表获取学生代码（student_profile → student_problem_state → artifact）
+     */
+    private String resolveStudentCodeFromArtifact(String studentNo, int experimentId) {
+        if (studentNo == null || studentNo.isBlank()) {
+            return "";
+        }
+        try {
+            @SuppressWarnings("unchecked")
+            List<Object[]> rows = em.createNativeQuery(
+                    "SELECT a.text_content " +
+                            "FROM student_profile sp " +
+                            "JOIN student_problem_state sps ON sps.student_id = sp.id " +
+                            "JOIN artifact a ON a.id = sps.latest_code_artifact_id " +
+                            "WHERE sp.student_no = ?1 AND sps.offering_id = ?2 AND a.text_content IS NOT NULL " +
+                            "ORDER BY sps.id"
+            ).setParameter(1, studentNo).setParameter(2, experimentId).getResultList();
+
+            if (rows.isEmpty()) {
+                return "";
+            }
+            StringBuilder sb = new StringBuilder();
+            for (Object[] row : rows) {
+                if (row[0] != null) {
+                    sb.append(row[0].toString()).append("\n\n");
+                }
+            }
+            return sb.toString().trim();
+        } catch (Exception e) {
+            System.out.println("artifact fallback 获取代码失败: " + e.getMessage());
+            return "";
+        }
+    }
+
+    /**
+     * Fallback 2: 直接用学号字符串查询 student_code 表（最可靠的旧表查询方式）
+     */
+    private String resolveStudentCodeByStudentNo(String studentNo, int experimentId) {
+        if (studentNo == null || studentNo.isBlank()) {
+            return "";
+        }
+        try {
+            @SuppressWarnings("unchecked")
+            List<Object[]> rows = em.createNativeQuery(
+                    "SELECT code FROM student_code WHERE student_id = ?1 AND experiment_id = ?2"
+            ).setParameter(1, studentNo).setParameter(2, experimentId).getResultList();
+
+            if (rows.isEmpty()) {
+                return "";
+            }
+            Object code = rows.get(0)[0];
+            return code != null ? code.toString() : "";
+        } catch (Exception e) {
+            System.out.println("student_code fallback 获取代码失败: " + e.getMessage());
+            return "";
+        }
+    }
+
     private Integer tryParseInteger(String value) {
         if (value == null || value.isBlank()) {
             return null;
@@ -352,7 +410,7 @@ public class ApiController {
         if (!submissionDetailLegacyAiRemarksFallbackEnabled || studentId == null) {
             return null;
         }
-        return aiRemarksService.getAIRemarkByStudentAndExperiment(studentId, experimentId);
+        return aiRemarksService.getAIRemarkByStudentAndExperiment(String.valueOf(studentId), experimentId);
     }
 
     @GetMapping("/api/experiment")
@@ -484,7 +542,7 @@ public class ApiController {
                 int experimentId = experiment.getExperiment_id();
 
                 // 获取学生的AIRemark
-                ResponseEntity<Map<String, Object>> aiRemarkResponse = studentController.getAIRemark(studentId, experimentId);
+                ResponseEntity<Map<String, Object>> aiRemarkResponse = studentController.getAIRemark(currentStudentId, experimentId);
                 Map<String, Object> aiRemarkData = aiRemarkResponse.getBody();
 
                 String aiComment = "暂时还没有生成AI点评哦，请耐心等待.......";
@@ -667,13 +725,7 @@ public class ApiController {
         Map<String, Object> response = new LinkedHashMap<>();
         try {
             UserEntity currentUser = studentSessionResolver.requireStudent(request);
-            String currentStudentId = studentSessionResolver.requireStudentId(request);
-            Long studentProfileId = parseLongOrNull(currentStudentId);
-            if (studentProfileId == null) {
-                response.put("success", false);
-                response.put("message", "student id missing");
-                return ResponseEntity.ok(response);
-            }
+            String studentNo = studentSessionResolver.requireStudentId(request);
 
             @SuppressWarnings("unchecked")
             List<Object[]> rows = em.createNativeQuery(
@@ -682,24 +734,18 @@ public class ApiController {
                             "ao.deadline_at, at.description_md, ao.status, " +
                             "sa.submission_status, sa.first_submit_at, sa.last_submit_at, " +
                             "sa.accepted_problem_count, sa.submitted_problem_count, sa.problem_count, " +
-                            "sa.best_total_score, sa.latest_total_score, sp.student_no, sp.real_name " +
-                            "FROM class_member cm " +
-                            "JOIN student_profile sp ON sp.id = cm.student_id " +
-                            "JOIN teaching_class tc ON tc.id = cm.class_id " +
-                            "JOIN assignment_offering ao ON ao.class_id = cm.class_id " +
+                            "sa.best_total_score, sa.latest_total_score, sp.student_no, sp.real_name, sp.id " +
+                            "FROM student_profile sp " +
+                            "JOIN class_student cs ON cs.student_num = sp.student_no COLLATE utf8mb4_unicode_ci " +
+                            "JOIN teaching_class tc ON tc.id = cs.class_id " +
+                            "JOIN assignment_offering ao ON ao.class_id = cs.class_id " +
                             "JOIN assignment_template at ON at.id = ao.template_id " +
-                            "LEFT JOIN student_assignment sa ON sa.offering_id = ao.id AND sa.student_id = cm.student_id " +
-                            "WHERE cm.student_id = ?1 " +
-                            "AND cm.member_status = 'ACTIVE' " +
+                            "LEFT JOIN student_assignment sa ON sa.offering_id = ao.id AND sa.student_id = sp.id " +
+                            "WHERE sp.student_no = ?1 " +
                             "AND (tc.status IS NULL OR tc.status = 'ACTIVE') " +
-                            "AND (?2 IS NULL OR ?2 = '' " +
-                            "OR tc.name = CONVERT(?2 USING utf8mb4) COLLATE utf8mb4_unicode_ci " +
-                            "OR tc.class_code = CONVERT(?2 USING utf8mb4) COLLATE utf8mb4_unicode_ci " +
-                            "OR tc.course_name = CONVERT(?2 USING utf8mb4) COLLATE utf8mb4_unicode_ci) " +
                             "AND ao.status <> 'ARCHIVED' " +
                             "ORDER BY tc.id, COALESCE(ao.seq_no, 999999), ao.id"
-            ).setParameter(1, studentProfileId)
-                    .setParameter(2, currentUser.getClassname())
+            ).setParameter(1, studentNo)
                     .getResultList();
 
             List<Map<String, Object>> experiments = new ArrayList<>();
@@ -717,7 +763,7 @@ public class ApiController {
                 experimentData.put("classId", toLong(row[2]));
                 experimentData.put("className", row[3]);
                 experimentData.put("classCode", row[4]);
-                experimentData.put("studentProfileId", studentProfileId);
+                experimentData.put("studentProfileId", toLong(row[19]));
                 experimentData.put("studentNo", row[17]);
                 experimentData.put("studentName", row[18]);
                 experimentData.put("name", row[5]);
@@ -736,6 +782,97 @@ public class ApiController {
                 experimentData.put("submittedProblemCount", submittedProblemCount);
                 experimentData.put("problemCount", toInt(row[14]));
                 experiments.add(experimentData);
+            }
+
+            // Batch-fetch latest code for each experiment from artifact table
+            if (!experiments.isEmpty()) {
+                List<Long> offeringIds = experiments.stream()
+                        .map(e -> (Long) e.get("offeringId"))
+                        .filter(Objects::nonNull)
+                        .distinct()
+                        .collect(Collectors.toList());
+
+                if (!offeringIds.isEmpty()) {
+                    StringBuilder codeSql = new StringBuilder(
+                            "SELECT sps.offering_id, a.text_content " +
+                                    "FROM student_problem_state sps " +
+                                    "JOIN student_profile sp ON sp.id = sps.student_id " +
+                                    "LEFT JOIN artifact a ON a.id = sps.latest_code_artifact_id " +
+                                    "WHERE sp.student_no = ?1 AND sps.offering_id IN ("
+                    );
+                    for (int i = 0; i < offeringIds.size(); i++) {
+                        if (i > 0) codeSql.append(",");
+                        codeSql.append("?").append(i + 2);
+                    }
+                    codeSql.append(") AND a.text_content IS NOT NULL ORDER BY sps.offering_id, sps.id");
+
+                    jakarta.persistence.Query codeQuery = em.createNativeQuery(codeSql.toString());
+                    codeQuery.setParameter(1, studentNo);
+                    for (int i = 0; i < offeringIds.size(); i++) {
+                        codeQuery.setParameter(i + 2, offeringIds.get(i));
+                    }
+
+                    @SuppressWarnings("unchecked")
+                    List<Object[]> codeRows = codeQuery.getResultList();
+
+                    // Group codes by offering_id
+                    Map<Long, StringBuilder> codeMap = new LinkedHashMap<>();
+                    for (Object[] cr : codeRows) {
+                        Long oid = toLong(cr[0]);
+                        String codeText = cr[1] != null ? cr[1].toString() : "";
+                        codeMap.computeIfAbsent(oid, k -> new StringBuilder())
+                                .append(codeText).append("\n\n");
+                    }
+
+                    // Merge codes into experiments
+                    for (Map<String, Object> exp : experiments) {
+                        Long oid = (Long) exp.get("offeringId");
+                        StringBuilder sb = codeMap.get(oid);
+                        if (sb != null && sb.length() > 0) {
+                            exp.put("code", sb.toString().trim());
+                        }
+                    }
+                }
+
+                // Legacy fallback: query student_code table for experiments still missing code
+                List<Long> stillEmpty = experiments.stream()
+                        .filter(e -> {
+                            Object code = e.get("code");
+                            return code == null || code.toString().isEmpty();
+                        })
+                        .map(e -> (Long) e.get("offeringId"))
+                        .filter(Objects::nonNull)
+                        .collect(Collectors.toList());
+
+                if (!stillEmpty.isEmpty()) {
+                    StringBuilder legacySql = new StringBuilder(
+                            "SELECT experiment_id, code FROM student_code WHERE student_id = ?1 AND experiment_id IN ("
+                    );
+                    for (int i = 0; i < stillEmpty.size(); i++) {
+                        if (i > 0) legacySql.append(",");
+                        legacySql.append("?").append(i + 2);
+                    }
+                    legacySql.append(")");
+
+                    jakarta.persistence.Query legacyQuery = em.createNativeQuery(legacySql.toString());
+                    legacyQuery.setParameter(1, studentNo);
+                    for (int i = 0; i < stillEmpty.size(); i++) {
+                        legacyQuery.setParameter(i + 2, stillEmpty.get(i));
+                    }
+
+                    @SuppressWarnings("unchecked")
+                    List<Object[]> legacyRows = legacyQuery.getResultList();
+                    for (Object[] lr : legacyRows) {
+                        Long expId = toLong(lr[0]);
+                        String code = lr[1] != null ? lr[1].toString() : "";
+                        for (Map<String, Object> exp : experiments) {
+                            if (expId.equals(exp.get("offeringId")) && code.length() > 0) {
+                                exp.put("code", code);
+                                break;
+                            }
+                        }
+                    }
+                }
             }
 
             response.put("success", true);
@@ -1406,7 +1543,7 @@ public class ApiController {
                 return ResponseEntity.ok(response);
             }
 
-            AIRemarks aiRemarks = aiRemarksService.getAIRemarkByStudentAndExperiment(studentId, experimentId);
+            AIRemarks aiRemarks = aiRemarksService.getAIRemarkByStudentAndExperiment(studentIdKey, experimentId);
 
 
 
@@ -1535,23 +1672,9 @@ public class ApiController {
                 return ResponseEntity.ok(response);
             }
 
-            // 获取studentId
-            StudentController studentController = applicationContext.getBean(StudentController.class);
-            ResponseEntity<Map<String, Object>> sidResp = ResponseEntity.ok(Map.of("success", true, "studentId", Integer.valueOf(currentUsername)));
-            Map<String, Object> sidData = sidResp.getBody();
-            Integer studentId = null;
-            if (sidData != null && Boolean.TRUE.equals(sidData.get("success"))) {
-                studentId = (Integer) sidData.get("studentId");
-            }
-            if (studentId == null) {
-                response.put("success", false);
-                response.put("message", "未找到学生信息");
-                return ResponseEntity.ok(response);
-            }
-
-            // 如果不是强制刷新，先查DB缓存
+            // 如果不是强制刷新，先查DB缓存（新旧学生通用，学号字符串做key）
             if (!force) {
-                AIRemarks cached = aiRemarksService.getAIRemarkByStudentAndExperiment(studentId, experimentId);
+                AIRemarks cached = aiRemarksService.getAIRemarkByStudentAndExperiment(currentUsername, experimentId);
                 if (cached != null && cached.getAiremark() != null && !cached.getAiremark().isBlank()) {
                     response.put("success", true);
                     response.put("aiComment", cached.getAiremark());
@@ -1560,23 +1683,43 @@ public class ApiController {
                 }
             }
 
-            // 获取学生代码
-            String code = resolveStudentCodeText(studentId, experimentId);
+            // 直接复用实验详情页已验证能拿到代码的 getExperimentById 路径
+            String code = null;
+            String expName = "实验" + experimentId;
+            String studentName = currentUsername;
+            try {
+                ResponseEntity<Map<String, Object>> expResp = getExperimentById(experimentId, request);
+                Map<String, Object> detailBody = expResp.getBody();
+                if (detailBody != null && Boolean.TRUE.equals(detailBody.get("success"))) {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> expData = (Map<String, Object>) detailBody.get("data");
+                    if (expData != null) {
+                        Object codeObj = expData.get("code");
+                        if (codeObj != null && !codeObj.toString().isBlank()) {
+                            code = codeObj.toString();
+                        }
+                        Object nameObj = expData.get("name");
+                        if (nameObj != null && !nameObj.toString().isBlank()) {
+                            expName = nameObj.toString();
+                        }
+                        Object stuNameObj = expData.get("studentName");
+                        if (stuNameObj != null && !stuNameObj.toString().isBlank()) {
+                            studentName = stuNameObj.toString();
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                System.out.println("[AI点评] getExperimentById 获取代码异常: " + e.getMessage());
+            }
             if (code == null || code.isBlank()) {
                 response.put("success", false);
                 response.put("message", "该实验暂无代码提交，无法生成AI点评");
                 return ResponseEntity.ok(response);
             }
 
-            // 获取实验名称
-            Experiment experiment = experimentService.findExperimentById(experimentId);
-            String expName = experiment != null ? experiment.getName() : "实验" + experimentId;
-
-            // 获取学生姓名
-            Student student = studentService.findByStudentId(studentId);
-            String studentName = student != null ? student.getName() : "同学";
-
             // 调用DeepSeek生成AI点评
+            System.out.println("[AI点评] deepseekApiKey已加载=" + (deepseekApiKey != null && !deepseekApiKey.isBlank()) 
+                + " (前缀=" + (deepseekApiKey != null && !deepseekApiKey.isBlank() ? deepseekApiKey.substring(0, 7) : "null") + ")");
             String aiComment = callDeepSeekForCodeReview(code, expName, studentName);
             if (aiComment == null || aiComment.isBlank()) {
                 response.put("success", false);
@@ -1584,8 +1727,8 @@ public class ApiController {
                 return ResponseEntity.ok(response);
             }
 
-            // 保存到DB
-            AIRemarks remarks = new AIRemarks(studentId, studentName, experimentId, expName, aiComment);
+            // 保存到DB（新旧学生通用，学号字符串做主键）
+            AIRemarks remarks = new AIRemarks(currentUsername, studentName, experimentId, expName, aiComment);
             aiRemarksService.saveOrUpdateAIRemark(remarks);
 
             response.put("success", true);
@@ -1667,7 +1810,8 @@ public class ApiController {
 
         try (Response httpResp = aiHttpClient.newCall(httpReq).execute()) {
             if (!httpResp.isSuccessful() || httpResp.body() == null) {
-                System.err.println("[ApiController] DeepSeek请求失败: " + httpResp.code());
+                String errorBody = httpResp.body() != null ? httpResp.body().string() : "(no body)";
+                System.err.println("[ApiController] DeepSeek请求失败 HTTP " + httpResp.code() + " body=" + errorBody);
                 return null;
             }
             String respStr = httpResp.body().string();

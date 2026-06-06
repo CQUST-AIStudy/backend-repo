@@ -27,7 +27,7 @@ public interface AIRemarksService {
      * @param experimentId 实验ID
      * @return AI备注对象
      */
-    AIRemarks getAIRemarkByStudentAndExperiment(Integer studentId, Integer experimentId);
+    AIRemarks getAIRemarkByStudentAndExperiment(String studentId, Integer experimentId);
     
     /**
      * 保存或更新AI备注
@@ -38,9 +38,9 @@ public interface AIRemarksService {
     
     /**
      * 删除AI备注
-     * @param studentId 学生ID
+     * @param studentId 学号
      * @param experimentId 实验ID
      * @return 是否成功
      */
-    boolean deleteAIRemark(Integer studentId, Integer experimentId);
+    boolean deleteAIRemark(String studentId, Integer experimentId);
 }

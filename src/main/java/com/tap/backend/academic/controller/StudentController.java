@@ -192,15 +192,15 @@ public class StudentController {
 
     @GetMapping("/ai_remarks")
     public ResponseEntity<Map<String, Object>> getAIRemark(
-            @RequestParam Integer studentId,
+            @RequestParam String studentId,
             @RequestParam int experimentId,
             HttpServletRequest request
     ) {
-        legacySessionAccessResolver.requireStudentReadAccess(String.valueOf(studentId), request);
+        legacySessionAccessResolver.requireStudentReadAccess(studentId, request);
         return getAIRemark(studentId, experimentId);
     }
 
-    public ResponseEntity<Map<String, Object>> getAIRemark(Integer studentId, int experimentId) {
+    public ResponseEntity<Map<String, Object>> getAIRemark(String studentId, int experimentId) {
         logger.info("query ai remark, studentId={}, experimentId={}", studentId, experimentId);
         Map<String, Object> response = new HashMap<>();
 
@@ -263,7 +263,7 @@ public class StudentController {
 
     @DeleteMapping("/ai_remarks")
     public ResponseEntity<Map<String, Object>> deleteAIRemark(
-            @RequestParam("studentId") Integer studentId,
+            @RequestParam("studentId") String studentId,
             @RequestParam("experimentId") Integer experimentId,
             HttpServletRequest request
     ) {
@@ -271,7 +271,7 @@ public class StudentController {
         return deleteAIRemark(studentId, experimentId);
     }
 
-    public ResponseEntity<Map<String, Object>> deleteAIRemark(Integer studentId, Integer experimentId) {
+    public ResponseEntity<Map<String, Object>> deleteAIRemark(String studentId, Integer experimentId) {
         logger.info("delete ai remark, studentId={}, experimentId={}", studentId, experimentId);
         Map<String, Object> response = new HashMap<>();
 
