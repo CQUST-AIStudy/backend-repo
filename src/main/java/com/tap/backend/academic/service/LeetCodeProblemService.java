@@ -42,4 +42,19 @@ public interface LeetCodeProblemService {
      * 删除题目
      */
     void deleteById(Long id);
+
+    /**
+     * 按关键词、难度搜索题目（含标签匹配）
+     * @param keyword 关键词（标题/题号/标签模糊匹配）
+     * @param difficulty 难度过滤（Easy/Medium/Hard，null=不限）
+     * @param offset 分页偏移
+     * @param limit 分页大小
+     * @return 匹配的题目列表
+     */
+    List<LeetCodeProblem> search(String keyword, String difficulty, int offset, int limit);
+
+    /**
+     * 统计搜索结果总数
+     */
+    int countBySearch(String keyword, String difficulty);
 }

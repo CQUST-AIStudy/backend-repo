@@ -66,4 +66,18 @@ public interface LeetCodeProblemDao {
      * 统计题目总数
      */
     int count();
+
+    /**
+     * 按关键词、难度搜索题目（含标签匹配）
+     */
+    List<LeetCodeProblem> search(@Param("keyword") String keyword,
+                                  @Param("difficulty") String difficulty,
+                                  @Param("limit") int limit,
+                                  @Param("offset") int offset);
+
+    /**
+     * 统计搜索结果总数
+     */
+    int countBySearch(@Param("keyword") String keyword,
+                      @Param("difficulty") String difficulty);
 }

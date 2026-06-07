@@ -1144,109 +1144,80 @@ public class ApiController {
     public ResponseEntity<Map<String, Object>> getAllRecommendedPracticesByStudent(
             @PathVariable int studentId,
             HttpServletRequest request) {
-        String authorizedStudentId = studentSessionResolver.requireAuthorizedStudentId(String.valueOf(studentId), request);
-        return getAllRecommendedPracticesByStudent(Integer.parseInt(authorizedStudentId));
+        String authorizedStudentNo = studentSessionResolver.requireAuthorizedStudentId(String.valueOf(studentId), request);
+        return getAllRecommendedPracticesByStudent(authorizedStudentNo);
     }
 
-    public ResponseEntity<Map<String, Object>> getAllRecommendedPracticesByStudent(int studentId) {
-        Map<String, Object> response = new HashMap<>();
+    /**
+     * 获取学生的推荐练习列表（基于PTA数据，筛选标题包含"推荐练习"的作业）
+     * @param studentNo 学号
+     * @return 响应实体，包含推荐练习列表
+     */
+    public ResponseEntity<Map<String, Object>> getAllRecommendedPracticesByStudent(String studentNo) {
+        Map<String, Object> response = new LinkedHashMap<>();
 
         try {
-            // 优先尝试使用新的智能LeetCode推荐系统
-            try {
-                String requestId = leetCodeRecommendationService.generateRecommendation(studentId, 20, "student_practice");
-                List<LeetCodeRecommendItem> leetCodeItems = leetCodeRecommendationService.getRecommendationItems(requestId);
-                if (leetCodeItems == null || leetCodeItems.isEmpty()) {
-                    int syncedCount = warmupLeetCodeDataIfNeeded();
-                    if (syncedCount > 0) {
-                        requestId = leetCodeRecommendationService.generateRecommendation(studentId, 20, "student_practice");
-                        leetCodeItems = leetCodeRecommendationService.getRecommendationItems(requestId);
-                    }
-                }
-                if (leetCodeItems != null && !leetCodeItems.isEmpty()) {
-                    List<Map<String, Object>> allPractices = new ArrayList<>();
-                    
-                    for (LeetCodeRecommendItem item : leetCodeItems) {
-                        Map<String, Object> practice = new HashMap<>();
-                        practice.put("type", "leetcode_problem");
-                        practice.put("id", item.getProblemId());
-                        practice.put("problemId", item.getProblemId()); // 添加problemId字段
-                        practice.put("title", item.getProblem().getTitleMain());
-                        practice.put("difficulty", item.getProblem().getDifficulty());
-                        practice.put("estimatedMinutes", item.getProblem().getEstimatedMinutes());
-                        practice.put("score", item.getScoreTotal());
-                        practice.put("reason", item.getReasonText());
-                        practice.put("problemCode", item.getProblem().getProblemCode());
-                        practice.put("rankNo", item.getRankNo());
-                        practice.put("requestId", requestId);
-                        practice.put("source", "leetcode_recommendation");
-                        // 不再需要URL字段，因为使用内置练习页面
-                        
-                        allPractices.add(practice);
-                    }
-                    
-                    response.put("success", true);
-                    response.put("data", allPractices);
-                    response.put("requestId", requestId);
-                    response.put("scene", "student_practice");
-                    response.put("source", "leetcode_recommendation");
-                    System.out.println("使用LeetCode推荐系统为学生ID: " + studentId + "获取推荐，数量: " + allPractices.size());
-                    return ResponseEntity.ok(response);
-                }
-            } catch (Exception e) {
-                System.out.println("LeetCode推荐系统暂不可用，回退到旧系统: " + e.getMessage());
+            @SuppressWarnings("unchecked")
+            List<Object[]> rows = em.createNativeQuery(
+                    "SELECT ao.id, ao.template_id, ao.class_id, tc.name, tc.class_code, " +
+                            "COALESCE(NULLIF(ao.title_override, ''), at.title) AS title, " +
+                            "ao.deadline_at, at.description_md, ao.status, " +
+                            "sa.submission_status, sa.first_submit_at, sa.last_submit_at, " +
+                            "sa.accepted_problem_count, sa.submitted_problem_count, sa.problem_count, " +
+                            "sa.best_total_score, sa.latest_total_score, sp.student_no, sp.real_name, sp.id " +
+                            "FROM student_profile sp " +
+                            "JOIN class_student cs ON cs.student_num = sp.student_no COLLATE utf8mb4_unicode_ci " +
+                            "JOIN teaching_class tc ON tc.id = cs.class_id " +
+                            "JOIN assignment_offering ao ON ao.class_id = cs.class_id " +
+                            "JOIN assignment_template at ON at.id = ao.template_id " +
+                            "LEFT JOIN student_assignment sa ON sa.offering_id = ao.id AND sa.student_id = sp.id " +
+                            "WHERE sp.student_no = ?1 " +
+                            "AND (tc.status IS NULL OR tc.status = 'ACTIVE') " +
+                            "AND ao.status <> 'ARCHIVED' " +
+                            "AND (at.title LIKE '%推荐练习%' OR ao.title_override LIKE '%推荐练习%') " +
+                            "ORDER BY tc.id, COALESCE(ao.seq_no, 999999), ao.id"
+            ).setParameter(1, studentNo)
+                    .getResultList();
+
+            List<Map<String, Object>> practices = new ArrayList<>();
+            for (Object[] row : rows) {
+                Long offeringId = toLong(row[0]);
+                String submissionStatus = toStringValue(row[9]);
+                int submittedProblemCount = toInt(row[13]);
+                Double score = firstNonNull(toDouble(row[16]), toDouble(row[15]), 0.0);
+
+                Map<String, Object> practice = new LinkedHashMap<>();
+                practice.put("type", "pta_practice");
+                practice.put("id", offeringId);
+                practice.put("offeringId", offeringId);
+                practice.put("templateId", toLong(row[1]));
+                practice.put("classId", toLong(row[2]));
+                practice.put("className", row[3]);
+                practice.put("classCode", row[4]);
+                practice.put("name", row[5]);
+                practice.put("deadline", formatDateTime(row[6]));
+                practice.put("description", toStringValue(row[7]));
+                practice.put("status", mapStudentAssignmentStatus(submissionStatus, submittedProblemCount, score));
+                practice.put("submitTime", formatDateTime(row[11] != null ? row[11] : row[10]));
+                practice.put("score", roundTwoDecimals(score));
+                practice.put("acceptedProblemCount", toInt(row[12]));
+                practice.put("submittedProblemCount", submittedProblemCount);
+                practice.put("problemCount", toInt(row[14]));
+                practice.put("source", "pta_practice");
+
+                practices.add(practice);
             }
 
-            // 回退到旧的推荐系统
-            List<AISuggestedProblem> suggestedProblems = aiSuggestedProblemService.findByStudentId(studentId);
-            List<Map<String, Object>> allPractices = new ArrayList<>();
-
-            System.out.println("获取推荐题目："+suggestedProblems);
-            if (suggestedProblems != null && !suggestedProblems.isEmpty()) {
-                for (AISuggestedProblem problem : suggestedProblems) {
-                    List<Map<String, Object>> practices = aiSuggestedProblemService.parseRecommendedPractices(problem.getContent());
-                    
-                    for (Map<String, Object> practice : practices) {
-                        // 添加实验ID信息
-                        practice.put("experimentId", problem.getExperimentId());
-                        practice.put("source", "legacy_recommendation");
-                        
-                        // 根据返回的类型进行处理
-                        if (practice.containsKey("type")) {
-                            String type = (String) practice.get("type");
-                            if ("problem".equals(type)) {
-                                // 这是一个题目，已经包含了number, title, description和url
-                                System.out.println("处理题目: " + practice.get("number") + ". " + practice.get("title"));
-                                System.out.println("URL: " + practice.get("url"));
-                            } else if ("introduction".equals(type)) {
-                                // 这是介绍部分
-                                System.out.println("处理介绍部分");
-                            } else if ("raw".equals(type)) {
-                                // 这是原始内容
-                                System.out.println("处理原始内容");
-                            }
-                        } else if (practice.containsKey("originalContent")) {
-                            // 旧版格式，保持兼容
-                            System.out.println("处理原始内容(兼容模式)");
-                        }
-                        
-                        allPractices.add(practice);
-                    }
-                }
-
-                response.put("success", true);
-                response.put("data", allPractices);
-                response.put("source", "legacy_recommendation");
-                System.out.println("获取到学生ID: " + studentId + "的所有推荐练习，数量: " + allPractices.size());
-            } else {
-                response.put("success", true);
-                response.put("data", new ArrayList<>());
-                response.put("source", "none");
-                System.out.println("未找到学生ID: " + studentId + "的推荐练习");
-            }
+            response.put("success", true);
+            response.put("data", practices);
+            response.put("source", "pta_practice");
+            response.put("studentNo", studentNo);
+            System.out.println("PTA推荐练习查询: 学号=" + studentNo + ", 数量=" + practices.size());
         } catch (Exception e) {
             e.printStackTrace();
             response.put("success", true);
+            response.put("data", new ArrayList<>());
+            response.put("source", "degraded_empty");
             response.put("message", "获取推荐练习失败: " + e.getMessage());
         }
 
@@ -1286,8 +1257,8 @@ public class ApiController {
         try {
             // 从Session中获取当前用户名
             if (request != null) {
-                String studentId = studentSessionResolver.requireStudentId(request);
-                return getAllRecommendedPracticesByStudent(Integer.parseInt(studentId));
+                String studentNo = studentSessionResolver.requireStudentId(request);
+                return getAllRecommendedPracticesByStudent(studentNo);
             }
             HttpSession session = request.getSession(false);
             String currentUsername;
@@ -1309,13 +1280,24 @@ public class ApiController {
             ResponseEntity<Map<String, Object>> studentIdResponse = studentController.findStudentIdByUsername(currentUsername);
             Map<String, Object> studentIdData = studentIdResponse.getBody();
 
-            Integer studentId = null;
+            Integer numericId = null;
             if (studentIdData != null && (Boolean) studentIdData.getOrDefault("success", false)) {
-                studentId = (Integer) studentIdData.get("studentId");
-                System.out.println("获取到学生ID: " + studentId);
+                numericId = (Integer) studentIdData.get("studentId");
+                System.out.println("获取到学生ID: " + numericId);
 
-                // 直接调用已有的获取学生推荐练习的方法
-                return getAllRecommendedPracticesByStudent(studentId);
+                // 通过数字ID查学号，再调用推荐练习方法
+                try {
+                    String sno = (String) em.createNativeQuery(
+                            "SELECT student_no FROM student_profile WHERE id = ?1"
+                    ).setParameter(1, numericId).getSingleResult();
+                    return getAllRecommendedPracticesByStudent(sno);
+                } catch (Exception ex) {
+                    System.out.println("查询学号失败，尝试用ID直接查询: " + ex.getMessage());
+                    response.put("success", true);
+                    response.put("data", new ArrayList<>());
+                    response.put("message", "无法定位学生学号");
+                    return ResponseEntity.ok(response);
+                }
             } else {
                 response.put("success", false);
                 response.put("message", "未找到学生信息");

@@ -51,4 +51,14 @@ public class LeetCodeProblemServiceImpl implements LeetCodeProblemService {
     public void deleteById(Long id) {
         problemDao.deleteById(id);
     }
+
+    @Override
+    public List<LeetCodeProblem> search(String keyword, String difficulty, int offset, int limit) {
+        return problemDao.search(keyword, difficulty, limit, offset);
+    }
+
+    @Override
+    public int countBySearch(String keyword, String difficulty) {
+        return problemDao.countBySearch(keyword, difficulty);
+    }
 }

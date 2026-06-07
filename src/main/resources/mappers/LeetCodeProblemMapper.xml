@@ -121,4 +121,40 @@
         DELETE FROM leetcode_problem_bank WHERE id = #{id}
     </delete>
 
+    <!-- 按关键词、难度搜索题目（含标签匹配） -->
+    <select id="search" resultMap="LeetCodeProblemResultMap">
+        SELECT DISTINCT pb.*
+        FROM leetcode_problem_bank pb
+        LEFT JOIN leetcode_problem_tag pt ON pt.problem_id = pb.id
+        <where>
+            <if test="keyword != null and keyword.trim() != ''">
+                AND (pb.title_main LIKE CONCAT('%', #{keyword}, '%')
+                     OR pb.problem_code LIKE CONCAT('%', #{keyword}, '%')
+                     OR pt.tag_value LIKE CONCAT('%', #{keyword}, '%'))
+            </if>
+            <if test="difficulty != null and difficulty.trim() != ''">
+                AND pb.difficulty = #{difficulty}
+            </if>
+        </where>
+        ORDER BY pb.numeric_id ASC, pb.id ASC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <!-- 统计搜索结果总数 -->
+    <select id="countBySearch" resultType="int">
+        SELECT COUNT(DISTINCT pb.id)
+        FROM leetcode_problem_bank pb
+        LEFT JOIN leetcode_problem_tag pt ON pt.problem_id = pb.id
+        <where>
+            <if test="keyword != null and keyword.trim() != ''">
+                AND (pb.title_main LIKE CONCAT('%', #{keyword}, '%')
+                     OR pb.problem_code LIKE CONCAT('%', #{keyword}, '%')
+                     OR pt.tag_value LIKE CONCAT('%', #{keyword}, '%'))
+            </if>
+            <if test="difficulty != null and difficulty.trim() != ''">
+                AND pb.difficulty = #{difficulty}
+            </if>
+        </where>
+    </select>
+
 </mapper>
