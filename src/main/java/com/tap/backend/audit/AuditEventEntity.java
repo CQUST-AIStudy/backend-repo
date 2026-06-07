@@ -129,4 +129,12 @@ public class AuditEventEntity {
   public void setTraceId(String traceId) {
     this.traceId = traceId;
   }
+
+  public Instant getCreatedAt() {
+    return createdAt;
+  }
+
+  public void setCreatedAt(Instant createdAt) {
+    this.createdAt = createdAt;
+  }
 }

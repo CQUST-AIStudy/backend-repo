@@ -30,7 +30,7 @@
     <select id="findExperimentByNum" parameterType="int" resultMap="experimentResultMap">
         SELECT * FROM experiment WHERE num = #{num}
     </select>
-    
+
     <!-- 根据老师ID查找实验列表 -->
     <select id="findExperimentsByTeacherId" parameterType="string" resultMap="experimentResultMap">
         SELECT * FROM experiment WHERE teacher_id = #{teacherId} ORDER BY num ASC
@@ -75,4 +75,3 @@
         DELETE FROM experiment WHERE experiment_id = #{id}
     </delete>
 </mapper>
-

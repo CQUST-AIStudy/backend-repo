@@ -56,18 +56,66 @@ public class ExperimentController {
             @RequestParam(value = "classId", required = false) Long classId,
             @RequestParam(value = "class", required = false) String classKeyword,
             @RequestParam(value = "classKeyword", required = false) String classKeywordAlias,
+            @RequestParam(value = "keyword", required = false) String searchKeyword,
             HttpServletRequest request
     ) {
         try {
-            Teacher teacher = requireCurrentTeacher(request);
+            Teacher teacher = resolveCurrentTeacherOrNull(request);
+            // 管理员没有Teacher记录时，返回全部实验（支持关键词搜索）
+            if (teacher == null) {
+                List<Experiment> experiments = (searchKeyword != null && !searchKeyword.isBlank())
+                        ? experimentService.searchExperiments(searchKeyword)
+                        : experimentService.findAllExperiments();
+                List<Map<String, Object>> mapped = new ArrayList<>();
+                for (Experiment e : experiments) {
+                    Map<String, Object> item = new HashMap<>();
+                    item.put("id", e.getExperiment_id());
+                    item.put("name", e.getName());
+                    item.put("title", e.getName());
+                    item.put("deadline", e.getDeadline());
+                    item.put("description", e.getDescribe());
+                    item.put("className", e.getClassName());
+                    item.put("teacherId", e.getTeacherId());
+                    item.put("submissionCount", 0);
+                    item.put("submitCount", 0);
+                    item.put("status", "active");
+                    item.put("averageScore", null);
+                    mapped.add(item);
+                }
+                Map<String, Object> response = new HashMap<>();
+                response.put("status", "success");
+                response.put("data", mapped);
+                response.put("total", mapped.size());
+                response.put("studentCount", 0);
+                response.put("classId", classId);
+                response.put("class", normalizeKeyword(classKeyword, classKeywordAlias));
+                return ResponseEntity.ok(response);
+            }
+
             String keyword = resolveClassKeywordForQuery(teacher, classId, normalizeKeyword(classKeyword, classKeywordAlias));
             TeacherExperimentListResult result = teacherExperimentQueryService
                     .getTeacherExperimentList(teacher.getTeacher_id(), classId, keyword);
 
+            // 关键词过滤（教师流）
+            java.util.List<Object> teacherExps = new ArrayList<>(result.getExperiments());
+            if (searchKeyword != null && !searchKeyword.isBlank()) {
+                String kw = searchKeyword.trim().toLowerCase();
+                teacherExps.removeIf(exp -> {
+                    String name = null;
+                    if (exp instanceof com.tap.backend.academic.entity.teacher.TeacherExperiment te) {
+                        name = te.getName();
+                    } else if (exp instanceof Map) {
+                        Object n = ((Map<?,?>) exp).get("name");
+                        name = n != null ? n.toString() : null;
+                    }
+                    return name == null || !name.toLowerCase().contains(kw);
+                });
+            }
+
             Map<String, Object> response = new HashMap<>();
             response.put("status", "success");
-            response.put("data", result.getExperiments());
-            response.put("total", result.getExperiments().size());
+            response.put("data", teacherExps);
+            response.put("total", teacherExps.size());
             response.put("studentCount", result.getStudentCount());
             response.put("classId", classId);
             response.put("class", keyword);
@@ -85,7 +133,7 @@ public class ExperimentController {
     ) {
         Map<String, Object> response = new HashMap<>();
         try {
-            Teacher teacher = requireCurrentTeacher(servletRequest);
+            Teacher teacher = resolveCurrentTeacherOrNull(servletRequest);
             String name = getTrimmedString(request, "name");
             if (name == null) {
                 response.put("success", false);
@@ -98,8 +146,18 @@ public class ExperimentController {
             experiment.setDeadline(getTrimmedString(request, "deadline"));
             experiment.setDescribe(getTrimmedString(request, "description"));
             experiment.setRequirements(joinRequirements(request == null ? null : request.get("requirements")));
-            experiment.setClassName(resolveExperimentClassKeyword(teacher, request));
-            experiment.setTeacherId(String.valueOf(teacher.getTeacher_id()));
+            if (teacher != null) {
+                experiment.setClassName(resolveExperimentClassKeyword(teacher, request));
+                experiment.setTeacherId(String.valueOf(teacher.getTeacher_id()));
+            } else {
+                // 管理员创建时，classId 是前端传来的
+                String className = getTrimmedString(request, "class");
+                if (className == null) className = getTrimmedString(request, "className");
+                experiment.setClassName(className);
+                // teacherId 使用请求中的或默认为 "admin"
+                String teacherId = getTrimmedString(request, "teacherId");
+                experiment.setTeacherId(teacherId != null ? teacherId : "admin");
+            }
             experiment.setTopic_sum(0);
             experiment.setNum(nextExperimentNum());
 
@@ -112,7 +170,9 @@ public class ExperimentController {
             response.put("success", true);
             response.put("id", experiment.getExperiment_id());
             response.put("data", experiment);
-            response.put("teacherInfo", teacher);
+            if (teacher != null) {
+                response.put("teacherInfo", teacher);
+            }
             response.put("message", "experiment created successfully");
             return ResponseEntity.ok(response);
         } catch (Exception e) {
@@ -193,6 +253,17 @@ public class ExperimentController {
 
     private Teacher requireCurrentTeacher(HttpServletRequest request) {
         return teacherSessionResolver.requireCurrentTeacher(request);
+    }
+
+    /**
+     * 尝试获取当前教师，管理员无Teacher记录时返回 null 而非抛异常
+     */
+    private Teacher resolveCurrentTeacherOrNull(HttpServletRequest request) {
+        try {
+            return teacherSessionResolver.requireCurrentTeacher(request);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private int getStudentCount(Integer teacherId) {

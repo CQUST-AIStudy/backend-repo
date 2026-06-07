@@ -148,4 +148,44 @@ public class ExperimentServiceImpl implements ExperimentService {
 
         return result;
     }
+
+    @Override
+    public Experiment updateExperimentFromMap(int id, Map<String, Object> body) {
+        Experiment experiment = experimentDao.findExperimentById(id);
+        if (experiment == null) return null;
+
+        applyIfPresent(body, "name", experiment::setName);
+        applyIfPresent(body, "title", experiment::setName);
+        applyIfPresent(body, "deadline", experiment::setDeadline);
+        applyIfPresent(body, "description", experiment::setDescribe);
+        applyIfPresent(body, "className", experiment::setClassName);
+
+        experimentDao.updateExperiment(experiment);
+        return experiment;
+    }
+
+    @Override
+    public List<Experiment> searchExperiments(String keyword) {
+        if (keyword == null || keyword.isBlank()) {
+            return experimentDao.findAllExperiments();
+        }
+        List<Experiment> all = experimentDao.findAllExperiments();
+        String kw = keyword.trim().toLowerCase();
+        List<Experiment> result = new ArrayList<>();
+        for (Experiment e : all) {
+            if ((e.getName() != null && e.getName().toLowerCase().contains(kw))
+                    || (e.getDescribe() != null && e.getDescribe().toLowerCase().contains(kw))
+                    || (e.getClassName() != null && e.getClassName().toLowerCase().contains(kw))) {
+                result.add(e);
+            }
+        }
+        return result;
+    }
+
+    private void applyIfPresent(Map<String, Object> body, String key, java.util.function.Consumer<String> setter) {
+        Object value = body.get(key);
+        if (value == null) return;
+        String str = String.valueOf(value).trim();
+        if (!str.isEmpty()) setter.accept(str);
+    }
 }
