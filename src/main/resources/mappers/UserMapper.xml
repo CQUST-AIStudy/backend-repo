@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="com.tap.backend.academic.dao.UserDao">
-    <!-- 查询结果映射 -->
+    <!-- 查询结果映射: tap_user.password_hash → Java property password; role → LOWER for legacy compatibility -->
     <resultMap id="userResultMap" type="com.tap.backend.academic.entity.UserEntity">
         <id property="id" column="id"/>
         <result property="username" column="username"/>
@@ -14,34 +14,38 @@
 
     <!-- 根据用户名查找用户 -->
     <select id="findByUsername" parameterType="string" resultMap="userResultMap">
-        SELECT * FROM user WHERE username = #{username}
+        SELECT id, username, password_hash AS password, email, LOWER(role) AS role, usernum, classname
+        FROM tap_user WHERE username = #{username}
     </select>
 
     <!-- 根据ID查找用户 -->
     <select id="findById" parameterType="int" resultMap="userResultMap">
-        SELECT * FROM user WHERE id = #{id}
+        SELECT id, username, password_hash AS password, email, LOWER(role) AS role, usernum, classname
+        FROM tap_user WHERE id = #{id}
     </select>
 
     <!-- 保存用户信息 -->
     <insert id="saveUser" parameterType="com.tap.backend.academic.entity.UserEntity" useGeneratedKeys="true" keyProperty="id">
-        INSERT INTO user (username, password, email, role, usernum, classname)
-        VALUES (#{username}, #{password}, #{email}, #{role}, #{usernum}, #{classname})
+        INSERT INTO tap_user (username, password_hash, email, role, usernum, classname, display_name, enabled, created_at, updated_at)
+        VALUES (#{username}, #{password}, #{email}, UPPER(#{role}), #{usernum}, #{classname},
+                #{username}, TRUE, NOW(), NOW())
     </insert>
 
     <!-- 更新用户信息 -->
     <update id="updateUser" parameterType="com.tap.backend.academic.entity.UserEntity">
-        UPDATE user
+        UPDATE tap_user
         SET username = #{username},
-            password = #{password},
+            password_hash = #{password},
             email = #{email},
-            role = #{role},
+            role = UPPER(#{role}),
             usernum = #{usernum},
-            classname = #{classname}
+            classname = #{classname},
+            updated_at = NOW()
         WHERE id = #{id}
     </update>
 
     <!-- 删除用户 -->
     <delete id="deleteUser" parameterType="int">
-        DELETE FROM user WHERE id = #{id}
+        DELETE FROM tap_user WHERE id = #{id}
     </delete>
 </mapper>

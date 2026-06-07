@@ -119,7 +119,7 @@ public class StudentPrincipalResolver {
     try {
       @SuppressWarnings("unchecked")
       List<String> usernums = em.createNativeQuery(
-              "SELECT usernum FROM `user` WHERE username = ?1 AND usernum IS NOT NULL AND TRIM(usernum) <> '' LIMIT 1",
+              "SELECT usernum FROM tap_user WHERE username = ?1 AND usernum IS NOT NULL AND TRIM(usernum) <> '' LIMIT 1",
               String.class
           ).setParameter(1, normalizedUsername)
           .getResultList();

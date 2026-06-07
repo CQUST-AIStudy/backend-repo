@@ -9,18 +9,30 @@
         <result property="classroom" column="classroom"/>
     </resultMap>
     
-    <!-- 根据用户名查询老师信息 -->
+    <!-- 根据用户名查询老师信息（查 tap_user 表） -->
     <select id="findByUsername" parameterType="string" resultMap="teacherResultMap">
-        SELECT * FROM teacher WHERE username = #{username}
+        SELECT 
+            id AS teacher_id,
+            username,
+            display_name AS teacher_name,
+            classname AS classroom
+        FROM tap_user 
+        WHERE username = #{username} AND role = 'TEACHER'
     </select>
     
-    <!-- 根据用户名获取老师ID -->
+    <!-- 根据用户名获取老师ID（查 tap_user 表） -->
     <select id="findTeacherIdByUsername" parameterType="string" resultType="int">
-        SELECT teacher_id FROM teacher WHERE username = #{username}
+        SELECT id FROM tap_user WHERE username = #{username} AND role = 'TEACHER'
     </select>
     
-    <!-- 根据老师ID查询老师信息 -->
+    <!-- 根据老师ID查询老师信息（查 tap_user 表） -->
     <select id="findByTeacherId" parameterType="int" resultMap="teacherResultMap">
-        SELECT * FROM teacher WHERE teacher_id = #{teacherId}
+        SELECT 
+            id AS teacher_id,
+            username,
+            display_name AS teacher_name,
+            classname AS classroom
+        FROM tap_user 
+        WHERE id = #{teacherId} AND role = 'TEACHER'
     </select>
 </mapper>

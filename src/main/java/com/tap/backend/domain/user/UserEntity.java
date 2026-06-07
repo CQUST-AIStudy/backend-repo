@@ -38,6 +38,15 @@ public class UserEntity {
   @Column(name = "pta_password_ciphertext", length = 1024)
   private String ptaPasswordCiphertext;
 
+  @Column(name = "email", length = 128)
+  private String email;
+
+  @Column(name = "usernum", length = 64)
+  private String usernum;
+
+  @Column(name = "classname", length = 128)
+  private String classname;
+
   @Column(name = "enabled", nullable = false)
   private Boolean enabled = true;
 
@@ -129,5 +138,29 @@ public class UserEntity {
 
   public void setEnabled(Boolean enabled) {
     this.enabled = enabled;
+  }
+
+  public String getEmail() {
+    return email;
+  }
+
+  public void setEmail(String email) {
+    this.email = email;
+  }
+
+  public String getUsernum() {
+    return usernum;
+  }
+
+  public void setUsernum(String usernum) {
+    this.usernum = usernum;
+  }
+
+  public String getClassname() {
+    return classname;
+  }
+
+  public void setClassname(String classname) {
+    this.classname = classname;
   }
 }

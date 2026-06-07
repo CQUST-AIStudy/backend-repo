@@ -20,11 +20,11 @@
         <result property="code" column="code"/>
     </resultMap>
     
-    <!-- 根据User表的username查找对应的Student ID -->
+    <!-- 根据tap_user表的username查找对应的Student ID -->
     <select id="findStudentIdByUsername" parameterType="string" resultType="int">
-        SELECT s.student_id 
+        SELECT s.student_id
         FROM student s
-        INNER JOIN user u ON s.username = u.username
+        INNER JOIN tap_user u ON s.username = u.username
         WHERE u.username = #{username}
     </select>
     
@@ -59,11 +59,11 @@
     
     <!-- 根据老师用户名获取对应班级的学生人数 -->
     <select id="getStudentCountByTeacher" parameterType="string" resultType="int">
-        SELECT COUNT(DISTINCT s.student_id) 
-        FROM user u
-        JOIN user t ON u.classname = t.classname AND t.role = 'teacher' 
+        SELECT COUNT(DISTINCT s.student_id)
+        FROM tap_user u
+        JOIN tap_user t ON u.classname = t.classname AND t.role = 'TEACHER'
         JOIN student s ON s.username = u.username
-        WHERE t.username = #{teacherUsername} AND u.role = 'student'
+        WHERE t.username = #{teacherUsername} AND u.role = 'STUDENT'
     </select>
 
     <!-- 根据班级名称查询学生数量 -->
@@ -71,12 +71,10 @@
         SELECT COUNT(*) FROM student WHERE class_name = #{className}
     </select>
     
-    <!-- 根据老师ID查询该老师所教班级的学生数量 -->
+    <!-- 根据老师ID查询该老师所教班级的学生数量（查 tap_user 表） -->
     <select id="getStudentCountByTeacherId" resultType="java.lang.Integer">
         SELECT COUNT(DISTINCT cm.student_id)
-        FROM teacher lt
-        JOIN tap_user teacher_user
-          ON teacher_user.username COLLATE utf8mb4_unicode_ci = lt.username COLLATE utf8mb4_unicode_ci
+        FROM tap_user teacher_user
         JOIN teaching_class tc
           ON tc.teacher_id = teacher_user.id
         JOIN class_member cm
@@ -85,19 +83,17 @@
         JOIN student_profile sp
           ON sp.id = cm.student_id
          AND sp.status &lt;&gt; 'DELETED'
-        WHERE lt.teacher_id = #{teacherId}
+        WHERE teacher_user.id = #{teacherId}
     </select>
 
-    <!-- 根据老师ID获取该老师班级所有学生的ID -->
+    <!-- 根据老师ID获取该老师班级所有学生的ID（查 tap_user 表） -->
     <select id="getStudentIdsByTeacherId" resultType="java.lang.Long">
         SELECT DISTINCT
           CASE
             WHEN sp.student_no REGEXP '^[1-9][0-9]*$' THEN CAST(sp.student_no AS SIGNED)
             ELSE CAST(sp.id AS SIGNED)
           END AS student_id
-        FROM teacher lt
-        JOIN tap_user teacher_user
-          ON teacher_user.username COLLATE utf8mb4_unicode_ci = lt.username COLLATE utf8mb4_unicode_ci
+        FROM tap_user teacher_user
         JOIN teaching_class tc
           ON tc.teacher_id = teacher_user.id
         JOIN class_member cm
@@ -106,10 +102,10 @@
         JOIN student_profile sp
           ON sp.id = cm.student_id
          AND sp.status &lt;&gt; 'DELETED'
-        WHERE lt.teacher_id = #{teacherId}
+        WHERE teacher_user.id = #{teacherId}
         ORDER BY student_id
     </select>
-    <!-- 根据老师ID获取该老师班级所有学生信息 -->
+    <!-- 根据老师ID获取该老师班级所有学生信息（查 tap_user 表） -->
     <select id="getStudentsByTeacherId" resultMap="studentResultMap">
         SELECT
           CASE
@@ -121,9 +117,7 @@
           sp.real_name AS name,
           MIN(tc.name) AS class_name,
           MIN(sp.created_at) AS created_at
-        FROM teacher lt
-        JOIN tap_user teacher_user
-          ON teacher_user.username COLLATE utf8mb4_unicode_ci = lt.username COLLATE utf8mb4_unicode_ci
+        FROM tap_user teacher_user
         JOIN teaching_class tc
           ON tc.teacher_id = teacher_user.id
         JOIN class_member cm
@@ -134,7 +128,7 @@
          AND sp.status &lt;&gt; 'DELETED'
         LEFT JOIN tap_user tu
           ON tu.id = sp.user_id
-        WHERE lt.teacher_id = #{teacherId}
+        WHERE teacher_user.id = #{teacherId}
         GROUP BY sp.id, sp.student_no, tu.username, sp.real_name
         ORDER BY student_id
     </select>

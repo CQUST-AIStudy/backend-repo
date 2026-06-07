@@ -288,7 +288,9 @@ public class LoginController {
         Map<String, Object> userInfo = new HashMap<>();
         userInfo.put("id", user.getId());
         userInfo.put("username", user.getUsername());
-        userInfo.put("role", user.getRole());
+        // Normalize role to lowercase for frontend compatibility (tap_user stores UPPERCASE)
+        String role = user.getRole();
+        userInfo.put("role", role != null ? role.toLowerCase(Locale.ROOT) : null);
         userInfo.put("email", user.getEmail());
         userInfo.put("usernum", user.getUsernum());
         userInfo.put("class", user.getClassname());
