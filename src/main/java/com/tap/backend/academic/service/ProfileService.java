@@ -751,7 +751,12 @@ public class ProfileService {
 
     // ========== 当前用户个人信息（通用：admin / teacher / student） ==========
 
-    public Map<String, Object> getCurrentUserProfile(UserEntity user) {
+    public Map<String, Object> getCurrentUserProfile(UserEntity sessionUser) {
+        // 从数据库重新加载，避免 session 里是旧数据
+        UserEntity user = userDao.findByUsername(sessionUser.getUsername());
+        if (user == null) {
+            user = sessionUser;
+        }
         String role = normalizeRole(user.getRole());
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("id", user.getId());
@@ -772,8 +777,9 @@ public class ProfileService {
     }
 
     public Map<String, Object> updateCurrentUserProfile(UserEntity sessionUser, Map<String, String> data) {
-        // 从数据库重新加载完整用户记录，避免 cookie 解析的 UserEntity 缺失 password/email 等字段
-        UserEntity user = userDao.findById(sessionUser.getId());
+        // 用 username 重新加载完整用户记录。
+        // 注意：不能用 sessionUser.getId() 查 tap_user，因为 user 表和 tap_user 表的 ID 不一致。
+        UserEntity user = userDao.findByUsername(sessionUser.getUsername());
         if (user == null) {
             throw new RuntimeException("user not found");
         }
