@@ -155,7 +155,7 @@ public class LegacySessionAccessResolver {
         try {
             @SuppressWarnings("unchecked")
             List<Object[]> rows = em.createNativeQuery(
-                    "SELECT id, username, password_hash, email, role, usernum, classname FROM tap_user WHERE username = ?1 LIMIT 1"
+                    "SELECT id, username, password_hash, email, role, usernum, classname, phone, department FROM tap_user WHERE username = ?1 LIMIT 1"
                 )
                 .setParameter(1, normalizedUsername)
                 .getResultList();
@@ -173,6 +173,8 @@ public class LegacySessionAccessResolver {
             user.setRole(role != null ? role.toLowerCase() : null);
             user.setUsernum(toString(row[5]));
             user.setClassname(toString(row[6]));
+            user.setPhone(toString(row[7]));
+            user.setDepartment(toString(row[8]));
             return user;
         } catch (RuntimeException ignored) {
             return null;

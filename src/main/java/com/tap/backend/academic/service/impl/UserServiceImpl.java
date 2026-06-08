@@ -41,7 +41,7 @@ public class UserServiceImpl implements UserService {
         if (tapUser != null) {
             return tapUser; // 教师/管理员从 tap_user 登录
         }
-        
+
         // 2. 查 user 表（仅学生）
         UserEntity legacyUser = userDao.findByUsernameFromLegacyUser(username);
         if (legacyUser != null) {
@@ -55,7 +55,13 @@ public class UserServiceImpl implements UserService {
             // 如果 tap_user 中没有对应记录，返回 legacyUser（降级处理）
             return legacyUser;
         }
-        
+
+        // 3. 兜底：查 user 表不限角色（管理员/教师在 tap_user 中不存在时走这里）
+        UserEntity legacyAnyRole = userDao.findByUsernameFromLegacyUserAnyRole(username);
+        if (legacyAnyRole != null) {
+            return legacyAnyRole;
+        }
+
         return null; // 用户不存在
     }
 

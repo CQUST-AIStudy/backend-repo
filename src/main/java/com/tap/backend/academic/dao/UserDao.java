@@ -52,4 +52,6 @@ public interface UserDao {
      * @return tap_user 记录
      */
     UserEntity findTapUserByUsernum(String usernum);
+
+    UserEntity findByUsernameFromLegacyUserAnyRole(String username);
 }
