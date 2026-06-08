@@ -475,7 +475,7 @@ public class ApiController {
     @GetMapping("/api/experiments")
     public ResponseEntity<Map<String, Object>> getExperimentList(HttpServletRequest request) {
         if (useUnifiedStudentExperimentReadPath()) {
-            return getUnifiedStudentExperimentList(request);
+            return getUnifiedStudentExperimentList(request, true);
         }
 
         Map<String, Object> response = new HashMap<>();
@@ -687,7 +687,8 @@ public class ApiController {
     // 新方法，根据experiment_id查找数据
     @GetMapping("/api/experiments/{experimentId}")
     public ResponseEntity<Map<String, Object>> getExperimentById(@PathVariable int experimentId, HttpServletRequest request) {
-        ResponseEntity<Map<String, Object>> allExperimentsResponse = getExperimentList(request);
+        // 不从列表里过滤，直接用 excludeRecommended=false 查询，确保推荐题目集也能找到
+        ResponseEntity<Map<String, Object>> allExperimentsResponse = getUnifiedStudentExperimentList(request, false);
         Map<String, Object> allExperimentsData = allExperimentsResponse.getBody();
 
         if (allExperimentsData != null && allExperimentsData.containsKey("data")) {
@@ -721,11 +722,16 @@ public class ApiController {
         return true;
     }
 
-    private ResponseEntity<Map<String, Object>> getUnifiedStudentExperimentList(HttpServletRequest request) {
+    private ResponseEntity<Map<String, Object>> getUnifiedStudentExperimentList(HttpServletRequest request, boolean excludeRecommended) {
         Map<String, Object> response = new LinkedHashMap<>();
         try {
             UserEntity currentUser = studentSessionResolver.requireStudent(request);
             String studentNo = studentSessionResolver.requireStudentId(request);
+
+            String excludeClause = excludeRecommended
+                    ? "AND at.title NOT LIKE '%推荐题目集%' " +
+                      "AND COALESCE(NULLIF(ao.title_override, ''), at.title) NOT LIKE '%推荐题目集%' "
+                    : "";
 
             @SuppressWarnings("unchecked")
             List<Object[]> rows = em.createNativeQuery(
@@ -744,6 +750,7 @@ public class ApiController {
                             "WHERE sp.student_no = ?1 " +
                             "AND (tc.status IS NULL OR tc.status = 'ACTIVE') " +
                             "AND ao.status <> 'ARCHIVED' " +
+                            excludeClause +
                             "ORDER BY tc.id, COALESCE(ao.seq_no, 999999), ao.id"
             ).setParameter(1, studentNo)
                     .getResultList();
@@ -1221,6 +1228,94 @@ public class ApiController {
             response.put("message", "获取推荐练习失败: " + e.getMessage());
         }
 
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * 获取当前登录学生的 PTA 推荐题目集（标题含"推荐题目集"）
+     */
+    @GetMapping("/api/student/current/pta-practice-sets")
+    public ResponseEntity<Map<String, Object>> getCurrentStudentPtaPracticeSets(HttpServletRequest request) {
+        String studentNo = studentSessionResolver.requireStudentId(request);
+        return getPtaPracticeSetsByStudentNo(studentNo);
+    }
+
+    /**
+     * 获取指定学生的 PTA 推荐题目集（标题含"推荐题目集"）
+     */
+    @GetMapping("/api/student/{studentId}/pta-practice-sets")
+    public ResponseEntity<Map<String, Object>> getPtaPracticeSetsByStudent(
+            @PathVariable String studentId,
+            HttpServletRequest request) {
+        String authorizedStudentNo = studentSessionResolver.requireAuthorizedStudentId(studentId, request);
+        return getPtaPracticeSetsByStudentNo(authorizedStudentNo);
+    }
+
+    private ResponseEntity<Map<String, Object>> getPtaPracticeSetsByStudentNo(String studentNo) {
+        Map<String, Object> response = new LinkedHashMap<>();
+        try {
+            @SuppressWarnings("unchecked")
+            List<Object[]> rows = em.createNativeQuery(
+                    "SELECT ao.id, ao.template_id, ao.class_id, tc.name, tc.class_code, " +
+                            "COALESCE(NULLIF(ao.title_override, ''), at.title) AS title, " +
+                            "ao.deadline_at, at.description_md, ao.status, " +
+                            "sa.submission_status, sa.first_submit_at, sa.last_submit_at, " +
+                            "sa.accepted_problem_count, sa.submitted_problem_count, sa.problem_count, " +
+                            "sa.best_total_score, sa.latest_total_score, sp.student_no, sp.real_name, sp.id " +
+                            "FROM student_profile sp " +
+                            "JOIN class_student cs ON cs.student_num = sp.student_no COLLATE utf8mb4_unicode_ci " +
+                            "JOIN teaching_class tc ON tc.id = cs.class_id " +
+                            "JOIN assignment_offering ao ON ao.class_id = cs.class_id " +
+                            "JOIN assignment_template at ON at.id = ao.template_id " +
+                            "LEFT JOIN student_assignment sa ON sa.offering_id = ao.id AND sa.student_id = sp.id " +
+                            "WHERE sp.student_no = ?1 " +
+                            "AND (tc.status IS NULL OR tc.status = 'ACTIVE') " +
+                            "AND ao.status <> 'ARCHIVED' " +
+                            "AND (at.title LIKE '%推荐题目集%' OR ao.title_override LIKE '%推荐题目集%') " +
+                            "ORDER BY tc.id, COALESCE(ao.seq_no, 999999), ao.id"
+            ).setParameter(1, studentNo)
+                    .getResultList();
+
+            List<Map<String, Object>> practices = new ArrayList<>();
+            for (Object[] row : rows) {
+                Long offeringId = toLong(row[0]);
+                String submissionStatus = toStringValue(row[9]);
+                int submittedProblemCount = toInt(row[13]);
+                Double score = firstNonNull(toDouble(row[16]), toDouble(row[15]), 0.0);
+
+                Map<String, Object> practice = new LinkedHashMap<>();
+                practice.put("type", "pta_practice_set");
+                practice.put("id", offeringId);
+                practice.put("offeringId", offeringId);
+                practice.put("templateId", toLong(row[1]));
+                practice.put("classId", toLong(row[2]));
+                practice.put("className", row[3]);
+                practice.put("classCode", row[4]);
+                practice.put("name", row[5]);
+                practice.put("title", row[5]);
+                practice.put("deadline", formatDateTime(row[6]));
+                practice.put("description", toStringValue(row[7]));
+                practice.put("status", row[8]);
+                practice.put("submissionStatus", submissionStatus);
+                practice.put("acceptedProblemCount", toInt(row[12]));
+                practice.put("submittedProblemCount", submittedProblemCount);
+                practice.put("problemCount", toInt(row[14]));
+                practice.put("score", roundTwoDecimals(score));
+                practice.put("studentProfileId", toLong(row[19]));
+                practice.put("sourceUrl", "https://pintia.cn/problem-sets/" + offeringId);
+                practice.put("sourceLabel", "PTA");
+                practices.add(practice);
+            }
+
+            response.put("success", true);
+            response.put("data", practices);
+            response.put("source", "pta_practice_sets");
+        } catch (Exception e) {
+            e.printStackTrace();
+            response.put("success", false);
+            response.put("data", new ArrayList<>());
+            response.put("message", "获取PTA推荐题目集失败: " + e.getMessage());
+        }
         return ResponseEntity.ok(response);
     }
 
