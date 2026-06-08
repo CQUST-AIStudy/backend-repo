@@ -1302,6 +1302,8 @@ public class ApiController {
                 practice.put("problemCount", toInt(row[14]));
                 practice.put("score", roundTwoDecimals(score));
                 practice.put("studentProfileId", toLong(row[19]));
+                practice.put("sourceUrl", "https://pintia.cn/problem-sets/" + offeringId);
+                practice.put("sourceLabel", "PTA");
                 practices.add(practice);
             }
 

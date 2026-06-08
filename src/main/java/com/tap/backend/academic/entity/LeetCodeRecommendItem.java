@@ -25,6 +25,10 @@ public class LeetCodeRecommendItem {
     // 关联的题目信息（用于查询结果）
     private LeetCodeProblem problem;
 
+    // 遗忘曲线相关字段（透传推荐服务返回的数据）
+    private BigDecimal forgettingScore;
+    private String lastPracticeAt;
+
     // 构造函数
     public LeetCodeRecommendItem() {}
 
@@ -79,6 +83,12 @@ public class LeetCodeRecommendItem {
 
     public LeetCodeProblem getProblem() { return problem; }
     public void setProblem(LeetCodeProblem problem) { this.problem = problem; }
+
+    public BigDecimal getForgettingScore() { return forgettingScore; }
+    public void setForgettingScore(BigDecimal forgettingScore) { this.forgettingScore = forgettingScore; }
+
+    public String getLastPracticeAt() { return lastPracticeAt; }
+    public void setLastPracticeAt(String lastPracticeAt) { this.lastPracticeAt = lastPracticeAt; }
 
     @Override
     public String toString() {

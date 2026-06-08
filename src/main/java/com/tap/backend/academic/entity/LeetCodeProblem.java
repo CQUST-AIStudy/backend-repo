@@ -2,6 +2,7 @@ package com.tap.backend.academic.entity;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * LeetCode题目实体类
@@ -22,6 +23,9 @@ public class LeetCodeProblem {
     private BigDecimal qualityScore;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
+
+    // 透传推荐服务的知识点标签（非持久化）
+    private List<String> tags;
 
     // 构造函数
     public LeetCodeProblem() {}
@@ -150,6 +154,9 @@ public class LeetCodeProblem {
     public void setUpdatedAt(LocalDateTime updatedAt) {
         this.updatedAt = updatedAt;
     }
+
+    public List<String> getTags() { return tags; }
+    public void setTags(List<String> tags) { this.tags = tags; }
 
     @Override
     public String toString() {

@@ -189,6 +189,8 @@ public class IntelligentRecommendationServiceImpl implements LeetCodeRecommendat
             item.setScoreQuality(asDecimal(row.get("scoreQuality")));
             item.setReasonText(asString(row.get("reasonText")));
             item.setProblem(mapProblem(asMap(row.get("problem"))));
+            item.setForgettingScore(asDecimal(row.get("forgettingScore")));
+            item.setLastPracticeAt(asString(row.get("lastPracticeAt")));
             items.add(item);
         }
         return items;
@@ -204,6 +206,15 @@ public class IntelligentRecommendationServiceImpl implements LeetCodeRecommendat
         problem.setDifficulty(asString(rawProblem.get("difficulty")));
         problem.setSourceUrl(asString(rawProblem.get("sourceUrl")));
         problem.setEstimatedMinutes(asInteger(rawProblem.get("estimatedMinutes")));
+        // 透传知识点标签
+        Object tagsObj = rawProblem.get("tags");
+        if (tagsObj instanceof List<?> tagList) {
+            List<String> tags = new ArrayList<>();
+            for (Object t : tagList) {
+                if (t != null) tags.add(t.toString());
+            }
+            problem.setTags(tags);
+        }
         return problem;
     }
 
