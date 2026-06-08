@@ -10,6 +10,8 @@
         <result property="role" column="role"/>
         <result property="usernum" column="usernum"/>
         <result property="classname" column="classname"/>
+        <result property="phone" column="phone"/>
+        <result property="department" column="department"/>
     </resultMap>
 
     <!-- 根据用户名查找用户 -->
@@ -24,8 +26,8 @@
 
     <!-- 保存用户信息 -->
     <insert id="saveUser" parameterType="com.tap.backend.academic.entity.UserEntity" useGeneratedKeys="true" keyProperty="id">
-        INSERT INTO user (username, password, email, role, usernum, classname)
-        VALUES (#{username}, #{password}, #{email}, #{role}, #{usernum}, #{classname})
+        INSERT INTO user (username, password, email, role, usernum, classname, phone, department)
+        VALUES (#{username}, #{password}, #{email}, #{role}, #{usernum}, #{classname}, #{phone}, #{department})
     </insert>
 
     <!-- 更新用户信息 -->
@@ -36,7 +38,9 @@
             email = #{email},
             role = #{role},
             usernum = #{usernum},
-            classname = #{classname}
+            classname = #{classname},
+            phone = #{phone},
+            department = #{department}
         WHERE id = #{id}
     </update>
 

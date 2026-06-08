@@ -1,5 +1,6 @@
 package com.tap.backend.academic.controller;
 
+import com.tap.backend.academic.entity.UserEntity;
 import com.tap.backend.academic.security.LegacySessionAccessResolver;
 import com.tap.backend.academic.security.StudentSessionResolver;
 import com.tap.backend.academic.service.ProfileService;
@@ -10,6 +11,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -39,9 +42,37 @@ public class ProfileController {
 
     @GetMapping("/me")
     public ResponseEntity<Map<String, Object>> getMyProfile(HttpServletRequest request) {
-        String studentId = studentSessionResolver.requireStudentId(request);
-        Map<String, Object> profile = profileService.getStudentProfile(studentId);
-        return ResponseEntity.ok(profile);
+        UserEntity user = legacySessionAccessResolver.requireAuthenticated(request);
+        String role = normalizeRole(user.getRole());
+
+        if ("student".equals(role)) {
+            try {
+                String studentId = studentSessionResolver.requireStudentId(request);
+                Map<String, Object> profile = profileService.getStudentProfile(studentId);
+                // 补充基础用户信息
+                profile.putIfAbsent("username", user.getUsername());
+                profile.putIfAbsent("email", emptyIfNull(user.getEmail()));
+                profile.putIfAbsent("phone", "");
+                profile.putIfAbsent("usernum", user.getUsernum());
+                profile.putIfAbsent("class", user.getClassname());
+                return ResponseEntity.ok(profile);
+            } catch (Exception e) {
+                // 学生画像获取失败时，回退到基础信息
+                return ResponseEntity.ok(profileService.getCurrentUserProfile(user));
+            }
+        }
+
+        // 管理员 / 教师：返回基础个人信息
+        return ResponseEntity.ok(profileService.getCurrentUserProfile(user));
+    }
+
+    @PutMapping("/me")
+    public ResponseEntity<Map<String, Object>> updateMyProfile(
+            @RequestBody Map<String, String> data,
+            HttpServletRequest request) {
+        UserEntity user = legacySessionAccessResolver.requireAuthenticated(request);
+        Map<String, Object> result = profileService.updateCurrentUserProfile(user, data);
+        return ResponseEntity.ok(result);
     }
 
     @GetMapping("/class")
@@ -88,5 +119,16 @@ public class ProfileController {
         }
         String trimmed = className.trim();
         return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private static String normalizeRole(String role) {
+        if (role == null || role.isBlank()) {
+            return "student";
+        }
+        return role.trim().toLowerCase();
+    }
+
+    private static String emptyIfNull(String value) {
+        return value == null ? "" : value;
     }
 }

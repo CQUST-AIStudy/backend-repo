@@ -180,7 +180,8 @@ public class LoginController {
     @PostMapping("/api/user/password")
     public ResponseEntity<Map<String, Object>> updatePassword(
             @RequestBody Map<String, String> passwordData,
-            HttpServletRequest request) {
+            HttpServletRequest request,
+            HttpServletResponse servletResponse) {
         Map<String, Object> response = new HashMap<>();
         try {
             UserEntity currentUser = legacySessionAccessResolver.requireAuthenticated(request);
@@ -215,8 +216,15 @@ public class LoginController {
             user.setPassword(passwordEncoder.encode(newPassword));
             boolean updated = userService.updateUser(user);
             if (updated) {
+                // 密码修改成功后清除会话，强制用户重新登录
+                HttpSession session = request.getSession(false);
+                if (session != null) {
+                    session.invalidate();
+                }
+                legacyAuthTokenService.clearCookie(servletResponse);
+
                 response.put("success", true);
-                response.put("message", "password updated");
+                response.put("message", "密码已修改，请使用新密码重新登录");
             } else {
                 response.put("success", false);
                 response.put("message", "password update failed");
@@ -292,6 +300,8 @@ public class LoginController {
         userInfo.put("email", user.getEmail());
         userInfo.put("usernum", user.getUsernum());
         userInfo.put("class", user.getClassname());
+        userInfo.put("phone", user.getPhone() != null ? user.getPhone() : "");
+        userInfo.put("department", user.getDepartment() != null ? user.getDepartment() : "");
         return userInfo;
     }
 }
