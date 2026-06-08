@@ -44,6 +44,18 @@
         WHERE id = #{id}
     </update>
 
+    <!-- 根据用户名查找 legacy user 表（仅用于学生登录） -->
+    <select id="findByUsernameFromLegacyUser" parameterType="string" resultMap="userResultMap">
+        SELECT id, username, password AS password, email, LOWER(role) AS role, usernum, classname
+        FROM user WHERE username = #{username} AND LOWER(role) = 'student'
+    </select>
+
+    <!-- 根据 usernum (学号) 查找 tap_user -->
+    <select id="findTapUserByUsernum" parameterType="string" resultMap="userResultMap">
+        SELECT id, username, password_hash AS password, email, LOWER(role) AS role, usernum, classname
+        FROM tap_user WHERE usernum = #{usernum}
+    </select>
+
     <!-- 删除用户 -->
     <delete id="deleteUser" parameterType="int">
         DELETE FROM tap_user WHERE id = #{id}
