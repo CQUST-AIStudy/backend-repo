@@ -2,6 +2,10 @@
 # Real secrets should come from `local.env.ps1` or the process environment.
 
 tap:
+  recommendation:
+    base-url: ${RECOMMENDATION_SERVICE_BASE_URL:http://127.0.0.1:8003}
+    connect-timeout-ms: ${RECOMMENDATION_SERVICE_CONNECT_TIMEOUT_MS:3000}
+    read-timeout-ms: ${RECOMMENDATION_SERVICE_READ_TIMEOUT_MS:10000}
   ai:
     provider: ${AI_PROVIDER:openai}
     dashscope:

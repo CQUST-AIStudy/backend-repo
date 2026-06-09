@@ -1,8 +1,9 @@
 package com.tap.backend.academic.security;
 
-import com.tap.backend.academic.dao.UserDao;
 import com.tap.backend.academic.entity.UserEntity;
-import com.tap.backend.security.JwtService;
+import com.tap.backend.domain.user.UserRole;
+import com.tap.backend.repo.UserRepository;
+import com.tap.backend.security.UserPrincipal;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -18,13 +19,12 @@ import org.springframework.web.filter.OncePerRequestFilter;
 
 @Component
 public class LegacySessionAuthFilter extends OncePerRequestFilter {
+    private final LegacyAuthTokenService legacyAuthTokenService;
+    private final UserRepository userRepository;
 
-    private final JwtService jwtService;
-    private final UserDao userDao;
-
-    public LegacySessionAuthFilter(JwtService jwtService, UserDao userDao) {
-        this.jwtService = jwtService;
-        this.userDao = userDao;
+    public LegacySessionAuthFilter(LegacyAuthTokenService legacyAuthTokenService, UserRepository userRepository) {
+        this.legacyAuthTokenService = legacyAuthTokenService;
+        this.userRepository = userRepository;
     }
 
     @Override
@@ -33,41 +33,21 @@ public class LegacySessionAuthFilter extends OncePerRequestFilter {
             HttpServletResponse response,
             FilterChain filterChain) throws ServletException, IOException {
         if (SecurityContextHolder.getContext().getAuthentication() == null) {
-            UserEntity user = resolveSessionUser(request);
-            if (user == null) {
-                user = resolveBearerUser(request);
+            HttpSession session = request.getSession(false);
+            if (session != null) {
+                Object currentUser = session.getAttribute("currentUser");
+                if (currentUser instanceof UserEntity user) {
+                    authenticate(user);
+                }
             }
-            if (user != null) {
-                authenticate(user);
+            if (SecurityContextHolder.getContext().getAuthentication() == null) {
+                var cookieUser = legacyAuthTokenService.resolve(request);
+                if (cookieUser.isPresent()) {
+                    authenticate(cookieUser.get());
+                }
             }
         }
         filterChain.doFilter(request, response);
-    }
-
-    private UserEntity resolveSessionUser(HttpServletRequest request) {
-        HttpSession session = request.getSession(false);
-        if (session == null) {
-            return null;
-        }
-        Object currentUser = session.getAttribute("currentUser");
-        return currentUser instanceof UserEntity user ? user : null;
-    }
-
-    private UserEntity resolveBearerUser(HttpServletRequest request) {
-        String header = request.getHeader("Authorization");
-        if (header == null || !header.startsWith("Bearer ")) {
-            return null;
-        }
-        String token = header.substring("Bearer ".length()).trim();
-        if (token.isEmpty()) {
-            return null;
-        }
-        try {
-            var principal = jwtService.parse(token);
-            return userDao.findByUsername(principal.username());
-        } catch (Exception ignored) {
-            return null;
-        }
     }
 
     private void authenticate(UserEntity user) {
@@ -75,12 +55,29 @@ public class LegacySessionAuthFilter extends OncePerRequestFilter {
         if (role == null) {
             return;
         }
+        Object principal = resolveTapPrincipal(user, role);
         var auth = new UsernamePasswordAuthenticationToken(
-                user,
+                principal,
                 null,
                 List.of(new SimpleGrantedAuthority("ROLE_" + role))
         );
         SecurityContextHolder.getContext().setAuthentication(auth);
+    }
+
+    private Object resolveTapPrincipal(UserEntity user, String normalizedRole) {
+        String username = user.getUsername() == null ? null : user.getUsername().trim();
+        if (username == null || username.isEmpty()) {
+            return user;
+        }
+        try {
+            UserRole role = UserRole.valueOf(normalizedRole);
+            return userRepository.findByUsername(username)
+                    .filter(tapUser -> Boolean.TRUE.equals(tapUser.getEnabled()))
+                    .<Object>map(tapUser -> new UserPrincipal(tapUser.getId(), tapUser.getUsername(), role))
+                    .orElse(user);
+        } catch (RuntimeException e) {
+            return user;
+        }
     }
 
     private String normalizeRole(String role) {

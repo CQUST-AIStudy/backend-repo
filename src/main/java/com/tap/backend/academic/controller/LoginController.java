@@ -1,11 +1,14 @@
 package com.tap.backend.academic.controller;
 
 import com.tap.backend.academic.entity.UserEntity;
+import com.tap.backend.academic.security.LegacyAuthTokenService;
 import com.tap.backend.academic.security.LegacySessionAccessResolver;
 import com.tap.backend.academic.service.UserService;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
 import java.util.HashMap;
+import java.util.Locale;
 import java.util.Map;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
@@ -26,6 +29,9 @@ public class LoginController {
 
     @Autowired
     private LegacySessionAccessResolver legacySessionAccessResolver;
+
+    @Autowired
+    private LegacyAuthTokenService legacyAuthTokenService;
 
     @Autowired
     private PasswordEncoder passwordEncoder;
@@ -56,7 +62,8 @@ public class LoginController {
     @PostMapping("/api/login")
     public ResponseEntity<Map<String, Object>> login(
             @RequestBody UserEntity loginUser,
-            HttpServletRequest request) {
+            HttpServletRequest request,
+            HttpServletResponse servletResponse) {
         Map<String, Object> response = new HashMap<>();
         try {
             UserEntity user = userService.findByUsername(loginUser.getUsername());
@@ -72,6 +79,13 @@ public class LoginController {
                 return ResponseEntity.ok(response);
             }
 
+            String roleMismatchMessage = resolveRoleMismatchMessage(user.getRole(), loginUser.getRole());
+            if (roleMismatchMessage != null) {
+                response.put("success", false);
+                response.put("message", roleMismatchMessage);
+                return ResponseEntity.ok(response);
+            }
+
             upgradePasswordIfNeeded(user, loginUser.getPassword());
 
             HttpSession session = request.getSession(true);
@@ -79,6 +93,7 @@ public class LoginController {
             session.setAttribute("username", user.getUsername());
             session.setAttribute("userId", user.getId());
             session.setAttribute("userRole", user.getRole());
+            legacyAuthTokenService.writeCookie(servletResponse, user);
 
             response.put("success", true);
             response.put("message", "login success");
@@ -149,12 +164,13 @@ public class LoginController {
     }
 
     @PostMapping({"/logout", "/api/logout"})
-    public ResponseEntity<Map<String, Object>> logout(HttpServletRequest request) {
+    public ResponseEntity<Map<String, Object>> logout(HttpServletRequest request, HttpServletResponse servletResponse) {
         Map<String, Object> response = new HashMap<>();
         HttpSession session = request.getSession(false);
         if (session != null) {
             session.invalidate();
         }
+        legacyAuthTokenService.clearCookie(servletResponse);
 
         response.put("success", true);
         response.put("message", "logout success");
@@ -164,7 +180,8 @@ public class LoginController {
     @PostMapping("/api/user/password")
     public ResponseEntity<Map<String, Object>> updatePassword(
             @RequestBody Map<String, String> passwordData,
-            HttpServletRequest request) {
+            HttpServletRequest request,
+            HttpServletResponse servletResponse) {
         Map<String, Object> response = new HashMap<>();
         try {
             UserEntity currentUser = legacySessionAccessResolver.requireAuthenticated(request);
@@ -199,8 +216,15 @@ public class LoginController {
             user.setPassword(passwordEncoder.encode(newPassword));
             boolean updated = userService.updateUser(user);
             if (updated) {
+                // 密码修改成功后清除会话，强制用户重新登录
+                HttpSession session = request.getSession(false);
+                if (session != null) {
+                    session.invalidate();
+                }
+                legacyAuthTokenService.clearCookie(servletResponse);
+
                 response.put("success", true);
-                response.put("message", "password updated");
+                response.put("message", "密码已修改，请使用新密码重新登录");
             } else {
                 response.put("success", false);
                 response.put("message", "password update failed");
@@ -215,6 +239,35 @@ public class LoginController {
 
     private boolean isBlank(String value) {
         return value == null || value.isBlank();
+    }
+
+    private String resolveRoleMismatchMessage(String actualRole, String requestedRole) {
+        String expectedRole = normalizeRole(requestedRole);
+        if (expectedRole == null) {
+            return null;
+        }
+        String normalizedActualRole = normalizeRole(actualRole);
+        if (expectedRole.equals(normalizedActualRole)) {
+            return null;
+        }
+        return switch (expectedRole) {
+            case "admin" -> "该账号不是管理员账号，请切换正确身份登录";
+            case "teacher" -> "该账号不是教师账号，请切换正确身份登录";
+            case "student" -> "该账号不是学生账号，请切换正确身份登录";
+            default -> "不支持的登录身份：" + requestedRole;
+        };
+    }
+
+    private String normalizeRole(String role) {
+        if (role == null || role.isBlank()) {
+            return null;
+        }
+        return switch (role.trim().toLowerCase(Locale.ROOT)) {
+            case "admin", "administrator" -> "admin";
+            case "teacher" -> "teacher";
+            case "student" -> "student";
+            default -> role.trim().toLowerCase(Locale.ROOT);
+        };
     }
 
     private boolean passwordMatches(String rawPassword, String storedPassword) {
@@ -243,10 +296,15 @@ public class LoginController {
         Map<String, Object> userInfo = new HashMap<>();
         userInfo.put("id", user.getId());
         userInfo.put("username", user.getUsername());
-        userInfo.put("role", user.getRole());
+        userInfo.put("name", user.getUsername());
+        // Normalize role to lowercase for frontend compatibility (tap_user stores UPPERCASE)
+        String role = user.getRole();
+        userInfo.put("role", role != null ? role.toLowerCase(Locale.ROOT) : null);
         userInfo.put("email", user.getEmail());
         userInfo.put("usernum", user.getUsernum());
         userInfo.put("class", user.getClassname());
+        userInfo.put("phone", user.getPhone() != null ? user.getPhone() : "");
+        userInfo.put("department", user.getDepartment() != null ? user.getDepartment() : "");
         return userInfo;
     }
 }

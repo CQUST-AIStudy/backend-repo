@@ -38,4 +38,20 @@ public interface UserDao {
      * @return 影响的行数
      */
     int deleteUser(int id);
+    
+    /**
+     * 从 legacy user 表根据用户名查找学生用户
+     * @param username 用户名
+     * @return 用户实体（仅学生）
+     */
+    UserEntity findByUsernameFromLegacyUser(String username);
+    
+    /**
+     * 根据学号(user.num)查找 tap_user 记录
+     * @param usernum 学号
+     * @return tap_user 记录
+     */
+    UserEntity findTapUserByUsernum(String usernum);
+
+    UserEntity findByUsernameFromLegacyUserAnyRole(String username);
 }

@@ -16,7 +16,7 @@ public interface AIRemarksMapper {
      * @param experimentId 实验ID
      * @return AI备注信息
      */
-    AIRemarks getAIRemarkByStudentAndExperiment(Integer studentId, Integer experimentId);
+    AIRemarks getAIRemarkByStudentAndExperiment(@Param("studentId") String studentId, @Param("experimentId") Integer experimentId);
     
     /**
      * 保存或更新AI备注
@@ -31,5 +31,5 @@ public interface AIRemarksMapper {
      * @param experimentId 实验ID
      * @return 影响的行数
      */
-    int deleteAIRemark(@Param("studentId") Integer studentId, @Param("experimentId") Integer experimentId);
+    int deleteAIRemark(@Param("studentId") String studentId, @Param("experimentId") Integer experimentId);
 }

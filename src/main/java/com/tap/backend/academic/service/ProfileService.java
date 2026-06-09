@@ -2,6 +2,8 @@ package com.tap.backend.academic.service;
 
 import com.tap.backend.academic.config.SkillTreeConfig;
 import com.tap.backend.academic.dao.ProfileDao;
+import com.tap.backend.academic.dao.UserDao;
+import com.tap.backend.academic.entity.UserEntity;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
@@ -33,6 +35,9 @@ public class ProfileService {
 
     @Autowired
     private ProfileDao profileDao;
+
+    @Autowired
+    private UserDao userDao;
 
     @Autowired
     private SkillTreeConfig skillTreeConfig;
@@ -742,6 +747,75 @@ public class ProfileService {
         }
 
         return sb.toString();
+    }
+
+    // ========== 当前用户个人信息（通用：admin / teacher / student） ==========
+
+    public Map<String, Object> getCurrentUserProfile(UserEntity sessionUser) {
+        // 从数据库重新加载，避免 session 里是旧数据
+        UserEntity user = userDao.findByUsername(sessionUser.getUsername());
+        if (user == null) {
+            user = sessionUser;
+        }
+        String role = normalizeRole(user.getRole());
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("id", user.getId());
+        result.put("name", user.getUsername());
+        result.put("username", user.getUsername());
+        result.put("role", role);
+        result.put("email", emptyIfNull(user.getEmail()));
+        result.put("phone", emptyIfNull(user.getPhone()));
+        result.put("department", emptyIfNull(user.getDepartment()));
+        result.put("avatar", "");
+        if (user.getUsernum() != null && !user.getUsernum().isBlank()) {
+            result.put("usernum", user.getUsernum());
+        }
+        if (user.getClassname() != null && !user.getClassname().isBlank()) {
+            result.put("class", user.getClassname());
+        }
+        return result;
+    }
+
+    public Map<String, Object> updateCurrentUserProfile(UserEntity sessionUser, Map<String, String> data) {
+        // 用 username 重新加载完整用户记录。
+        // 注意：不能用 sessionUser.getId() 查 tap_user，因为 user 表和 tap_user 表的 ID 不一致。
+        UserEntity user = userDao.findByUsername(sessionUser.getUsername());
+        if (user == null) {
+            throw new RuntimeException("user not found");
+        }
+
+        String name = data.get("name");
+        String email = data.get("email");
+        String phone = data.get("phone");
+        String department = data.get("department");
+
+        if (name != null && !name.isBlank()) {
+            user.setUsername(name.trim());
+        }
+        if (email != null) {
+            user.setEmail(email.trim());
+        }
+        if (phone != null) {
+            user.setPhone(phone.trim());
+        }
+        if (department != null) {
+            user.setDepartment(department.trim());
+        }
+
+        userDao.updateUser(user);
+
+        return getCurrentUserProfile(user);
+    }
+
+    private static String normalizeRole(String role) {
+        if (role == null || role.isBlank()) {
+            return "student";
+        }
+        return role.trim().toLowerCase();
+    }
+
+    private static String emptyIfNull(String value) {
+        return value == null ? "" : value;
     }
 
     // ========== 班级画像 ==========

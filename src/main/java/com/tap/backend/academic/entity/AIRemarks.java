@@ -4,7 +4,7 @@ package com.tap.backend.academic.entity;
  * AI备注实体类，对应数据库中的AI_remarks表
  */
 public class AIRemarks {
-    private Integer studentId;     // 学生ID
+    private String studentId;      // 学号（兼容新旧系统，统一用学号字符串）
     private String studentName;    // 学生姓名
     private Integer experimentId;  // 实验ID
     private String experimentName; // 实验名称
@@ -14,7 +14,7 @@ public class AIRemarks {
     public AIRemarks() {
     }
     
-    public AIRemarks(Integer studentId, String studentName, Integer experimentId, String experimentName, String airemark) {
+    public AIRemarks(String studentId, String studentName, Integer experimentId, String experimentName, String airemark) {
         this.studentId = studentId;
         this.studentName = studentName;
         this.experimentId = experimentId;
@@ -23,11 +23,11 @@ public class AIRemarks {
     }
     
     // getter和setter方法
-    public Integer getStudentId() {
+    public String getStudentId() {
         return studentId;
     }
     
-    public void setStudentId(Integer studentId) {
+    public void setStudentId(String studentId) {
         this.studentId = studentId;
     }
     

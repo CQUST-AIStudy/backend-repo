@@ -43,10 +43,13 @@ public class SecurityConfig {
       "/api/course-spaces/**",
       "/api/annotations/**",
       "/api/classes/**",
+      "/api/student-classes/**",
       "/api/grading/**",
       "/api/rag/**",
+      "/api/student-rag/**",
       "/api/pta-cookie/**",
       "/api/teachers/**",
+      "/api/users/**",
       "/api/analytics/**"
   };
 
@@ -68,7 +71,8 @@ public class SecurityConfig {
   @Order(1)
   public SecurityFilterChain tapSecurityFilterChain(
       HttpSecurity http,
-      JwtAuthFilter jwtAuthFilter) throws Exception {
+      JwtAuthFilter jwtAuthFilter,
+      LegacySessionAuthFilter legacySessionAuthFilter) throws Exception {
     http.securityMatcher(TAP_API_MATCHERS);
     http.csrf(csrf -> csrf.disable());
     http.cors(cors -> {});
@@ -89,18 +93,24 @@ public class SecurityConfig {
         .requestMatchers("/api/course-spaces/**").hasAnyRole(UserRole.TEACHER.name(), UserRole.ADMIN.name())
         .requestMatchers("/api/annotations/**").hasAnyRole(UserRole.TEACHER.name(), UserRole.ADMIN.name())
         .requestMatchers(HttpMethod.POST, "/api/classes/join").permitAll()
+        // The student class page still uses the legacy session cookie. The controller
+        // validates either JWT or a legacy STUDENT session to avoid frontend changes.
+        .requestMatchers("/api/student-classes/**").permitAll()
         .requestMatchers(HttpMethod.PUT, "/api/classes/*/pta-sync/callback").permitAll()
         .requestMatchers(HttpMethod.PUT, "/api/pta-cookie/status").permitAll()
-        .requestMatchers("/api/pta-cookie/**").authenticated()
-        .requestMatchers("/api/teachers/**").authenticated()
-        .requestMatchers("/api/grading/**").authenticated()
+        .requestMatchers("/api/pta-cookie/**").hasAnyRole(UserRole.TEACHER.name(), UserRole.ADMIN.name())
+        .requestMatchers("/api/teachers/**").hasAnyRole(UserRole.TEACHER.name(), UserRole.ADMIN.name())
+        .requestMatchers("/api/users/**").hasRole(UserRole.ADMIN.name())
+        .requestMatchers("/api/grading/**").hasAnyRole(UserRole.TEACHER.name(), UserRole.ADMIN.name())
         .requestMatchers("/api/rag/**").hasAnyRole(UserRole.TEACHER.name(), UserRole.ADMIN.name())
-        .requestMatchers("/api/classes/**").authenticated()
-        .requestMatchers("/api/analytics/student/**").authenticated()
-        .requestMatchers("/api/analytics/**").authenticated()
+        .requestMatchers("/api/student-rag/**").hasRole(UserRole.STUDENT.name())
+        .requestMatchers("/api/classes/**").hasAnyRole(UserRole.TEACHER.name(), UserRole.ADMIN.name())
+        .requestMatchers("/api/analytics/student/**").hasRole(UserRole.STUDENT.name())
+        .requestMatchers("/api/analytics/**").hasAnyRole(UserRole.TEACHER.name(), UserRole.ADMIN.name())
         .anyRequest().authenticated()
     );
     http.addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
+    http.addFilterAfter(legacySessionAuthFilter, JwtAuthFilter.class);
     return http.build();
   }
 
@@ -110,7 +120,10 @@ public class SecurityConfig {
    */
   @Bean
   @Order(2)
-  public SecurityFilterChain aiDsSecurityFilterChain(HttpSecurity http, LegacySessionAuthFilter legacySessionAuthFilter)
+  public SecurityFilterChain aiDsSecurityFilterChain(
+      HttpSecurity http,
+      JwtAuthFilter jwtAuthFilter,
+      LegacySessionAuthFilter legacySessionAuthFilter)
       throws Exception {
     http.securityMatcher("/**");
     http.csrf(csrf -> csrf.disable());
@@ -124,7 +137,8 @@ public class SecurityConfig {
         .requestMatchers(HttpMethod.POST, "/api/login", "/api/register", "/logout", "/api/logout").permitAll()
         .anyRequest().authenticated()
     );
-    http.addFilterBefore(legacySessionAuthFilter, UsernamePasswordAuthenticationFilter.class);
+    http.addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
+    http.addFilterAfter(legacySessionAuthFilter, JwtAuthFilter.class);
     return http.build();
   }
 

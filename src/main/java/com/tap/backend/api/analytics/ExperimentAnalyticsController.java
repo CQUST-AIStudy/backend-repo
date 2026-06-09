@@ -34,29 +34,44 @@ public class ExperimentAnalyticsController {
     private static final String DATA_STRUCTURE_KEYWORD = "\u6570\u636e\u7ed3\u6784";
     private static final String C_LANGUAGE_KEYWORD = "C\u8bed\u8a00";
 
+    private static final String COLL = " COLLATE utf8mb4_0900_ai_ci";
+    private static final String EMPTY_STR = "_utf8mb4'' COLLATE utf8mb4_0900_ai_ci";
     private static final String EXPERIMENT_NAME_EXPR =
-            "COALESCE(NULLIF(TRIM(ao.title_override), ''), at.title)";
+            "COALESCE(NULLIF(TRIM(ao.title_override), " + EMPTY_STR + "), at.title)";
     private static final String COURSE_NAME_EXPR =
-            "COALESCE(NULLIF(TRIM(c.name), ''), NULLIF(TRIM(tc.course_name), ''), '')";
+            "COALESCE(NULLIF(TRIM(c.name), " + EMPTY_STR + "), NULLIF(TRIM(tc.course_name), " + EMPTY_STR + "), '')";
     private static final String PREFIX_SOURCE_EXPR =
-            "COALESCE(NULLIF(TRIM(tc.pta_keyword), ''), " + EXPERIMENT_NAME_EXPR + ", tc.name)";
+            "COALESCE(NULLIF(TRIM(tc.pta_keyword), " + EMPTY_STR + "), " + EXPERIMENT_NAME_EXPR + ", tc.name)";
+    private static final String DATA_STRUCTURE_SQL_LITERAL =
+            "_utf8mb4'" + DATA_STRUCTURE_KEYWORD + "' COLLATE utf8mb4_0900_ai_ci";
+    private static final String C_LANGUAGE_SQL_LITERAL =
+            "_utf8mb4'" + C_LANGUAGE_KEYWORD + "' COLLATE utf8mb4_0900_ai_ci";
+    private static final String DATA_STRUCTURE_LIKE_PATTERN =
+            "CONCAT('%', " + DATA_STRUCTURE_SQL_LITERAL + ", '%')";
+    private static final String C_LANGUAGE_LIKE_PATTERN =
+            "CONCAT('%', " + C_LANGUAGE_SQL_LITERAL + ", '%')";
+
+    private static final String EXPERIMENT_NAME_EXPR_COLL = EXPERIMENT_NAME_EXPR + COLL;
+    private static final String PREFIX_SOURCE_EXPR_COLL = PREFIX_SOURCE_EXPR + COLL;
+
     private static final String CLASS_PREFIX_EXPR =
             "TRIM(CASE " +
-                    "WHEN " + PREFIX_SOURCE_EXPR + " LIKE '%" + DATA_STRUCTURE_KEYWORD + "%' " +
-                    "THEN SUBSTRING_INDEX(" + PREFIX_SOURCE_EXPR + ", '" + DATA_STRUCTURE_KEYWORD + "', 1) " +
-                    "ELSE tc.name " +
-                    "END)";
+                    "WHEN " + PREFIX_SOURCE_EXPR_COLL + " LIKE " + DATA_STRUCTURE_LIKE_PATTERN + " " +
+                    "THEN SUBSTRING_INDEX(" + PREFIX_SOURCE_EXPR_COLL + ", " + DATA_STRUCTURE_SQL_LITERAL + ", 1) " +
+                    "ELSE tc.name COLLATE utf8mb4_0900_ai_ci " +
+                    "END COLLATE utf8mb4_0900_ai_ci)";
+
     private static final String DATA_STRUCTURE_SCOPE_PREDICATE =
             "(" +
-                    EXPERIMENT_NAME_EXPR + " LIKE '%" + DATA_STRUCTURE_KEYWORD + "%' OR " +
-                    "COALESCE(NULLIF(TRIM(tc.pta_keyword), ''), '') LIKE '%" + DATA_STRUCTURE_KEYWORD + "%' OR " +
-                    "COALESCE(NULLIF(TRIM(tc.course_name), ''), '') LIKE '%" + DATA_STRUCTURE_KEYWORD + "%' OR " +
-                    "COALESCE(NULLIF(TRIM(c.name), ''), '') LIKE '%" + DATA_STRUCTURE_KEYWORD + "%'" +
+                    EXPERIMENT_NAME_EXPR_COLL + " LIKE " + DATA_STRUCTURE_LIKE_PATTERN + " OR " +
+                    "COALESCE(NULLIF(TRIM(tc.pta_keyword), " + EMPTY_STR + "), '')" + COLL + " LIKE " + DATA_STRUCTURE_LIKE_PATTERN + " OR " +
+                    "COALESCE(NULLIF(TRIM(tc.course_name), " + EMPTY_STR + "), '')" + COLL + " LIKE " + DATA_STRUCTURE_LIKE_PATTERN + " OR " +
+                    "COALESCE(NULLIF(TRIM(c.name), " + EMPTY_STR + "), '')" + COLL + " LIKE " + DATA_STRUCTURE_LIKE_PATTERN +
                     ") AND NOT (" +
-                    EXPERIMENT_NAME_EXPR + " LIKE '%" + C_LANGUAGE_KEYWORD + "%' OR " +
-                    "COALESCE(NULLIF(TRIM(tc.pta_keyword), ''), '') LIKE '%" + C_LANGUAGE_KEYWORD + "%' OR " +
-                    "COALESCE(NULLIF(TRIM(tc.course_name), ''), '') LIKE '%" + C_LANGUAGE_KEYWORD + "%' OR " +
-                    "COALESCE(NULLIF(TRIM(c.name), ''), '') LIKE '%" + C_LANGUAGE_KEYWORD + "%'" +
+                    EXPERIMENT_NAME_EXPR_COLL + " LIKE " + C_LANGUAGE_LIKE_PATTERN + " OR " +
+                    "COALESCE(NULLIF(TRIM(tc.pta_keyword), " + EMPTY_STR + "), '')" + COLL + " LIKE " + C_LANGUAGE_LIKE_PATTERN + " OR " +
+                    "COALESCE(NULLIF(TRIM(tc.course_name), " + EMPTY_STR + "), '')" + COLL + " LIKE " + C_LANGUAGE_LIKE_PATTERN + " OR " +
+                    "COALESCE(NULLIF(TRIM(c.name), " + EMPTY_STR + "), '')" + COLL + " LIKE " + C_LANGUAGE_LIKE_PATTERN +
                     ")";
     private static final String SUBMISSION_ACTIVITY_PREDICATE =
             "LOWER(COALESCE(sa.submission_status, '')) IN ('graded', 'submitted') " +
@@ -85,7 +100,7 @@ public class ExperimentAnalyticsController {
                 .append("  ").append(EXPERIMENT_NAME_EXPR).append(" AS name, ")
                 .append("  ").append(CLASS_PREFIX_EXPR).append(" AS classPrefix, ")
                 .append("  tc.name AS className, ")
-                .append("  NULLIF(TRIM(").append(COURSE_NAME_EXPR).append("), '') AS courseName, ")
+                .append("  NULLIF(TRIM(").append(COURSE_NAME_EXPR).append("), ").append(EMPTY_STR).append(") AS courseName, ")
                 .append("  COUNT(DISTINCT sa.id) AS rosterCount, ")
                 .append("  COUNT(DISTINCT CASE WHEN ").append(SUBMISSION_ACTIVITY_PREDICATE).append(" THEN sa.id END) AS submittedCount, ")
                 .append("  COUNT(DISTINCT ap.id) AS topicSum ")
@@ -102,16 +117,16 @@ public class ExperimentAnalyticsController {
         if (hasPrefix) {
             sql.append("  AND (")
                     .append(CLASS_PREFIX_EXPR).append(" = ?2 ")
-                    .append("   OR tc.name LIKE ?3 ")
-                    .append("   OR ").append(EXPERIMENT_NAME_EXPR).append(" LIKE ?3 ")
-                    .append("   OR COALESCE(NULLIF(TRIM(tc.pta_keyword), ''), '') LIKE ?3")
+                    .append("   OR tc.name").append(COLL).append(" LIKE ?3 ")
+                    .append("   OR ").append(EXPERIMENT_NAME_EXPR_COLL).append(" LIKE ?3 ")
+                    .append("   OR COALESCE(NULLIF(TRIM(tc.pta_keyword), ").append(EMPTY_STR).append("), '')").append(COLL).append(" LIKE ?3")
                     .append(") ");
         }
 
         sql.append("GROUP BY ao.id, ")
                 .append(EXPERIMENT_NAME_EXPR).append(", ")
                 .append(CLASS_PREFIX_EXPR).append(", ")
-                .append("tc.name, NULLIF(TRIM(").append(COURSE_NAME_EXPR).append("), ''), ao.seq_no ")
+                .append("tc.name, NULLIF(TRIM(").append(COURSE_NAME_EXPR).append("), ").append(EMPTY_STR).append("), ao.seq_no ")
                 .append("ORDER BY CASE WHEN ao.seq_no IS NULL THEN 1 ELSE 0 END, ao.seq_no, ao.id");
 
         var query = em.createNativeQuery(sql.toString());
@@ -215,7 +230,29 @@ public class ExperimentAnalyticsController {
 
     private Integer requireCurrentTeacherId(HttpServletRequest request) {
         Teacher teacher = teacherSessionResolver.requireCurrentTeacher(request);
-        return teacher == null ? null : teacher.getTeacher_id();
+        if (teacher == null) {
+            return null;
+        }
+        Integer userId = resolveTapUserId(teacher.getUsername());
+        return userId == null ? teacher.getTeacher_id() : userId;
+    }
+
+    private Integer resolveTapUserId(String username) {
+        if (!hasText(username)) {
+            return null;
+        }
+        @SuppressWarnings("unchecked")
+        List<Number> rows = em.createNativeQuery(
+                "SELECT CAST(id AS SIGNED) " +
+                        "FROM tap_user " +
+                        "WHERE username COLLATE utf8mb4_unicode_ci = ?1 COLLATE utf8mb4_unicode_ci " +
+                        "LIMIT 1"
+        ).setParameter(1, username.trim()).getResultList();
+
+        if (rows.isEmpty() || rows.get(0) == null) {
+            return null;
+        }
+        return rows.get(0).intValue();
     }
 
     private Map<String, Object> requireScopedExperiment(int experimentId, Integer teacherId) {
@@ -224,7 +261,7 @@ public class ExperimentAnalyticsController {
                 "  " + EXPERIMENT_NAME_EXPR + " AS experimentName, " +
                 "  " + CLASS_PREFIX_EXPR + " AS classPrefix, " +
                 "  tc.name AS className, " +
-                "  NULLIF(TRIM(" + COURSE_NAME_EXPR + "), '') AS courseName, " +
+                "  NULLIF(TRIM(" + COURSE_NAME_EXPR + "), " + EMPTY_STR + ") AS courseName, " +
                 "  COUNT(DISTINCT ap.id) AS problemCount " +
                 "FROM assignment_offering ao " +
                 "JOIN assignment_template at ON at.id = ao.template_id " +
@@ -234,7 +271,7 @@ public class ExperimentAnalyticsController {
                 "WHERE ao.id = ?1 " +
                 "  AND ao.teacher_id = ?2 " +
                 "  AND " + DATA_STRUCTURE_SCOPE_PREDICATE + " " +
-                "GROUP BY ao.id, " + EXPERIMENT_NAME_EXPR + ", " + CLASS_PREFIX_EXPR + ", tc.name, NULLIF(TRIM(" + COURSE_NAME_EXPR + "), '')";
+                "GROUP BY ao.id, " + EXPERIMENT_NAME_EXPR + ", " + CLASS_PREFIX_EXPR + ", tc.name, NULLIF(TRIM(" + COURSE_NAME_EXPR + "), " + EMPTY_STR + ")";
 
         @SuppressWarnings("unchecked")
         List<Object[]> rows = em.createNativeQuery(sql)
@@ -404,8 +441,8 @@ public class ExperimentAnalyticsController {
         @SuppressWarnings("unchecked")
         List<Object[]> rows = em.createNativeQuery(
                 "SELECT " +
-                        "  COALESCE(NULLIF(TRIM(ap.problem_no), ''), CAST(ap.sort_order AS CHAR), CAST(ap.id AS CHAR)) AS problem_label, " +
-                        "  COALESCE(NULLIF(TRIM(ap.title), ''), 'PTA Problem') AS problem_title, " +
+                        "  COALESCE(NULLIF(TRIM(ap.problem_no), " + EMPTY_STR + "), CAST(ap.sort_order AS CHAR), CAST(ap.id AS CHAR)) AS problem_label, " +
+                        "  COALESCE(NULLIF(TRIM(ap.title), " + EMPTY_STR + "), 'PTA Problem') AS problem_title, " +
                         "  COALESCE(ap.max_score, 0) AS full_score, " +
                         "  AVG(COALESCE(sps.best_score, 0)) AS avg_score, " +
                         "  COUNT(sa.id) AS student_count, " +
@@ -424,6 +461,89 @@ public class ExperimentAnalyticsController {
                         "GROUP BY ap.id, problem_label, problem_title, ap.max_score, ap.sort_order " +
                         "ORDER BY ap.sort_order, ap.id"
         ).setParameter(1, experimentId).getResultList();
+
+        if (rows.isEmpty()) {
+            return computeLegacyProblemAccuracy(experimentId);
+        }
+
+        List<Double> legacyFullScores = null;
+        boolean needsLegacyFallback = false;
+        for (Object[] row : rows) {
+            if (toDouble(row[2]) <= 0) {
+                needsLegacyFallback = true;
+                break;
+            }
+        }
+        if (needsLegacyFallback) {
+            legacyFullScores = queryLegacyProblemFullScores(experimentId);
+        }
+
+        List<Map<String, Object>> result = new ArrayList<>(rows.size());
+        for (int i = 0; i < rows.size(); i++) {
+            Object[] row = rows.get(i);
+            double fullScore = toDouble(row[2]);
+            if (fullScore <= 0 && legacyFullScores != null && i < legacyFullScores.size()) {
+                fullScore = legacyFullScores.get(i);
+            }
+            double avgScore = toDouble(row[3]);
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("label", row[0]);
+            item.put("type", row[1]);
+            item.put("fullScore", round2(fullScore));
+            item.put("avgScore", round2(avgScore));
+            item.put("accuracyRate", fullScore > 0 ? round2(avgScore / fullScore * 100) : 0);
+            item.put("studentCount", toInt(row[4]));
+            item.put("fullMarkCount", toInt(row[5]));
+            item.put("zeroCount", toInt(row[6]));
+            result.add(item);
+        }
+        return result;
+    }
+
+    private List<Double> queryLegacyProblemFullScores(int offeringId) {
+        Integer legacyExperimentId = resolveLegacyExperimentId(offeringId);
+        if (legacyExperimentId == null) {
+            return Collections.emptyList();
+        }
+        @SuppressWarnings("unchecked")
+        List<Number> rows = em.createNativeQuery(
+                "SELECT MAX(COALESCE(max_score, 0)) AS full_score " +
+                        "FROM problem_score_detail " +
+                        "WHERE experiment_id = ?1 " +
+                        "GROUP BY problem_label " +
+                        "ORDER BY CAST(problem_label AS UNSIGNED), problem_label"
+        ).setParameter(1, legacyExperimentId).getResultList();
+
+        List<Double> scores = new ArrayList<>(rows.size());
+        for (Number row : rows) {
+            scores.add(row == null ? 0.0 : row.doubleValue());
+        }
+        return scores;
+    }
+
+    private List<Map<String, Object>> computeLegacyProblemAccuracy(int offeringId) {
+        Integer legacyExperimentId = resolveLegacyExperimentId(offeringId);
+        if (legacyExperimentId == null) {
+            return Collections.emptyList();
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = em.createNativeQuery(
+                "SELECT " +
+                        "  problem_label, " +
+                        "  COALESCE(NULLIF(TRIM(problem_type), " + EMPTY_STR + "), 'PTA Problem') AS problem_type, " +
+                        "  MAX(COALESCE(max_score, 0)) AS full_score, " +
+                        "  AVG(COALESCE(actual_score, 0)) AS avg_score, " +
+                        "  COUNT(DISTINCT student_id) AS student_count, " +
+                        "  SUM(CASE " +
+                        "        WHEN COALESCE(max_score, 0) > 0 AND COALESCE(actual_score, 0) >= COALESCE(max_score, 0) " +
+                        "        THEN 1 ELSE 0 END) AS full_mark_count, " +
+                        "  SUM(CASE WHEN COALESCE(actual_score, 0) = 0 THEN 1 ELSE 0 END) AS zero_count " +
+                        "FROM problem_score_detail " +
+                        "WHERE experiment_id = ?1 " +
+                        "GROUP BY problem_label, problem_type " +
+                        "ORDER BY CAST(problem_label AS UNSIGNED), problem_label"
+        ).setParameter(1, legacyExperimentId).getResultList();
 
         List<Map<String, Object>> result = new ArrayList<>(rows.size());
         for (Object[] row : rows) {
@@ -452,9 +572,47 @@ public class ExperimentAnalyticsController {
         ).setParameter(1, experimentId).getResultList();
 
         if (rows.isEmpty() || rows.get(0) == null) {
+            return queryLegacyFullScore(experimentId);
+        }
+        double fullScore = rows.get(0).doubleValue();
+        return fullScore > 0 ? fullScore : queryLegacyFullScore(experimentId);
+    }
+
+    private double queryLegacyFullScore(int offeringId) {
+        Integer legacyExperimentId = resolveLegacyExperimentId(offeringId);
+        if (legacyExperimentId == null) {
+            return 0;
+        }
+        @SuppressWarnings("unchecked")
+        List<Number> rows = em.createNativeQuery(
+                "SELECT SUM(full_score) FROM (" +
+                        "  SELECT problem_label, MAX(COALESCE(max_score, 0)) AS full_score " +
+                        "  FROM problem_score_detail " +
+                        "  WHERE experiment_id = ?1 " +
+                        "  GROUP BY problem_label" +
+                        ") problem_scores"
+        ).setParameter(1, legacyExperimentId).getResultList();
+        if (rows.isEmpty() || rows.get(0) == null) {
             return 0;
         }
         return rows.get(0).doubleValue();
+    }
+
+    private Integer resolveLegacyExperimentId(int offeringId) {
+        @SuppressWarnings("unchecked")
+        List<Object> rows = em.createNativeQuery(
+                "SELECT CAST(SUBSTRING_INDEX(source_offering_key, ':', -1) AS SIGNED) " +
+                        "FROM assignment_offering " +
+                        "WHERE id = ?1 " +
+                        "  AND source_system = 'LEGACY_TAP' " +
+                        "  AND source_offering_key LIKE 'LEGACY_EXPERIMENT_OFFERING:%' " +
+                        "LIMIT 1"
+        ).setParameter(1, offeringId).getResultList();
+
+        if (rows.isEmpty() || rows.get(0) == null) {
+            return null;
+        }
+        return toInt(rows.get(0));
     }
 
     private static boolean hasText(String value) {

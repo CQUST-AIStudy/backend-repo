@@ -1,24 +1,30 @@
 package com.tap.backend.academic.security;
 
-import com.tap.backend.academic.dao.UserDao;
 import com.tap.backend.academic.entity.UserEntity;
-import com.tap.backend.security.JwtService;
+import com.tap.backend.repo.UserRepository;
+import com.tap.backend.security.UserPrincipal;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
+import java.util.List;
 import org.springframework.http.HttpStatus;
+import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Component;
 import org.springframework.web.server.ResponseStatusException;
 
 @Component
 public class LegacySessionAccessResolver {
+    private final UserRepository userRepository;
+    private final LegacyAuthTokenService legacyAuthTokenService;
 
-    private final JwtService jwtService;
-    private final UserDao userDao;
+    @PersistenceContext
+    private EntityManager em;
 
-    public LegacySessionAccessResolver(JwtService jwtService, UserDao userDao) {
-        this.jwtService = jwtService;
-        this.userDao = userDao;
+    public LegacySessionAccessResolver(UserRepository userRepository, LegacyAuthTokenService legacyAuthTokenService) {
+        this.userRepository = userRepository;
+        this.legacyAuthTokenService = legacyAuthTokenService;
     }
 
     public UserEntity requireAuthenticated(HttpServletRequest request) {
@@ -30,34 +36,22 @@ public class LegacySessionAccessResolver {
             }
         }
 
-        Object principal = SecurityContextHolder.getContext().getAuthentication() == null
-                ? null
-                : SecurityContextHolder.getContext().getAuthentication().getPrincipal();
-        if (principal instanceof UserEntity user) {
-            return user;
+        var cookieUser = legacyAuthTokenService.resolve(request);
+        if (cookieUser.isPresent()) {
+            return cookieUser.get();
         }
-        UserEntity bearerUser = resolveBearerUser(request);
-        if (bearerUser != null) {
-            return bearerUser;
-        }
-        throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "authentication required");
-    }
 
-    private UserEntity resolveBearerUser(HttpServletRequest request) {
-        String header = request.getHeader("Authorization");
-        if (header == null || !header.startsWith("Bearer ")) {
-            return null;
+        UserPrincipal principal = currentJwtPrincipal();
+        if (principal == null) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "authentication required");
         }
-        String token = header.substring("Bearer ".length()).trim();
-        if (token.isEmpty()) {
-            return null;
+
+        com.tap.backend.domain.user.UserEntity tapUser = userRepository.findById(principal.userId())
+            .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "user not found"));
+        if (!Boolean.TRUE.equals(tapUser.getEnabled())) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "user account is disabled");
         }
-        try {
-            var principal = jwtService.parse(token);
-            return userDao.findByUsername(principal.username());
-        } catch (Exception ignored) {
-            return null;
-        }
+        return toLegacyUser(tapUser);
     }
 
     public String requireStudentReadAccess(String requestedStudentId, HttpServletRequest request) {
@@ -128,5 +122,85 @@ public class LegacySessionAccessResolver {
         }
         String trimmed = value.trim().toLowerCase();
         return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private UserPrincipal currentJwtPrincipal() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !(authentication.getPrincipal() instanceof UserPrincipal principal)) {
+            return null;
+        }
+        return principal;
+    }
+
+    private UserEntity toLegacyUser(com.tap.backend.domain.user.UserEntity tapUser) {
+        UserEntity legacyUser = findLegacyUser(tapUser.getUsername());
+        if (legacyUser != null) {
+            return legacyUser;
+        }
+
+        UserEntity user = new UserEntity();
+        user.setId(tapUser.getId() == null ? 0 : tapUser.getId().intValue());
+        user.setUsername(tapUser.getUsername());
+        user.setRole(tapUser.getRole() == null ? null : tapUser.getRole().name().toLowerCase());
+        user.setUsernum(tapUser.getUsername());
+        user.setClassname(null);
+        return user;
+    }
+
+    private UserEntity findLegacyUser(String username) {
+        String normalizedUsername = normalizeKeepCase(username);
+        if (normalizedUsername == null) {
+            return null;
+        }
+        try {
+            @SuppressWarnings("unchecked")
+            List<Object[]> rows = em.createNativeQuery(
+                    "SELECT id, username, password_hash, email, role, usernum, classname, phone, department FROM tap_user WHERE username = ?1 LIMIT 1"
+                )
+                .setParameter(1, normalizedUsername)
+                .getResultList();
+            if (rows.isEmpty()) {
+                return null;
+            }
+            Object[] row = rows.get(0);
+            UserEntity user = new UserEntity();
+            user.setId(toInt(row[0]));
+            user.setUsername(toString(row[1]));
+            user.setPassword(toString(row[2]));
+            user.setEmail(toString(row[3]));
+            // tap_user stores UPPERCASE role; convert to lowercase for legacy compatibility
+            String role = toString(row[4]);
+            user.setRole(role != null ? role.toLowerCase() : null);
+            user.setUsernum(toString(row[5]));
+            user.setClassname(toString(row[6]));
+            user.setPhone(toString(row[7]));
+            user.setDepartment(toString(row[8]));
+            return user;
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+    }
+
+    private String normalizeKeepCase(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private String toString(Object value) {
+        return value == null ? null : String.valueOf(value);
+    }
+
+    private int toInt(Object value) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        try {
+            return Integer.parseInt(String.valueOf(value));
+        } catch (RuntimeException e) {
+            return 0;
+        }
     }
 }

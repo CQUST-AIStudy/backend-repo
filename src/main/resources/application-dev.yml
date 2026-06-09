@@ -9,6 +9,10 @@ spring:
     password: ${DB_PASSWORD:${DB_PASS:123456}}
 
 tap:
+  recommendation:
+    base-url: ${RECOMMENDATION_SERVICE_BASE_URL:http://127.0.0.1:8003}
+    connect-timeout-ms: ${RECOMMENDATION_SERVICE_CONNECT_TIMEOUT_MS:3000}
+    read-timeout-ms: ${RECOMMENDATION_SERVICE_READ_TIMEOUT_MS:10000}
   security:
     jwt:
       secret: ${JWT_SECRET:dev_only_jwt_secret_not_for_production_use_1234567890}

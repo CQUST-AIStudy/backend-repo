@@ -9,4 +9,5 @@ public interface TeachingClassRepository extends JpaRepository<TeachingClassEnti
     List<TeachingClassEntity> findAllByTeacherId(Long teacherId);
     Optional<TeachingClassEntity> findByClassCode(String classCode);
     boolean existsByClassCode(String classCode);
+    List<TeachingClassEntity> findByNameContainingOrderByIdAsc(String name);
 }

@@ -20,8 +20,8 @@ public class AIRemarksServiceImpl implements AIRemarksService {
     private AIRemarksMapper aiRemarksMapper;
 
     @Override
-    public AIRemarks getAIRemarkByStudentAndExperiment(Integer studentId, Integer experimentId) {
-        logger.info("获取学生ID为{}，实验ID为{}的AI备注", studentId, experimentId);
+    public AIRemarks getAIRemarkByStudentAndExperiment(String studentId, Integer experimentId) {
+        logger.info("获取学号为{}，实验ID为{}的AI备注", studentId, experimentId);
         try {
             return aiRemarksMapper.getAIRemarkByStudentAndExperiment(studentId, experimentId);
         } catch (Exception e) {
@@ -43,8 +43,8 @@ public class AIRemarksServiceImpl implements AIRemarksService {
     }
 
     @Override
-    public boolean deleteAIRemark(Integer studentId, Integer experimentId) {
-        logger.info("删除学生ID为{}，实验ID为{}的AI备注", studentId, experimentId);
+    public boolean deleteAIRemark(String studentId, Integer experimentId) {
+        logger.info("删除学号为{}，实验ID为{}的AI备注", studentId, experimentId);
         try {
             int result = aiRemarksMapper.deleteAIRemark(studentId, experimentId);
             return result > 0;

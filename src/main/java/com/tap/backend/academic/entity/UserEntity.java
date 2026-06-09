@@ -8,6 +8,8 @@ public class UserEntity {
     private String role;
     private String usernum;    // 学号或工号
     private String classname;  // 班级名称
+    private String phone;      // 联系电话
+    private String department; // 部门
     
     public UserEntity() {
     }
@@ -68,8 +70,24 @@ public class UserEntity {
     public String getClassname() {
         return classname;
     }
-    
+
     public void setClassname(String classname) {
         this.classname = classname;
+    }
+
+    public String getPhone() {
+        return phone;
+    }
+
+    public void setPhone(String phone) {
+        this.phone = phone;
+    }
+
+    public String getDepartment() {
+        return department;
+    }
+
+    public void setDepartment(String department) {
+        this.department = department;
     }
 }

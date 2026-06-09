@@ -4,7 +4,6 @@ import com.tap.backend.academic.entity.UserEntity;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import jakarta.servlet.http.HttpServletRequest;
-import jakarta.servlet.http.HttpSession;
 import java.util.List;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
@@ -12,20 +11,17 @@ import org.springframework.web.server.ResponseStatusException;
 
 @Component
 public class StudentSessionResolver {
+    private final LegacySessionAccessResolver legacySessionAccessResolver;
 
     @PersistenceContext
     private EntityManager em;
 
-    public UserEntity requireStudent(HttpServletRequest request) {
-        HttpSession session = request.getSession(false);
-        if (session == null) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "authentication required");
-        }
+    public StudentSessionResolver(LegacySessionAccessResolver legacySessionAccessResolver) {
+        this.legacySessionAccessResolver = legacySessionAccessResolver;
+    }
 
-        Object currentUser = session.getAttribute("currentUser");
-        if (!(currentUser instanceof UserEntity user)) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "authentication required");
-        }
+    public UserEntity requireStudent(HttpServletRequest request) {
+        UserEntity user = legacySessionAccessResolver.requireAuthenticated(request);
         if (!"student".equalsIgnoreCase(user.getRole())) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "student role required");
         }
