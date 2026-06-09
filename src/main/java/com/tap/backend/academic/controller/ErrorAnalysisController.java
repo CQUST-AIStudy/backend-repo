@@ -4,6 +4,7 @@ import com.tap.backend.academic.security.StudentSessionResolver;
 import com.tap.backend.academic.service.ErrorAnalysisService;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -184,6 +185,16 @@ public class ErrorAnalysisController {
 
             if (isProxyMode) {
                 payload.put("studentId", studentId);
+                // 过滤 errorHistory 中 count <= 0 的无效条目
+                if ("learning".equals(type)) {
+                    sanitizeErrorHistory(payload);
+                    if (!hasValidErrorHistory(payload)) {
+                        Map<String, Object> err = new HashMap<>();
+                        err.put("success", false);
+                        err.put("message", "errorHistory must contain at least one record with count >= 1");
+                        return ResponseEntity.badRequest().body(err);
+                    }
+                }
                 responseBody = errorAnalysisService.proxyToMicroservice("/analyze/" + type, payload);
             } else if (experimentId != null) {
                 responseBody = switch (type) {
@@ -236,5 +247,24 @@ public class ErrorAnalysisController {
             if (name != null) return name.toString();
         } catch (Exception ignored) {}
         return "";
+    }
+
+    /** 过滤 errorHistory 中 count <= 0 的无效条目 */
+    @SuppressWarnings("unchecked")
+    private void sanitizeErrorHistory(Map<String, Object> payload) {
+        Object raw = payload.get("errorHistory");
+        if (!(raw instanceof List)) return;
+        List<Map<String, Object>> list = (List<Map<String, Object>>) raw;
+        list.removeIf(item -> {
+            Object countObj = item.get("count");
+            if (!(countObj instanceof Number)) return true;
+            return ((Number) countObj).intValue() <= 0;
+        });
+    }
+
+    private boolean hasValidErrorHistory(Map<String, Object> payload) {
+        Object raw = payload.get("errorHistory");
+        if (!(raw instanceof List)) return false;
+        return !((List<?>) raw).isEmpty();
     }
 }
