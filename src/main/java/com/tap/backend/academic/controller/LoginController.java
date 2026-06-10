@@ -66,13 +66,21 @@ public class LoginController {
             HttpServletResponse servletResponse) {
         Map<String, Object> response = new HashMap<>();
         try {
+            // 防御：清除可能残留的旧认证状态，确保每次登录都是全新起点
+            HttpSession oldSession = request.getSession(false);
+            if (oldSession != null) {
+                oldSession.invalidate();
+            }
+            legacyAuthTokenService.clearCookie(servletResponse);
+
             UserEntity user = userService.findByUsername(loginUser.getUsername());
+            log.info("login user: " + loginUser.getUsername()+"login password: " + loginUser.getPassword());
             if (user == null) {
                 response.put("success", false);
                 response.put("message", "user not found");
                 return ResponseEntity.ok(response);
             }
-
+            log.info("loginuserpass: " + loginUser.getPassword() + "login user: " + user.getPassword());
             if (!passwordMatches(loginUser.getPassword(), user.getPassword())) {
                 response.put("success", false);
                 response.put("message", "invalid password");
@@ -170,6 +178,8 @@ public class LoginController {
         if (session != null) {
             session.invalidate();
         }
+        // 清除 Spring Security 上下文，防止写回已销毁的 session 导致后续登录异常
+        org.springframework.security.core.context.SecurityContextHolder.clearContext();
         legacyAuthTokenService.clearCookie(servletResponse);
 
         response.put("success", true);

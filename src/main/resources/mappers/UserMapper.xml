@@ -15,13 +15,13 @@
 
     <select id="findByUsername" parameterType="string" resultMap="userResultMap">
         SELECT id, username, password_hash AS password, email, LOWER(role) AS role,
-               usernum, classname, phone, department
+               usernum, classname
         FROM tap_user WHERE username = #{username}
     </select>
 
     <select id="findById" parameterType="int" resultMap="userResultMap">
         SELECT id, username, password_hash AS password, email, LOWER(role) AS role,
-               usernum, classname, phone, department
+               usernum, classname
         FROM tap_user WHERE id = #{id}
     </select>
 
@@ -49,19 +49,19 @@
 
     <select id="findByUsernameFromLegacyUser" parameterType="string" resultMap="userResultMap">
         SELECT id, username, password AS password, email, LOWER(role) AS role,
-               usernum, classname, phone, department
+               usernum, classname
         FROM user WHERE username = #{username} AND LOWER(role) = 'student'
     </select>
 
     <select id="findByUsernameFromLegacyUserAnyRole" parameterType="string" resultMap="userResultMap">
         SELECT id, username, password AS password, email, LOWER(role) AS role,
-               usernum, classname, phone, department
+               usernum, classname
         FROM user WHERE username = #{username}
     </select>
 
     <select id="findTapUserByUsernum" parameterType="string" resultMap="userResultMap">
         SELECT id, username, password_hash AS password, email, LOWER(role) AS role,
-               usernum, classname, phone, department
+               usernum, classname
         FROM tap_user WHERE usernum = #{usernum}
     </select>
 

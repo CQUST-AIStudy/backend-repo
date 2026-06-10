@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tap.backend.academic.dao.AiErrorAnalysisReportDao">
+
+    <resultMap id="reportResultMap" type="com.tap.backend.academic.entity.AiErrorAnalysisReport">
+        <id property="id" column="id"/>
+        <result property="analysisId" column="analysis_id"/>
+        <result property="studentNo" column="student_no"/>
+        <result property="experimentId" column="experiment_id"/>
+        <result property="experimentName" column="experiment_name"/>
+        <result property="reportType" column="report_type"/>
+        <result property="severity" column="severity"/>
+        <result property="aiGenerated" column="ai_generated"/>
+        <result property="overallAssessment" column="overall_assessment"/>
+        <result property="errorCategoriesJson" column="error_categories_json"/>
+        <result property="learningSuggestionsJson" column="learning_suggestions_json"/>
+        <result property="weakPointsJson" column="weak_points_json"/>
+        <result property="studyPlanJson" column="study_plan_json"/>
+        <result property="recommendedProblemsJson" column="recommended_problems_json"/>
+        <result property="summaryMessage" column="summary_message"/>
+        <result property="warningType" column="warning_type"/>
+        <result property="warningMessage" column="warning_message"/>
+        <result property="teacherNote" column="teacher_note"/>
+        <result property="interventionTriggered" column="intervention_triggered"/>
+        <result property="rawResponseJson" column="raw_response_json"/>
+        <result property="createdAt" column="created_at"/>
+        <result property="updatedAt" column="updated_at"/>
+    </resultMap>
+
+    <insert id="save" parameterType="com.tap.backend.academic.entity.AiErrorAnalysisReport"
+            useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO ai_error_analysis_report (
+            analysis_id, student_no, experiment_id, experiment_name, report_type,
+            severity, ai_generated, overall_assessment, error_categories_json,
+            learning_suggestions_json, weak_points_json, study_plan_json,
+            recommended_problems_json, summary_message, warning_type, warning_message,
+            teacher_note, intervention_triggered, raw_response_json
+        ) VALUES (
+            #{analysisId}, #{studentNo}, #{experimentId}, #{experimentName}, #{reportType},
+            #{severity}, #{aiGenerated}, #{overallAssessment}, #{errorCategoriesJson},
+            #{learningSuggestionsJson}, #{weakPointsJson}, #{studyPlanJson},
+            #{recommendedProblemsJson}, #{summaryMessage}, #{warningType}, #{warningMessage},
+            #{teacherNote}, #{interventionTriggered}, #{rawResponseJson}
+        )
+    </insert>
+
+    <select id="findByStudentAndExperiment" resultMap="reportResultMap">
+        SELECT * FROM ai_error_analysis_report
+        WHERE student_no = #{studentNo} AND experiment_id = #{experimentId}
+        ORDER BY created_at DESC
+    </select>
+
+    <select id="findByAnalysisId" resultMap="reportResultMap">
+        SELECT * FROM ai_error_analysis_report
+        WHERE analysis_id = #{analysisId}
+    </select>
+
+    <delete id="deleteByStudentAndExperiment">
+        DELETE FROM ai_error_analysis_report
+        WHERE student_no = #{studentNo} AND experiment_id = #{experimentId}
+    </delete>
+
+</mapper>

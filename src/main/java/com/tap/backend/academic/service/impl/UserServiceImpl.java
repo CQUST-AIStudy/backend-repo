@@ -11,11 +11,13 @@ import com.tap.backend.repo.ClassStudentRepository;
 import com.tap.backend.repo.TeachingClassRepository;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
 
+@Slf4j
 @Service
 public class UserServiceImpl implements UserService {
 
@@ -36,33 +38,19 @@ public class UserServiceImpl implements UserService {
 
     @Override
     public UserEntity findByUsername(String username) {
-        // 1. 先查 tap_user 表（教师/管理员优先）
+        // 统一从 tap_user 查询（学生/教师/管理员同级）
         UserEntity tapUser = userDao.findByUsername(username);
-        if (tapUser != null) {
-            return tapUser; // 教师/管理员从 tap_user 登录
+        if (tapUser.getPassword() != null) {
+            return tapUser;
         }
 
-        // 2. 查 user 表（仅学生）
-        UserEntity legacyUser = userDao.findByUsernameFromLegacyUser(username);
+        // 兜底：查 user 表（不限角色）
+        UserEntity legacyUser = userDao.findByUsernameFromLegacyUserAnyRole(username);
         if (legacyUser != null) {
-            // 学生认证通过，需要用 usernum 找到对应的 tap_user 记录
-            UserEntity tapUserByUsernum = userDao.findTapUserByUsernum(legacyUser.getUsernum());
-            if (tapUserByUsernum != null) {
-                // 用 tap_user 的信息建立会话，但保留 user 表的正确密码
-                tapUserByUsernum.setPassword(legacyUser.getPassword());
-                return tapUserByUsernum;
-            }
-            // 如果 tap_user 中没有对应记录，返回 legacyUser（降级处理）
             return legacyUser;
         }
 
-        // 3. 兜底：查 user 表不限角色（管理员/教师在 tap_user 中不存在时走这里）
-        UserEntity legacyAnyRole = userDao.findByUsernameFromLegacyUserAnyRole(username);
-        if (legacyAnyRole != null) {
-            return legacyAnyRole;
-        }
-
-        return null; // 用户不存在
+        return null;
     }
 
     @Override
