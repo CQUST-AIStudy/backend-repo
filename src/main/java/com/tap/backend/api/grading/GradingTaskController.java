@@ -10,6 +10,7 @@ import com.tap.backend.security.UserPrincipal;
 import com.tap.backend.service.AnnotatedStudentReportService;
 import com.tap.backend.service.GradingSubmissionService;
 import com.tap.backend.service.GradingTaskService;
+import com.tap.backend.service.TeacherSignatureService;
 import com.tap.common.api.ApiResponse;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -39,17 +40,20 @@ public class GradingTaskController {
     private final GradingSubmissionService gradingSubmissionService;
     private final ReportFileRepository reportFileRepo;
     private final TeacherPrincipalResolver teacherPrincipalResolver;
+    private final TeacherSignatureService signatureService;
 
     public GradingTaskController(
             GradingTaskService taskService,
             GradingSubmissionService gradingSubmissionService,
             ReportFileRepository reportFileRepo,
-            TeacherPrincipalResolver teacherPrincipalResolver
+            TeacherPrincipalResolver teacherPrincipalResolver,
+            TeacherSignatureService signatureService
     ) {
         this.taskService = taskService;
         this.gradingSubmissionService = gradingSubmissionService;
         this.reportFileRepo = reportFileRepo;
         this.teacherPrincipalResolver = teacherPrincipalResolver;
+        this.signatureService = signatureService;
     }
 
     @PostMapping
@@ -75,6 +79,10 @@ public class GradingTaskController {
                     scoreRangeMax,
                     files
             );
+            // Auto-save teacher signature for future use
+            if (teacherSignature != null && !teacherSignature.isBlank()) {
+                signatureService.ensureExists(teacherId, teacherSignature);
+            }
             return ResponseEntity.ok(ApiResponse.of(result));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
