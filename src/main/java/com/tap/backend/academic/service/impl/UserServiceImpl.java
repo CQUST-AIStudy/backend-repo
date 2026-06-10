@@ -40,7 +40,7 @@ public class UserServiceImpl implements UserService {
     public UserEntity findByUsername(String username) {
         // 统一从 tap_user 查询（学生/教师/管理员同级）
         UserEntity tapUser = userDao.findByUsername(username);
-        if (tapUser.getPassword() != null) {
+        if (tapUser.getPassword() != null && tapUser!=null) {
             return tapUser;
         }
 
