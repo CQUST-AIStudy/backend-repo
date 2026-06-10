@@ -56,6 +56,16 @@ public class GradingTaskEntity {
     @Column(name = "failed_count", nullable = false)
     private int failedCount = 0;
 
+    @Column(name = "display_code", length = 16)
+    private String displayCode;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "batch_id")
+    private GradingBatchEntity batch;
+
+    @Column(name = "batch_id", insertable = false, updatable = false)
+    private Long batchId;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -99,6 +109,11 @@ public class GradingTaskEntity {
     public void setCompletedCount(int completedCount) { this.completedCount = completedCount; }
     public int getFailedCount() { return failedCount; }
     public void setFailedCount(int failedCount) { this.failedCount = failedCount; }
+    public String getDisplayCode() { return displayCode; }
+    public void setDisplayCode(String displayCode) { this.displayCode = displayCode; }
+    public GradingBatchEntity getBatch() { return batch; }
+    public void setBatch(GradingBatchEntity batch) { this.batch = batch; }
+    public Long getBatchId() { return batchId; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
 }

@@ -39,6 +39,7 @@ public class GradingTaskController {
     private final GradingTaskService taskService;
     private final GradingSubmissionService gradingSubmissionService;
     private final ReportFileRepository reportFileRepo;
+    private final com.tap.backend.repo.GradingBatchRepository batchRepo;
     private final TeacherPrincipalResolver teacherPrincipalResolver;
     private final TeacherSignatureService signatureService;
 
@@ -46,12 +47,14 @@ public class GradingTaskController {
             GradingTaskService taskService,
             GradingSubmissionService gradingSubmissionService,
             ReportFileRepository reportFileRepo,
+            com.tap.backend.repo.GradingBatchRepository batchRepo,
             TeacherPrincipalResolver teacherPrincipalResolver,
             TeacherSignatureService signatureService
     ) {
         this.taskService = taskService;
         this.gradingSubmissionService = gradingSubmissionService;
         this.reportFileRepo = reportFileRepo;
+        this.batchRepo = batchRepo;
         this.teacherPrincipalResolver = teacherPrincipalResolver;
         this.signatureService = signatureService;
     }
@@ -65,7 +68,9 @@ public class GradingTaskController {
             @RequestParam(value = "classId", required = false) Long classId,
             @RequestParam(value = "teacherSignature", required = false) String teacherSignature,
             @RequestParam(value = "scoreRangeMin", required = false) java.math.BigDecimal scoreRangeMin,
-            @RequestParam(value = "scoreRangeMax", required = false) java.math.BigDecimal scoreRangeMax
+            @RequestParam(value = "scoreRangeMax", required = false) java.math.BigDecimal scoreRangeMax,
+            @RequestParam(value = "batchId", required = false) Long batchId,
+            @RequestParam(value = "batchName", required = false) String batchName
     ) {
         Long teacherId = teacherPrincipalResolver.requireTeacherId(principal);
         try {
@@ -77,7 +82,9 @@ public class GradingTaskController {
                     rubricId,
                     scoreRangeMin,
                     scoreRangeMax,
-                    files
+                    files,
+                    batchId,
+                    batchName
             );
             // Auto-save teacher signature for future use
             if (teacherSignature != null && !teacherSignature.isBlank()) {
@@ -104,8 +111,14 @@ public class GradingTaskController {
                 PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"))
         );
 
+        List<Map<String, Object>> content = tasks.getContent().stream()
+                .map(task -> new LinkedHashMap<String, Object>(toListDto(task)))
+                .map(dto -> (Map<String, Object>) dto)
+                .toList();
+        attachBatchNames(content);
+
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("content", tasks.getContent().stream().map(this::toListDto).toList());
+        result.put("content", content);
         result.put("totalElements", tasks.getTotalElements());
         result.put("totalPages", tasks.getTotalPages());
         return ResponseEntity.ok(ApiResponse.of(result));
@@ -129,6 +142,7 @@ public class GradingTaskController {
 
             final Map<Long, ReportFileEntity> reportMap = preferredReports;
             Map<String, Object> dto = new LinkedHashMap<>(toListDto(task));
+            attachBatchNames(List.of(dto));
             dto.put("submissions", submissions.stream().map(submission -> toSubDto(submission, reportMap.get(submission.getId()))).toList());
             return ResponseEntity.ok(ApiResponse.of(dto));
         } catch (IllegalArgumentException e) {
@@ -216,9 +230,32 @@ public class GradingTaskController {
     public record ExcelExportRequest(List<Long> submissionIds, boolean includeComments) {}
     public record TeacherSignatureRequest(String teacherSignature) {}
 
+    private void attachBatchNames(List<Map<String, Object>> taskDtos) {
+        List<Long> batchIds = taskDtos.stream()
+                .map(dto -> (Long) dto.get("batchId"))
+                .filter(java.util.Objects::nonNull)
+                .distinct()
+                .toList();
+        if (batchIds.isEmpty()) {
+            return;
+        }
+        Map<Long, com.tap.backend.domain.grading.GradingBatchEntity> batchMap = new HashMap<>();
+        batchRepo.findAllById(batchIds).forEach(batch -> batchMap.put(batch.getId(), batch));
+        for (Map<String, Object> dto : taskDtos) {
+            Long batchId = (Long) dto.get("batchId");
+            var batch = batchId != null ? batchMap.get(batchId) : null;
+            if (batch != null) {
+                dto.put("batchName", batch.getName());
+                dto.put("batchDisplayCode", batch.getDisplayCode());
+            }
+        }
+    }
+
     private Map<String, Object> toListDto(GradingTaskEntity task) {
         Map<String, Object> dto = new LinkedHashMap<>();
         dto.put("taskId", task.getId());
+        dto.put("displayCode", task.getDisplayCode());
+        dto.put("batchId", task.getBatchId());
         dto.put("status", task.getStatus().name());
         dto.put("totalCount", task.getTotalCount());
         dto.put("completedCount", task.getCompletedCount());

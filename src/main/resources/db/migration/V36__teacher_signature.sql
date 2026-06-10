@@ -1,4 +1,3 @@
--- V36: teacher_signature – saved signatures for grading tasks
 CREATE TABLE IF NOT EXISTS teacher_signature (
     id           BIGINT AUTO_INCREMENT PRIMARY KEY,
     teacher_id   BIGINT       NOT NULL,

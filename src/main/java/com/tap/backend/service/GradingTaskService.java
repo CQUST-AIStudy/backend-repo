@@ -34,6 +34,7 @@ public class GradingTaskService {
     private static final java.math.BigDecimal DEFAULT_SCORE_RANGE_MAX = new java.math.BigDecimal("99");
 
     private final GradingTaskRepository taskRepo;
+    private final GradingBatchRepository batchRepo;
     private final GradingSubmissionRepository submissionRepo;
     private final GradingRubricRepository rubricRepo;
     private final UserRepository userRepo;
@@ -52,6 +53,7 @@ public class GradingTaskService {
     private long stuckTimeoutMinutes;
 
     public GradingTaskService(GradingTaskRepository taskRepo,
+                              GradingBatchRepository batchRepo,
                               GradingSubmissionRepository submissionRepo,
                               GradingRubricRepository rubricRepo,
                               UserRepository userRepo,
@@ -63,6 +65,7 @@ public class GradingTaskService {
                               GradingTraceRepository traceRepo,
                               OfficeDocumentConversionService officeDocumentConversionService) {
         this.taskRepo = taskRepo;
+        this.batchRepo = batchRepo;
         this.submissionRepo = submissionRepo;
         this.rubricRepo = rubricRepo;
         this.userRepo = userRepo;
@@ -79,7 +82,8 @@ public class GradingTaskService {
     public Map<String, Object> createTask(Long teacherId, Long experimentId, Long classId,
                                            String teacherSignature, Long rubricId, java.math.BigDecimal scoreRangeMin,
                                            java.math.BigDecimal scoreRangeMax,
-                                           MultipartFile[] files) {
+                                           MultipartFile[] files,
+                                           Long batchId, String batchName) {
         if (files == null || files.length == 0) {
             throw new IllegalArgumentException("At least one PDF or Word file is required");
         }
@@ -123,6 +127,14 @@ public class GradingTaskService {
         task.setScoreRangeMax(resolvedScoreRange.max());
         task.setStatus(GradingTaskStatus.PENDING);
         task.setTotalCount(validPdfs.size());
+        task = taskRepo.save(task);
+
+        // Generate human-friendly display code (MMDD-XX format)
+        task.setDisplayCode(generateDisplayCode(teacherId, task.getCreatedAt()));
+
+        // Attach to an existing batch, or create a new batch for this upload (one upload = one batch)
+        GradingBatchEntity batch = resolveOrCreateBatch(teacher, batchId, batchName, task.getDisplayCode());
+        task.setBatch(batch);
         task = taskRepo.save(task);
         if (experimentId != null && task.getAssignmentOfferingId() == null) {
             log.warn("No assignment_offering_id resolved for grading task. experimentId={}, classId={}, teacherId={}",
@@ -176,6 +188,9 @@ public class GradingTaskService {
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("taskId", task.getId());
+        result.put("displayCode", task.getDisplayCode());
+        result.put("batchId", batch.getId());
+        result.put("batchName", batch.getName());
         result.put("status", task.getStatus().name());
         result.put("totalCount", task.getTotalCount());
         result.put("rubricId", rubricId);
@@ -328,8 +343,10 @@ public class GradingTaskService {
         if (task.getStatus() == GradingTaskStatus.PROCESSING) {
             throw new IllegalStateException("Task is still processing");
         }
+        // Note: For PENDING tasks, the Celery job in the queue will gracefully exit
+        // when it finds the submission no longer exists (cascade delete).
         taskRepo.delete(task);
-        log.info("Deleted grading task {} by teacher {}", taskId, teacherId);
+        log.info("Deleted grading task {} (status={}) by teacher {}", taskId, task.getStatus(), teacherId);
     }
 
     /**
@@ -384,8 +401,31 @@ public class GradingTaskService {
                 }
             }
 
+            // Calculate column widths with proper CJK character handling
+            int[] maxWidths = new int[headers.length];
+            // Initialize with header widths (CJK chars count as ~2 Latin chars)
             for (int i = 0; i < headers.length; i++) {
-                sheet.autoSizeColumn(i);
+                maxWidths[i] = calcDisplayWidth(headers[i]);
+            }
+            // Check data rows
+            for (int r = 1; r <= subs.size(); r++) {
+                var row = sheet.getRow(r);
+                if (row == null) continue;
+                for (int c = 0; c < headers.length; c++) {
+                    var cell = row.getCell(c);
+                    if (cell == null) continue;
+                    String val = getCellStringValue(cell);
+                    int width = calcDisplayWidth(val);
+                    if (width > maxWidths[c]) maxWidths[c] = width;
+                }
+            }
+            // Set column widths with some padding, capped at reasonable max
+            for (int i = 0; i < headers.length; i++) {
+                int width = Math.min(maxWidths[i] + 2, 60); // +2 padding, max 60
+                if (i == headers.length - 1 && includeComments) {
+                    width = Math.min(width, 80); // comment column can be wider
+                }
+                sheet.setColumnWidth(i, width * 256); // POI uses 1/256 of a character width
             }
 
             workbook.write(baos);
@@ -692,4 +732,93 @@ public class GradingTaskService {
     }
 
     private record ScoreRange(java.math.BigDecimal min, java.math.BigDecimal max) {}
+
+    /**
+     * Resolves the batch a new task belongs to.
+     * If batchId is provided, the existing batch is reused (must belong to the teacher);
+     * otherwise a new batch is created for this upload (one upload = one batch).
+     */
+    private GradingBatchEntity resolveOrCreateBatch(UserEntity teacher, Long batchId, String batchName, String taskDisplayCode) {
+        if (batchId != null) {
+            GradingBatchEntity existing = batchRepo.findById(batchId)
+                    .orElseThrow(() -> new IllegalArgumentException("批次不存在"));
+            if (!Objects.equals(existing.getTeacherId(), teacher.getId())) {
+                throw new IllegalArgumentException("无权使用此批次");
+            }
+            return existing;
+        }
+        GradingBatchEntity batch = new GradingBatchEntity();
+        batch.setTeacher(teacher);
+        batch.setDisplayCode(generateBatchDisplayCode(teacher.getId()));
+        String normalizedName = batchName == null ? "" : batchName.trim();
+        if (normalizedName.isEmpty()) {
+            normalizedName = "批次 " + (taskDisplayCode != null ? taskDisplayCode : batch.getDisplayCode());
+        }
+        batch.setName(normalizedName.length() > 128 ? normalizedName.substring(0, 128) : normalizedName);
+        return batchRepo.save(batch);
+    }
+
+    /**
+     * Generates a human-friendly batch display code in MMDD-XX format,
+     * sequenced by the number of batches the teacher created today.
+     */
+    private synchronized String generateBatchDisplayCode(Long teacherId) {
+        java.time.ZoneId zone = java.time.ZoneId.of("Asia/Shanghai");
+        java.time.LocalDate date = java.time.LocalDate.now(zone);
+        java.time.Instant dayStart = date.atStartOfDay(zone).toInstant();
+        long todayCount = batchRepo.countByTeacherIdAndCreatedAtAfter(teacherId, dayStart);
+        return String.format("%02d%02d-%02d", date.getMonthValue(), date.getDayOfMonth(), todayCount + 1);
+    }
+
+    /**
+     * Generates a human-friendly display code in MMDD-XX format.
+     * Example: 0610-01 means June 10, first task of the day for this teacher.
+     */
+    private synchronized String generateDisplayCode(Long teacherId, Instant createdAt) {
+        java.time.ZoneId zone = java.time.ZoneId.of("Asia/Shanghai");
+        java.time.LocalDate date = createdAt.atZone(zone).toLocalDate();
+        java.time.Instant dayStart = date.atStartOfDay(zone).toInstant();
+
+        long todayCount = taskRepo.countByTeacherIdAndCreatedAtAfter(teacherId, dayStart);
+        int seq = (int) todayCount + 1;
+
+        return String.format("%02d%02d-%02d", date.getMonthValue(), date.getDayOfMonth(), seq);
+    }
+
+    /**
+     * Safely get cell value as string regardless of cell type.
+     */
+    private String getCellStringValue(org.apache.poi.ss.usermodel.Cell cell) {
+        if (cell == null) return "";
+        return switch (cell.getCellType()) {
+            case STRING -> cell.getStringCellValue();
+            case NUMERIC -> String.valueOf(cell.getNumericCellValue());
+            case BOOLEAN -> String.valueOf(cell.getBooleanCellValue());
+            case BLANK -> "";
+            default -> "";
+        };
+    }
+
+    /**
+     * Calculate display width for Excel column sizing.
+     * CJK (Chinese/Japanese/Korean) characters are approximately 2 units wide,
+     * while Latin/digit characters are 1 unit wide.
+     */
+    private int calcDisplayWidth(String text) {
+        if (text == null || text.isEmpty()) return 0;
+        int width = 0;
+        for (char c : text.toCharArray()) {
+            // CJK Unified Ideographs range and common fullwidth characters
+            if ((c >= 0x4E00 && c <= 0x9FFF) ||   // CJK Unified Ideographs
+                (c >= 0x3400 && c <= 0x4DBF) ||   // CJK Extension A
+                (c >= 0x3000 && c <= 0x303F) ||   // CJK Symbols and Punctuation
+                (c >= 0xFF00 && c <= 0xFFEF) ||   // Fullwidth Forms
+                (c >= 0x2000 && c <= 0x206F)) {   // General Punctuation
+                width += 2;
+            } else {
+                width += 1;
+            }
+        }
+        return width;
+    }
 }

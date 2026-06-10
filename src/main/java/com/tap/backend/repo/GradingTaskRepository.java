@@ -8,6 +8,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import java.time.Instant;
 import java.util.List;
 
 public interface GradingTaskRepository extends JpaRepository<GradingTaskEntity, Long> {
@@ -22,4 +23,13 @@ public interface GradingTaskRepository extends JpaRepository<GradingTaskEntity, 
     @Modifying
     @Query("UPDATE GradingTaskEntity t SET t.failedCount = t.failedCount + 1 WHERE t.id = :taskId")
     void incrementFailedCount(@Param("taskId") Long taskId);
+
+    /**
+     * Count tasks created on or after a given timestamp for a specific teacher.
+     * Used to generate the daily sequence number in display codes (MMDD-XX).
+     */
+    long countByTeacherIdAndCreatedAtAfter(Long teacherId, Instant after);
+
+    List<GradingTaskEntity> findAllByBatchIdOrderByCreatedAtAsc(Long batchId);
+    List<GradingTaskEntity> findAllByBatchIdIn(java.util.Collection<Long> batchIds);
 }
