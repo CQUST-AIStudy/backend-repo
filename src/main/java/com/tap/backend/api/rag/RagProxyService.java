@@ -6,6 +6,7 @@ import java.io.InputStream;
 import java.util.Enumeration;
 import java.util.concurrent.TimeUnit;
 import okhttp3.MediaType;
+import okhttp3.MultipartBody;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.RequestBody;
@@ -16,6 +17,8 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
+import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.multipart.MultipartHttpServletRequest;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
 @Service
@@ -24,6 +27,7 @@ public class RagProxyService {
     private static final String HEADER_HOST = "host";
     private static final String HEADER_CONNECTION = "connection";
     private static final String HEADER_CONTENT_LENGTH = "content-length";
+    private static final String HEADER_CONTENT_TYPE = "content-type";
     private static final String HEADER_TRANSFER_ENCODING = "transfer-encoding";
     private static final String HEADER_AUTHORIZATION = "authorization";
 
@@ -41,7 +45,7 @@ public class RagProxyService {
     public ResponseEntity<?> forward(HttpServletRequest request, String bearerToken) {
         String targetUrl = buildTargetUrl(request);
         Request.Builder builder = new Request.Builder().url(targetUrl);
-        copyRequestHeaders(request, builder);
+        copyRequestHeaders(request, builder, request instanceof MultipartHttpServletRequest);
         if (bearerToken != null && !bearerToken.isBlank()) {
             builder.header(HttpHeaders.AUTHORIZATION, "Bearer " + bearerToken.trim());
         }
@@ -81,11 +85,11 @@ public class RagProxyService {
         }
     }
 
-    private void copyRequestHeaders(HttpServletRequest request, Request.Builder builder) {
+    private void copyRequestHeaders(HttpServletRequest request, Request.Builder builder, boolean multipartRequest) {
         Enumeration<String> headerNames = request.getHeaderNames();
         while (headerNames != null && headerNames.hasMoreElements()) {
             String headerName = headerNames.nextElement();
-            if (shouldSkipRequestHeader(headerName)) {
+            if (shouldSkipRequestHeader(headerName, multipartRequest)) {
                 continue;
             }
             Enumeration<String> headerValues = request.getHeaders(headerName);
@@ -109,12 +113,52 @@ public class RagProxyService {
         if (!permitsRequestBody(method)) {
             return null;
         }
+        if (request instanceof MultipartHttpServletRequest multipartRequest) {
+            return buildMultipartRequestBody(multipartRequest);
+        }
         try {
             byte[] bytes = request.getInputStream().readAllBytes();
             MediaType mediaType = parseMediaType(request.getContentType());
             return RequestBody.create(bytes, mediaType);
         } catch (IOException ex) {
             throw new IllegalStateException("failed to read request body", ex);
+        }
+    }
+
+    private RequestBody buildMultipartRequestBody(MultipartHttpServletRequest request) {
+        MultipartBody.Builder builder = new MultipartBody.Builder().setType(MultipartBody.FORM);
+
+        request.getParameterMap().forEach((name, values) -> {
+            if (values == null) {
+                return;
+            }
+            for (String value : values) {
+                builder.addFormDataPart(name, value == null ? "" : value);
+            }
+        });
+
+        request.getMultiFileMap().forEach((name, files) -> {
+            if (files == null) {
+                return;
+            }
+            for (MultipartFile file : files) {
+                addMultipartFile(builder, name, file);
+            }
+        });
+
+        return builder.build();
+    }
+
+    private void addMultipartFile(MultipartBody.Builder builder, String name, MultipartFile file) {
+        String filename = file.getOriginalFilename();
+        MediaType mediaType = parseMediaType(file.getContentType());
+        try {
+            builder.addFormDataPart(
+                    name,
+                    filename == null || filename.isBlank() ? "file" : filename,
+                    RequestBody.create(file.getBytes(), mediaType));
+        } catch (IOException ex) {
+            throw new IllegalStateException("failed to read multipart file: " + filename, ex);
         }
     }
 
@@ -132,7 +176,7 @@ public class RagProxyService {
         return contentType != null && contentType.toLowerCase().contains("text/event-stream");
     }
 
-    private boolean shouldSkipRequestHeader(String headerName) {
+    private boolean shouldSkipRequestHeader(String headerName, boolean multipartRequest) {
         if (headerName == null) {
             return true;
         }
@@ -140,6 +184,7 @@ public class RagProxyService {
         return HEADER_HOST.equals(normalized)
                 || HEADER_CONNECTION.equals(normalized)
                 || HEADER_CONTENT_LENGTH.equals(normalized)
+                || (multipartRequest && HEADER_CONTENT_TYPE.equals(normalized))
                 || HEADER_AUTHORIZATION.equals(normalized);
     }
 
