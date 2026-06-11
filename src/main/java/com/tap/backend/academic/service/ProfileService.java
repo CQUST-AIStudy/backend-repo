@@ -818,6 +818,34 @@ public class ProfileService {
         return value == null ? "" : value;
     }
 
+    private static Integer asInteger(Object value) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        if (value instanceof String text && !text.isBlank()) {
+            try {
+                return Integer.parseInt(text.trim());
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private static long asLong(Object value) {
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        if (value instanceof String text && !text.isBlank()) {
+            try {
+                return Long.parseLong(text.trim());
+            } catch (NumberFormatException ignored) {
+                return 0L;
+            }
+        }
+        return 0L;
+    }
+
     // ========== 班级画像 ==========
 
     @Cacheable(value = "classProfile", key = "#className == null ? 'ALL' : #className")
@@ -826,6 +854,9 @@ public class ProfileService {
         List<Map<String, Object>> students = profileDao.getAllStudents(className);
         if (allStats == null) {
             allStats = new ArrayList<>();
+        }
+        if (students == null) {
+            students = new ArrayList<>();
         }
 
         // 按学生分组
@@ -865,16 +896,20 @@ public class ProfileService {
             // 按实验ID索引
             Map<Integer, Map<String, Object>> expMap = new LinkedHashMap<>();
             for (Map<String, Object> r : rows) {
-                int eid = ((Number) r.get("experiment_id")).intValue();
+                Integer eid = asInteger(r.get("experiment_id"));
+                if (eid == null) {
+                    log.warn("Skip class profile row with invalid experiment_id, studentId={}, row={}", sid, r);
+                    continue;
+                }
                 expMap.put(eid, r);
             }
 
             // 计算每个实验的mastery
             Map<Integer, Double> expMastery = new LinkedHashMap<>();
             for (var e : expMap.entrySet()) {
-                long total = ((Number) e.getValue().get("total_submissions")).longValue();
-                long ac = ((Number) e.getValue().get("ac_count")).longValue();
-                long questions = ((Number) e.getValue().get("question_count")).longValue();
+                long total = asLong(e.getValue().get("total_submissions"));
+                long ac = asLong(e.getValue().get("ac_count"));
+                long questions = asLong(e.getValue().get("question_count"));
                 if (total == 0) { expMastery.put(e.getKey(), 0.0); continue; }
                 double correctRate = (double) ac / total;
                 double avgAtt = questions > 0 ? (double) total / questions : total;

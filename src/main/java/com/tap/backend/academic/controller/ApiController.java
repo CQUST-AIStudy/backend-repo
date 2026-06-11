@@ -67,6 +67,9 @@ public class ApiController {
     private ScoreService scoreService;
 
     @Autowired
+    private ErrorAnalysisService errorAnalysisService;
+
+    @Autowired
     private ApplicationContext applicationContext;
 
     @Autowired
@@ -203,6 +206,17 @@ public class ApiController {
             submission = submissionDao.findByUsernameAndExperimentId(studentIdKey, experimentId);
         }
         return submission;
+    }
+
+    /**
+     * 从 UserEntity 解析学号（用于 AI 错误分析管线）
+     */
+    private String resolveStudentNo(UserEntity user) {
+        if (user == null) return "";
+        String usernum = user.getUsernum();
+        if (usernum != null && !usernum.isBlank()) return usernum.trim();
+        String username = user.getUsername();
+        return username != null ? username.trim() : "";
     }
 
     private String resolveStudentCodeText(Integer studentId, int experimentId) {
@@ -1094,6 +1108,15 @@ public class ApiController {
             boolean success = experimentService.submitExperiment(id, currentUsername, code, report);
 
             if (success) {
+                // 异步触发 AI 错误分析管线（不阻塞响应）
+                try {
+                    String studentNo = resolveStudentNo(currentUser);
+                    String studentName = currentUser.getUsername() != null ? currentUser.getUsername() : currentUsername;
+                    errorAnalysisService.triggerAnalysisPipeline(studentNo, studentName, id);
+                } catch (Exception ignored) {
+                    // 异步触发失败不影响提交结果
+                }
+
                 response.put("status", "success");
                 response.put("message", "实验提交成功");
                 return ResponseEntity.ok(response);
@@ -1454,6 +1477,55 @@ public class ApiController {
         return ResponseEntity.ok(response);
     }
 
+
+    /**
+     * 学生查看自己某实验的所有提交尝试（用于 AI 错误分析）
+     * GET /api/submissions?experimentId=7
+     */
+    @GetMapping("/api/submissions")
+    public ResponseEntity<Map<String, Object>> getMySubmissions(
+            @RequestParam(value = "experimentId", required = false) Integer experimentId,
+            HttpServletRequest request) {
+        Map<String, Object> response = new LinkedHashMap<>();
+        try {
+            String studentNo = studentSessionResolver.requireStudentId(request);
+            List<Map<String, Object>> submissions = new ArrayList<>();
+
+            if (experimentId != null) {
+                List<com.tap.backend.academic.entity.StudentSubmissionAttempt> attempts =
+                        teacherExperimentQueryDao.findSubmissionAttemptsForErrorAnalysis(studentNo, experimentId);
+
+                if (attempts != null) {
+                    SimpleDateFormat isoFormat = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
+                    for (int i = 0; i < attempts.size(); i++) {
+                        com.tap.backend.academic.entity.StudentSubmissionAttempt a = attempts.get(i);
+                        Map<String, Object> sub = new LinkedHashMap<>();
+                        sub.put("attemptNo", i + 1);
+                        sub.put("judgeStatus", a.getJudgeStatus() != null ? a.getJudgeStatus() : "UNKNOWN");
+                        sub.put("compiler", a.getCompiler() != null ? a.getCompiler() : "");
+                        sub.put("errorMessage", a.getErrorMessage() != null ? a.getErrorMessage() : "");
+                        sub.put("code", a.getCode() != null ? a.getCode() : "");
+                        sub.put("problemTitle", a.getProblemTitle() != null ? a.getProblemTitle() : "");
+                        if (a.getSubmittedAt() != null) {
+                            sub.put("submittedAt", isoFormat.format(a.getSubmittedAt()));
+                        }
+                        sub.put("score", a.getScore());
+                        submissions.add(sub);
+                    }
+                }
+            }
+
+            response.put("success", true);
+            response.put("data", submissions);
+            response.put("source", "student_problem_attempt");
+            response.put("studentNo", studentNo);
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            response.put("success", false);
+            response.put("message", e.getMessage());
+            return ResponseEntity.internalServerError().body(response);
+        }
+    }
 
     //根据实验提交id查询学生实验提交详情数据
     /**

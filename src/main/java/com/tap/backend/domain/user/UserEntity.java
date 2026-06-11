@@ -156,11 +156,33 @@ public class UserEntity {
     this.usernum = usernum;
   }
 
+  @Column(name = "phone", length = 20)
+  private String phone;
+
+  @Column(name = "department", length = 100)
+  private String department;
+
   public String getClassname() {
     return classname;
   }
 
   public void setClassname(String classname) {
     this.classname = classname;
+  }
+
+  public String getPhone() {
+    return phone;
+  }
+
+  public void setPhone(String phone) {
+    this.phone = phone;
+  }
+
+  public String getDepartment() {
+    return department;
+  }
+
+  public void setDepartment(String department) {
+    this.department = department;
   }
 }

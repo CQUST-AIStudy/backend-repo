@@ -362,4 +362,40 @@ public interface TeacherExperimentQueryDao {
     List<TeacherStudentAssignmentRow> findStudentRosterFromSubmitSituation(
             @Param("experimentId") Integer experimentId
     );
+
+    /**
+     * 获取学生在指定实验中每个题目的所有提交尝试（用于AI错误分析）
+     * 查询 student_problem_attempt 获取每次提交的 judgeStatus、compiler、submittedAt 等
+     */
+    @Select({
+            "SELECT",
+            "  spa.id AS attemptId,",
+            "  spa.judge_status AS judgeStatus,",
+            "  spa.compiler AS compiler,",
+            "  spa.submitted_at AS submittedAt,",
+            "  spa.score AS score,",
+            "  spa.runtime_ms AS runtimeMs,",
+            "  spa.memory_kb AS memoryKb,",
+            "  code_artifact.text_content AS code,",
+            "  ap.title AS problemTitle",
+            "FROM student_problem_attempt spa",
+            "JOIN student_problem_state sps",
+            "  ON sps.offering_id = spa.offering_id",
+            " AND sps.problem_id = spa.problem_id",
+            " AND sps.student_id = spa.student_id",
+            "JOIN assignment_problem ap ON ap.id = spa.problem_id",
+            "LEFT JOIN artifact code_artifact ON code_artifact.id = sps.latest_code_artifact_id",
+            "WHERE spa.offering_id = #{experimentId}",
+            "  AND spa.student_id = (",
+            "    SELECT sp.id FROM student_profile sp",
+            "    WHERE sp.student_no COLLATE utf8mb4_unicode_ci = #{studentNo} COLLATE utf8mb4_unicode_ci",
+            "    AND sp.status != 'DELETED'",
+            "    LIMIT 1",
+            "  )",
+            "ORDER BY spa.problem_id, spa.submitted_at ASC"
+    })
+    List<com.tap.backend.academic.entity.StudentSubmissionAttempt> findSubmissionAttemptsForErrorAnalysis(
+            @Param("studentNo") String studentNo,
+            @Param("experimentId") Integer experimentId
+    );
 }
