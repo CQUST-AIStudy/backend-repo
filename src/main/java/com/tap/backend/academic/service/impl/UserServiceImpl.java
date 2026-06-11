@@ -40,14 +40,16 @@ public class UserServiceImpl implements UserService {
     public UserEntity findByUsername(String username) {
         // 统一从 tap_user 查询（学生/教师/管理员同级）
         UserEntity tapUser = userDao.findByUsername(username);
-        if (tapUser!=null&&tapUser.getPassword() != null ) {
-            return tapUser;
+        if (tapUser!=null) {
+            if(tapUser.getPassword()!=null){
+            return tapUser;}
         }
 
         // 兜底：查 user 表（不限角色）
         UserEntity legacyUser = userDao.findByUsernameFromLegacyUserAnyRole(username);
         if (legacyUser != null) {
-            return legacyUser;
+            if(legacyUser.getPassword() != null){
+            return legacyUser;}
         }
 
         return null;
