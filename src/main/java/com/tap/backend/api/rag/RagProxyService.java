@@ -1,8 +1,10 @@
 package com.tap.backend.api.rag;
 
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.Enumeration;
 import java.util.concurrent.TimeUnit;
 import okhttp3.MediaType;
@@ -14,12 +16,9 @@ import okhttp3.Response;
 import okhttp3.ResponseBody;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.multipart.MultipartHttpServletRequest;
-import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
 @Service
 public class RagProxyService {
@@ -42,7 +41,7 @@ public class RagProxyService {
                 .build();
     }
 
-    public ResponseEntity<?> forward(HttpServletRequest request, String bearerToken) {
+    public void forward(HttpServletRequest request, HttpServletResponse servletResponse, String bearerToken) {
         String targetUrl = buildTargetUrl(request);
         Request.Builder builder = new Request.Builder().url(targetUrl);
         copyRequestHeaders(request, builder, request instanceof MultipartHttpServletRequest);
@@ -56,32 +55,38 @@ public class RagProxyService {
 
         try {
             Response response = httpClient.newCall(builder.build()).execute();
-            return toResponseEntity(response);
+            writeProxyResponse(response, servletResponse);
         } catch (IOException ex) {
-            return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
-                    .header(HttpHeaders.CONTENT_TYPE, org.springframework.http.MediaType.APPLICATION_JSON_VALUE)
-                    .body(("{\"message\":\"RAG service unavailable: " + sanitize(ex.getMessage()) + "\"}").getBytes());
+            writeUnavailableResponse(servletResponse, ex);
         }
     }
 
-    private ResponseEntity<?> toResponseEntity(Response response) throws IOException {
-        HttpHeaders headers = new HttpHeaders();
-        copyResponseHeaders(response, headers);
-
-        ResponseBody responseBody = response.body();
-        if (isEventStream(headers.getFirst(HttpHeaders.CONTENT_TYPE))) {
-            StreamingResponseBody stream = outputStream -> {
-                try (response; InputStream inputStream = responseBody == null ? InputStream.nullInputStream() : responseBody.byteStream()) {
-                    inputStream.transferTo(outputStream);
-                    outputStream.flush();
-                }
-            };
-            return ResponseEntity.status(response.code()).headers(headers).body(stream);
-        }
-
+    private void writeProxyResponse(Response response, HttpServletResponse servletResponse) throws IOException {
         try (response) {
-            byte[] payload = responseBody == null ? new byte[0] : responseBody.bytes();
-            return ResponseEntity.status(response.code()).headers(headers).body(payload);
+            servletResponse.setStatus(response.code());
+            copyResponseHeaders(response, servletResponse);
+
+            ResponseBody responseBody = response.body();
+            try (InputStream inputStream = responseBody == null ? InputStream.nullInputStream() : responseBody.byteStream()) {
+                inputStream.transferTo(servletResponse.getOutputStream());
+                servletResponse.flushBuffer();
+            }
+        }
+    }
+
+    private void writeUnavailableResponse(HttpServletResponse servletResponse, IOException ex) {
+        if (servletResponse.isCommitted()) {
+            return;
+        }
+        servletResponse.setStatus(HttpServletResponse.SC_BAD_GATEWAY);
+        servletResponse.setContentType(org.springframework.http.MediaType.APPLICATION_JSON_VALUE);
+        byte[] payload = ("{\"message\":\"RAG service unavailable: " + sanitize(ex.getMessage()) + "\"}")
+                .getBytes(StandardCharsets.UTF_8);
+        try {
+            servletResponse.getOutputStream().write(payload);
+            servletResponse.flushBuffer();
+        } catch (IOException ignored) {
+            // The client has already disconnected.
         }
     }
 
@@ -99,13 +104,13 @@ public class RagProxyService {
         }
     }
 
-    private void copyResponseHeaders(Response response, HttpHeaders headers) {
+    private void copyResponseHeaders(Response response, HttpServletResponse servletResponse) {
         response.headers().forEach(pair -> {
             String headerName = pair.getFirst();
             if (shouldSkipResponseHeader(headerName)) {
                 return;
             }
-            headers.add(headerName, pair.getSecond());
+            servletResponse.addHeader(headerName, pair.getSecond());
         });
     }
 
@@ -170,10 +175,6 @@ public class RagProxyService {
 
     private boolean permitsRequestBody(String method) {
         return !"GET".equalsIgnoreCase(method) && !"DELETE".equalsIgnoreCase(method);
-    }
-
-    private boolean isEventStream(String contentType) {
-        return contentType != null && contentType.toLowerCase().contains("text/event-stream");
     }
 
     private boolean shouldSkipRequestHeader(String headerName, boolean multipartRequest) {

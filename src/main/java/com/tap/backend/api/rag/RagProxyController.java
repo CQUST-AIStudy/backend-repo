@@ -8,11 +8,11 @@ import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.SignatureAlgorithm;
 import io.jsonwebtoken.security.Keys;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Date;
 import javax.crypto.SecretKey;
-import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -43,28 +43,28 @@ public class RagProxyController {
     }
 
     @GetMapping({"", "/**"})
-    public ResponseEntity<?> proxyGet(HttpServletRequest request) {
-        return forward(request);
+    public void proxyGet(HttpServletRequest request, HttpServletResponse response) {
+        forward(request, response);
     }
 
     @PostMapping({"", "/**"})
-    public ResponseEntity<?> proxyPost(HttpServletRequest request) {
-        return forward(request);
+    public void proxyPost(HttpServletRequest request, HttpServletResponse response) {
+        forward(request, response);
     }
 
     @PutMapping({"", "/**"})
-    public ResponseEntity<?> proxyPut(HttpServletRequest request) {
-        return forward(request);
+    public void proxyPut(HttpServletRequest request, HttpServletResponse response) {
+        forward(request, response);
     }
 
     @DeleteMapping({"", "/**"})
-    public ResponseEntity<?> proxyDelete(HttpServletRequest request) {
-        return forward(request);
+    public void proxyDelete(HttpServletRequest request, HttpServletResponse response) {
+        forward(request, response);
     }
 
-    private ResponseEntity<?> forward(HttpServletRequest request) {
+    private void forward(HttpServletRequest request, HttpServletResponse response) {
         com.tap.backend.academic.entity.UserEntity legacyUser = legacySessionAccessResolver.requireAuthenticated(request);
-        return ragProxyService.forward(request, resolveBearerToken(legacyUser));
+        ragProxyService.forward(request, response, resolveBearerToken(legacyUser));
     }
 
     private String resolveBearerToken(com.tap.backend.academic.entity.UserEntity legacyUser) {
