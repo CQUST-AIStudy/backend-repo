@@ -23,6 +23,8 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.Random;
 import javax.imageio.ImageIO;
+import org.apache.fontbox.ttf.TrueTypeCollection;
+import org.apache.fontbox.ttf.TrueTypeFont;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
@@ -46,6 +48,7 @@ import org.apache.poi.xwpf.usermodel.XWPFTableRow;
 import org.apache.xmlbeans.XmlCursor;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTFonts;
 import org.openxmlformats.schemas.wordprocessingml.x2006.main.CTRPr;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 /**
@@ -87,6 +90,13 @@ public class AnnotatedStudentReportService {
 
     /* 鈹€鈹€ check-mark image cache (thread-safe lazy init) 鈹€鈹€ */
     private volatile byte[] checkMarkPngBytes;
+
+    /**
+     * Optional override for the CJK font used in annotated PDF reports.
+     * Useful on servers where none of the built-in font candidates exist.
+     */
+    @Value("${tap.grading.report-font-path:}")
+    private String configuredCjkFontPath;
 
     // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
     //  Public entry point
@@ -865,14 +875,29 @@ public class AnnotatedStudentReportService {
     }
 
     private FontSelection loadPdfFont(PDDocument document) throws IOException {
-        List<Path> chineseCandidates = List.of(
+        List<Path> chineseCandidates = new ArrayList<>();
+        if (configuredCjkFontPath != null && !configuredCjkFontPath.isBlank()) {
+            chineseCandidates.add(Path.of(configuredCjkFontPath.trim()));
+        }
+        chineseCandidates.addAll(List.of(
                 Path.of("C:\\Windows\\Fonts\\STXINGKA.TTF"),
                 Path.of("C:\\Windows\\Fonts\\simkai.ttf"),
+                Path.of("C:\\Windows\\Fonts\\STKAITI.TTF"),
                 Path.of("C:\\Windows\\Fonts\\KAIU.TTF"),
+                Path.of("C:\\Windows\\Fonts\\simfang.ttf"),
+                Path.of("C:\\Windows\\Fonts\\simhei.ttf"),
+                Path.of("C:\\Windows\\Fonts\\Deng.ttf"),
                 Path.of("C:\\Windows\\Fonts\\msyh.ttf"),
+                Path.of("C:\\Windows\\Fonts\\msyh.ttc"),
+                Path.of("C:\\Windows\\Fonts\\simsun.ttc"),
                 Path.of("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"),
-                Path.of("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc")
-        );
+                Path.of("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"),
+                Path.of("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+                Path.of("/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc"),
+                Path.of("/usr/share/fonts/truetype/arphic/ukai.ttc"),
+                Path.of("/usr/share/fonts/truetype/arphic/uming.ttc"),
+                Path.of("/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf")
+        ));
         List<Path> latinCandidates = List.of(
                 Path.of("C:\\Windows\\Fonts\\times.ttf"),
                 Path.of("C:\\Windows\\Fonts\\timesbd.ttf"),
@@ -893,10 +918,41 @@ public class AnnotatedStudentReportService {
             if (!Files.exists(path)) {
                 continue;
             }
-            try (var inputStream = Files.newInputStream(path)) {
-                return PDType0Font.load(document, inputStream, true);
+            try {
+                if (path.toString().toLowerCase(Locale.ROOT).endsWith(".ttc")) {
+                    PDFont font = loadFromTrueTypeCollection(document, path);
+                    if (font != null) {
+                        return font;
+                    }
+                    continue;
+                }
+                try (var inputStream = Files.newInputStream(path)) {
+                    return PDType0Font.load(document, inputStream, true);
+                }
             } catch (Exception ignored) {
             }
+        }
+        return null;
+    }
+
+    /**
+     * Loads the first font of a TrueType Collection (.ttc).
+     * The collection is constructed from an InputStream so the font data lives in
+     * memory and stays valid until the PDF (with the subset font) is saved.
+     */
+    private PDFont loadFromTrueTypeCollection(PDDocument document, Path path) {
+        try (var inputStream = Files.newInputStream(path)) {
+            TrueTypeCollection collection = new TrueTypeCollection(inputStream);
+            TrueTypeFont[] first = new TrueTypeFont[1];
+            collection.processAllFonts(font -> {
+                if (first[0] == null) {
+                    first[0] = font;
+                }
+            });
+            if (first[0] != null) {
+                return PDType0Font.load(document, first[0], true);
+            }
+        } catch (Exception ignored) {
         }
         return null;
     }

@@ -104,8 +104,8 @@ public class GradingBatchExportService {
             headerFont.setBold(true);
             headerStyle.setFont(headerFont);
 
-            buildOverviewSheet(workbook, headerStyle, title, batchCode, tasks);
             buildScoreSheet(workbook, headerStyle, tasks, includeComments);
+            buildOverviewSheet(workbook, headerStyle, title, batchCode, tasks);
 
             workbook.write(baos);
             return baos.toByteArray();
@@ -154,8 +154,8 @@ public class GradingBatchExportService {
                                  List<GradingTaskEntity> tasks, boolean includeComments) {
         Sheet sheet = workbook.createSheet("成绩汇总");
         String[] headers = includeComments
-                ? new String[]{"任务编号", "学号", "姓名", "班级", "成绩", "总评"}
-                : new String[]{"任务编号", "学号", "姓名", "班级", "成绩"};
+                ? new String[]{"任务编号", "学号", "姓名", "班级", "成绩", "作业文件", "状态", "总评"}
+                : new String[]{"任务编号", "学号", "姓名", "班级", "成绩", "作业文件", "状态"};
 
         Row headerRow = sheet.createRow(0);
         for (int i = 0; i < headers.length; i++) {
@@ -181,8 +181,10 @@ public class GradingBatchExportService {
                 } else {
                     row.createCell(4).setCellValue("");
                 }
+                row.createCell(5).setCellValue(safe(sub.getOriginalFilename()));
+                row.createCell(6).setCellValue(submissionStatusLabel(sub));
                 if (includeComments) {
-                    row.createCell(5).setCellValue(safe(sub.getFinalReviewComment()));
+                    row.createCell(7).setCellValue(safe(sub.getFinalReviewComment()));
                 }
             }
         }
@@ -203,6 +205,17 @@ public class GradingBatchExportService {
         return task.getDisplayCode() != null && !task.getDisplayCode().isBlank()
                 ? task.getDisplayCode()
                 : "#" + task.getId();
+    }
+
+    private String submissionStatusLabel(GradingSubmissionEntity sub) {
+        if (sub.getStatus() == null) return "";
+        return switch (sub.getStatus()) {
+            case PENDING -> "待批改";
+            case PROCESSING -> "批改中";
+            case SCORED -> "已评分";
+            case NEED_MORE_EVIDENCE -> "需复核";
+            case FAILED -> "失败";
+        };
     }
 
     private String statusLabel(GradingTaskStatus status) {
