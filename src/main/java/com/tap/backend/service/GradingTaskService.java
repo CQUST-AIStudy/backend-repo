@@ -473,7 +473,7 @@ public class GradingTaskService {
             if (task == null) return;
             // Fetch rubric custom prompt
             GradingRubricEntity rubric = task.getRubric();
-            String customPrompt = rubric != null ? rubric.getCustomPrompt() : null;
+            String customPrompt = buildWorkerCustomPrompt(rubric);
 
             List<GradingSubmissionEntity> pending = submissionRepo
                     .findAllByTaskIdAndStatus(taskId, SubmissionStatus.PENDING);
@@ -488,9 +488,7 @@ public class GradingTaskService {
                 msg.put("pdfObjectKey", sub.getPdfObjectKey());
                 msg.put("originalFilename", sub.getOriginalFilename());
                 msg.put("rubricId", rubric.getId());
-                if (customPrompt != null && !customPrompt.isBlank()) {
-                    msg.put("customPrompt", customPrompt);
-                }
+                msg.put("customPrompt", customPrompt);
                 if (task.getScoreRangeMin() != null) {
                     msg.put("scoreRangeMin", task.getScoreRangeMin());
                 }
@@ -503,6 +501,15 @@ public class GradingTaskService {
         } catch (Exception e) {
             log.error("Failed to publish to Redis queue", e);
         }
+    }
+
+    private String buildWorkerCustomPrompt(GradingRubricEntity rubric) {
+        String rubricPrompt = rubric != null && rubric.getCustomPrompt() != null
+                ? rubric.getCustomPrompt().trim()
+                : "";
+        String detailPrompt = """
+                批改反馈要求：每个评分维度的 comment 必须写成有证据的具体分析，不要只写“较好”“不够深入”等短语。请结合学生报告中的实验目的、步骤、结果、数据、代码或图表内容，说明为什么做得好、为什么存在不足、具体原因是什么，以及下一步应如何修改。每个维度建议不少于 2 句中文；如果扣分，请明确扣分依据和对应改进点。""";
+        return rubricPrompt.isBlank() ? detailPrompt : rubricPrompt + "\n\n" + detailPrompt;
     }
 
     private boolean isSupportedDocument(MultipartFile file) {

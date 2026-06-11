@@ -18,10 +18,15 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
+import java.util.Set;
 import javax.imageio.ImageIO;
 import org.apache.fontbox.ttf.TrueTypeCollection;
 import org.apache.fontbox.ttf.TrueTypeFont;
@@ -86,6 +91,22 @@ public class AnnotatedStudentReportService {
             "\u8bc4\u5206",
             "score",
             "\u603b\u5206"
+    );
+    private static final List<String> COVER_OR_METADATA_KEYWORDS = List.of(
+            "\u91cd\u5e86\u79d1\u6280\u5927\u5b66",
+            "\u5b9e\u9a8c\u62a5\u544a",
+            "\u8bfe\u7a0b\u540d\u79f0",
+            "\u5b66\u9662",
+            "\u4e13\u4e1a\u73ed\u7ea7",
+            "\u5b66\u751f\u59d3\u540d",
+            "\u59d3\u540d",
+            "\u5b66\u53f7",
+            "\u6307\u5bfc\u6559\u5e08",
+            "\u4efb\u8bfe\u6559\u5e08",
+            "studentid",
+            "studentno",
+            "name",
+            "class"
     );
 
     /* 鈹€鈹€ check-mark image cache (thread-safe lazy init) 鈹€鈹€ */
@@ -498,9 +519,9 @@ public class AnnotatedStudentReportService {
             // 1) Draw score on first page
             drawPdfScoreOnFirstPage(document, pages.get(0), fontSelection, totalScore);
 
-            // 2) Draw handwriting-style check marks with rotation
-            drawPdfCheckMarks(document, pages, fontSelection, random);
-            drawPdfProminentCheckMarks(document, pages, random);
+            // 2) Draw content-aware marks: checks on solid paragraphs, crosses +
+            //    margin annotations on weak dimensions (anchored to real text lines)
+            drawPdfContentMarks(document, pages, fontSelection, dimensionComments, random);
 
             // 3) Draw review on last page
             drawPdfReviewOnLastPage(document, pages.get(pages.size() - 1), fontSelection,
@@ -546,62 +567,253 @@ public class AnnotatedStudentReportService {
     }
 
     /**
-     * Draw handwriting-style check marks on random pages with rotation
-     * to simulate natural teacher marking.
+     * Draw teacher marks anchored to real text lines instead of random page
+     * positions, so they never sit on top of figures or body text:
+     * <ul>
+     *   <li>check marks (red) at the end of solid paragraph lines;</li>
+     *   <li>cross marks + wavy underline + short margin note on lines linked to
+     *       weak dimensions (one per "建议" comment);</li>
+     *   <li>short praise notes next to one or two check marks ("优点" comments).</li>
+     * </ul>
      */
-    private void drawPdfCheckMarks(PDDocument document,
-                                   List<PDPage> pages,
-                                   FontSelection fontSelection,
-                                   Random random) throws IOException {
-        int desired = Math.max(1, Math.min(pages.size(), (pages.size() + 1) / 2));
-        byte[] checkImg = getCheckMarkPng();
-        for (Integer pageIndex : pickIndices(pages.size(), desired, random)) {
-            PDPage page = pages.get(pageIndex);
-            PDRectangle box = visibleBox(page);
-            float areaStartX = box.getLowerLeftX() + box.getWidth() * 0.56f;
-            float areaWidth = Math.max(48f, box.getWidth() * 0.20f);
-            float x = areaStartX + random.nextFloat() * areaWidth;
-            float y = box.getLowerLeftY() + box.getHeight() * 0.24f
-                    + random.nextFloat() * Math.max(80f, box.getHeight() * 0.48f);
-            float angle = (float) Math.toRadians(-16 + random.nextInt(28));
-            float size = 118f + random.nextInt(24);
+    private void drawPdfContentMarks(PDDocument document,
+                                     List<PDPage> pages,
+                                     FontSelection fontSelection,
+                                     List<String> dimensionComments,
+                                     Random random) throws IOException {
+        List<TextLine> allCandidates = collectPdfLines(document).stream()
+                .filter(line -> line.text().length() >= 8)
+                .filter(line -> line.baselineY() > 72f)
+                .filter(line -> line.pageIndex() >= 0 && line.pageIndex() < pages.size())
+                .filter(line -> isLikelyAnnotationTarget(line, pages.size()))
+                .toList();
 
-            try (PDPageContentStream stream = new PDPageContentStream(document, page, AppendMode.APPEND, true, true)) {
-                drawPdfCheckMark(document, stream, checkImg, x, y, size, angle);
-            }
-        }
-    }
-
-    private void drawPdfProminentCheckMarks(PDDocument document,
-                                            List<PDPage> pages,
-                                            Random random) throws IOException {
-        if (pages.isEmpty()) {
+        List<TextLine> bodyCandidates = allCandidates.stream()
+                .filter(line -> pages.size() <= 1 || line.pageIndex() > 0)
+                .toList();
+        List<TextLine> candidates = bodyCandidates.isEmpty() ? allCandidates : bodyCandidates;
+        if (candidates.isEmpty()) {
             return;
         }
-        for (PDPage page : pages) {
+
+        List<String> strengths = new ArrayList<>();
+        List<String> weaknesses = new ArrayList<>();
+        for (String comment : dimensionComments == null ? List.<String>of() : dimensionComments) {
+            String value = safeText(comment).trim();
+            if (value.startsWith("\u4f18\u70b9")) {
+                strengths.add(stripAnnotationPrefix(value));
+            } else if (value.startsWith("\u5efa\u8bae")) {
+                weaknesses.add(stripAnnotationPrefix(value));
+            }
+        }
+
+        int crossCount = Math.min(weaknesses.size(), 2);
+        int checkCount = Math.max(3, Math.min(7, candidates.size() / 12));
+        List<Integer> anchors = pickSpreadIndices(candidates.size(), checkCount + crossCount, random);
+        if (anchors.isEmpty()) {
+            return;
+        }
+
+        // Crosses go to anchors in the latter half of the document so the
+        // "needs improvement" notes appear after the work has been presented.
+        Set<Integer> crossAnchors = new HashSet<>();
+        for (int i = anchors.size() - 1; i >= 0 && crossAnchors.size() < crossCount; i--) {
+            crossAnchors.add(anchors.get(i));
+        }
+
+        Map<Integer, List<Float>> placedYPerPage = new HashMap<>();
+        int strengthNoteBudget = Math.min(strengths.size(), 2);
+        int weaknessIdx = 0;
+        int strengthIdx = 0;
+
+        for (Integer anchorIdx : anchors) {
+            TextLine line = candidates.get(anchorIdx);
+            PDPage page = pages.get(line.pageIndex());
             PDRectangle box = visibleBox(page);
+
+            // Skip if too close to another mark on the same page
+            List<Float> placed = placedYPerPage.computeIfAbsent(line.pageIndex(), k -> new ArrayList<>());
+            boolean tooClose = placed.stream().anyMatch(y -> Math.abs(y - line.baselineY()) < 56f);
+            if (tooClose) {
+                continue;
+            }
+            placed.add(line.baselineY());
+
+            boolean isCross = crossAnchors.contains(anchorIdx);
+            float size = isCross ? 24f + random.nextInt(7) : 36f + random.nextInt(10);
+            float markX = Math.min(line.endX() + 14f + size * 0.5f, box.getUpperRightX() - size * 0.7f - 8f);
+            float markY = line.baselineY() + size * 0.12f;
+            float angle = (float) Math.toRadians(-10 + random.nextInt(18));
+
             try (PDPageContentStream stream = new PDPageContentStream(document, page, AppendMode.APPEND, true, true)) {
-                drawPdfCheckMark(
-                        document,
-                        stream,
-                        null,
-                        box.getLowerLeftX() + box.getWidth() * 0.70f,
-                        box.getLowerLeftY() + box.getHeight() * 0.44f,
-                        126f,
-                        0f
-                );
+                String note = null;
+                if (isCross) {
+                    drawPdfWavyUnderline(stream, line.startX(), line.endX(), line.baselineY() - 3f);
+                    drawPdfCrossStroke(stream, markX, markY, size, angle);
+                    if (weaknessIdx < weaknesses.size()) {
+                        note = weaknesses.get(weaknessIdx++);
+                    }
+                } else {
+                    drawPdfCheckStroke(stream, markX, markY, size, angle);
+                    if (strengthIdx < strengthNoteBudget) {
+                        note = strengths.get(strengthIdx++);
+                    }
+                }
+                if (note != null && !note.isBlank()) {
+                    drawPdfMarginNote(stream, fontSelection, box, line, markX + size * 0.8f, note);
+                }
             }
         }
     }
 
-    private void drawPdfCheckMark(PDDocument document,
-                                  PDPageContentStream stream,
-                                  byte[] checkImg,
-                                  float x,
-                                  float y,
-                                  float size,
-                                  float angle) throws IOException {
-        drawPdfCheckStroke(stream, x, y, size, angle);
+    /** Strip the "优点：" / "建议：" prefix and trailing punctuation for short margin notes. */
+    private String stripAnnotationPrefix(String comment) {
+        String value = comment;
+        int colon = value.indexOf('\uff1a');
+        if (colon < 0) {
+            colon = value.indexOf(':');
+        }
+        if (colon >= 0 && colon < 4) {
+            value = value.substring(colon + 1);
+        }
+        value = value.replace("\u3002", " ").trim();
+        // Keep margin notes compact enough for the page edge, but preserve a
+        // concrete reason instead of reducing the note to a vague label.
+        for (char sep : new char[]{'\uff0c', ',', ';', '\uff1b'}) {
+            int idx = value.indexOf(sep);
+            if (idx > 20) {
+                value = value.substring(0, idx);
+                break;
+            }
+        }
+        return value.length() > 50 ? value.substring(0, 50) : value;
+    }
+
+    private boolean isLikelyAnnotationTarget(TextLine line, int pageCount) {
+        String compact = safeText(line.text()).replaceAll("\\s+", "");
+        if (compact.length() < 12) {
+            return false;
+        }
+        String lower = compact.toLowerCase(Locale.ROOT);
+        for (String keyword : COVER_OR_METADATA_KEYWORDS) {
+            if (lower.contains(keyword.toLowerCase(Locale.ROOT))) {
+                return false;
+            }
+        }
+        long letters = compact.codePoints().filter(Character::isLetter).count();
+        long digits = compact.codePoints().filter(Character::isDigit).count();
+        if (digits > 0 && digits >= compact.length() * 0.45d) {
+            return false;
+        }
+        if (letters < Math.min(8, compact.length() / 2)) {
+            return false;
+        }
+        return pageCount <= 1 || line.fontSize() < 28f;
+    }
+
+    /**
+     * Draw a short red note near the mark.  Prefers the blank space right of the
+     * line end; falls back to the gap just above the line when too narrow.
+     */
+    private void drawPdfMarginNote(PDPageContentStream stream,
+                                   FontSelection fontSelection,
+                                   PDRectangle box,
+                                   TextLine line,
+                                   float preferredX,
+                                   String note) throws IOException {
+        if (!fontSelection.supportsChinese() && note.codePoints().anyMatch(cp -> cp > 0x024F)) {
+            return;
+        }
+        float fontSize = 10.5f;
+        float width = measurePdfTextWidth(fontSelection, note, fontSize);
+        float rightLimit = box.getUpperRightX() - 16f;
+        stream.setNonStrokingColor(RED_COLOR);
+        if (preferredX + 6f + width <= rightLimit) {
+            drawPdfText(stream, fontSelection, fontSize, preferredX + 6f, line.baselineY(), note);
+            return;
+        }
+        // Fall back: right-aligned in the gap above the line
+        float x = Math.max(box.getLowerLeftX() + 16f, rightLimit - width);
+        drawPdfText(stream, fontSelection, fontSize, x, line.baselineY() + Math.max(line.fontSize(), 9f) + 4f, note);
+    }
+
+    private void drawPdfCrossStroke(PDPageContentStream stream,
+                                    float x,
+                                    float y,
+                                    float size,
+                                    float angle) throws IOException {
+        stream.setStrokingColor(RED_COLOR);
+        stream.setLineWidth(Math.max(2.2f, size / 8f));
+        stream.setLineCapStyle(1);
+        stream.setLineJoinStyle(1);
+
+        float[] a1 = rotatePoint(x, y, -size * 0.42f,  size * 0.46f, angle);
+        float[] a2 = rotatePoint(x, y,  size * 0.46f, -size * 0.42f, angle);
+        float[] b1 = rotatePoint(x, y, -size * 0.44f, -size * 0.40f, angle);
+        float[] b2 = rotatePoint(x, y,  size * 0.42f,  size * 0.48f, angle);
+        float[] ac = rotatePoint(x, y,  size * 0.04f,  size * 0.06f, angle);
+        float[] bc = rotatePoint(x, y, -size * 0.02f,  size * 0.02f, angle);
+
+        stream.moveTo(a1[0], a1[1]);
+        stream.curveTo(ac[0], ac[1], ac[0], ac[1], a2[0], a2[1]);
+        stream.stroke();
+        stream.moveTo(b1[0], b1[1]);
+        stream.curveTo(bc[0], bc[1], bc[0], bc[1], b2[0], b2[1]);
+        stream.stroke();
+    }
+
+    /** Wavy red underline used to flag a weak passage, like a teacher's squiggle. */
+    private void drawPdfWavyUnderline(PDPageContentStream stream,
+                                      float startX,
+                                      float endX,
+                                      float y) throws IOException {
+        if (endX - startX < 24f) {
+            return;
+        }
+        stream.setStrokingColor(RED_LIGHT);
+        stream.setLineWidth(1.1f);
+        float waveLen = 9f;
+        float amplitude = 2.2f;
+        float x = startX;
+        stream.moveTo(x, y);
+        boolean up = true;
+        while (x + waveLen <= endX) {
+            float midX = x + waveLen / 2f;
+            float ctrlY = up ? y + amplitude : y - amplitude;
+            stream.curveTo(midX, ctrlY, midX, ctrlY, x + waveLen, y);
+            x += waveLen;
+            up = !up;
+        }
+        stream.stroke();
+    }
+
+    /** Evenly spread {@code count} indices over {@code size} elements with jitter. */
+    private List<Integer> pickSpreadIndices(int size, int count, Random random) {
+        if (size <= 0 || count <= 0) {
+            return List.of();
+        }
+        count = Math.min(count, size);
+        Set<Integer> used = new HashSet<>();
+        List<Integer> out = new ArrayList<>();
+        float step = (float) size / count;
+        for (int i = 0; i < count; i++) {
+            int base = (int) (i * step + step * 0.2f + random.nextFloat() * step * 0.6f);
+            int idx = Math.min(size - 1, Math.max(0, base));
+            while (used.contains(idx) && idx < size - 1) {
+                idx++;
+            }
+            if (used.add(idx)) {
+                out.add(idx);
+            }
+        }
+        Collections.sort(out);
+        return out;
+    }
+
+    private List<TextLine> collectPdfLines(PDDocument document) throws IOException {
+        PdfLineCollector collector = new PdfLineCollector();
+        collector.getText(document);
+        return collector.lines();
     }
 
     private void drawPdfCheckStroke(PDPageContentStream stream,
@@ -610,7 +822,7 @@ public class AnnotatedStudentReportService {
                                     float size,
                                     float angle) throws IOException {
         stream.setStrokingColor(RED_COLOR);
-        stream.setLineWidth(Math.max(8.5f, size / 7.4f));
+        stream.setLineWidth(Math.max(3.4f, size / 8f));
         stream.setLineCapStyle(1);
         stream.setLineJoinStyle(1);
 
@@ -662,6 +874,13 @@ public class AnnotatedStudentReportService {
         float maxWidth = templateBox.getWidth() - margin * 2;
         PDPage currentPage = page;
         float initialStartY = findPdfReviewStartY(document, page, templateBox);
+        // Not enough blank space left on the last page: start the review block on
+        // a fresh page instead of overlaying it on existing body text.
+        if (initialStartY < 170f) {
+            currentPage = new PDPage(templateBox);
+            document.addPage(currentPage);
+            initialStartY = templateBox.getHeight() - 72f;
+        }
         float y;
 
         PDPageContentStream stream = new PDPageContentStream(document, currentPage, AppendMode.APPEND, true, true);
@@ -721,12 +940,18 @@ public class AnnotatedStudentReportService {
         return y;
     }
 
+    /**
+     * Returns the highest Y at which the review block may safely start on the
+     * given page (i.e. just below the lowest existing text).  No lower clamp is
+     * applied here: callers must check the value and switch to a new page when
+     * the remaining space is insufficient, otherwise the review would be drawn
+     * on top of existing content.
+     */
     private float findPdfReviewStartY(PDDocument document, PDPage page, PDRectangle box) throws IOException {
         PdfPageMetrics metrics = locatePdfPageMetrics(document, page);
-        float candidate = metrics.lowestTextY() > 0f ? metrics.lowestTextY() - 34f : Math.min(240f, box.getHeight() * 0.30f);
+        float candidate = metrics.lowestTextY() > 0f ? metrics.lowestTextY() - 34f : box.getHeight() - 72f;
         float maxY = box.getHeight() - 72f;
-        float minY = 96f;
-        return Math.max(minY, Math.min(maxY, candidate));
+        return Math.min(maxY, candidate);
     }
 
     private PDRectangle visibleBox(PDPage page) {
@@ -797,7 +1022,9 @@ public class AnnotatedStudentReportService {
         int index = 0;
         for (PDPage candidate : document.getPages()) {
             index++;
-            if (candidate == page) {
+            // Compare underlying COS dictionaries: PDPageTree may hand out a new
+            // PDPage wrapper per iteration, so reference equality on PDPage fails.
+            if (candidate.getCOSObject() == page.getCOSObject()) {
                 pageNumber = index;
                 break;
             }
@@ -1067,10 +1294,22 @@ public class AnnotatedStudentReportService {
                 }
             }
         }
+        List<String> detailLines = new ArrayList<>();
+        for (String comment : dimensionComments == null ? List.<String>of() : dimensionComments) {
+            String trimmed = safeText(comment).trim();
+            if (!trimmed.isBlank() && !detailLines.contains(trimmed)) {
+                detailLines.add(trimmed);
+            }
+        }
         if (lines.isEmpty()) {
             lines.add("批阅完成，请继续围绕实验任务、原理理解、结果分析与总结反思进一步完善报告。");
         }
-        return lines.size() > 24 ? lines.subList(0, 24) : lines;
+        if (!detailLines.isEmpty()) {
+            lines.add("");
+            lines.add("分项批注：");
+            lines.addAll(detailLines);
+        }
+        return lines.size() > 44 ? lines.subList(0, 44) : lines;
     }
 
     private String resolveTeacherSignature(String teacherSignature) {
@@ -1137,6 +1376,40 @@ public class AnnotatedStudentReportService {
     private record PdfTextAnchor(float endX, float yDirAdj) {}
 
     private record PdfPageMetrics(float lowestTextY) {}
+
+    /** A fragment of text on a page, in PDF coordinates (origin bottom-left). */
+    private record TextLine(int pageIndex, String text, float startX, float endX, float baselineY, float fontSize) {}
+
+    /** Collects every text line with its position so marks can anchor to real content. */
+    private static final class PdfLineCollector extends PDFTextStripper {
+        private final List<TextLine> lines = new ArrayList<>();
+
+        private PdfLineCollector() throws IOException {
+            setSortByPosition(true);
+        }
+
+        @Override
+        protected void writeString(String text, List<TextPosition> positions) throws IOException {
+            if (text == null || text.isBlank() || positions == null || positions.isEmpty()) {
+                return;
+            }
+            TextPosition first = positions.get(0);
+            TextPosition last = positions.get(positions.size() - 1);
+            float pageHeight = getCurrentPage().getMediaBox().getHeight();
+            lines.add(new TextLine(
+                    getCurrentPageNo() - 1,
+                    text.trim(),
+                    first.getXDirAdj(),
+                    last.getXDirAdj() + last.getWidthDirAdj(),
+                    pageHeight - last.getYDirAdj(),
+                    last.getFontSizeInPt()
+            ));
+        }
+
+        private List<TextLine> lines() {
+            return lines;
+        }
+    }
 
     private static final class PdfKeywordLocator extends PDFTextStripper {
         private final List<String> keywords;

@@ -784,7 +784,7 @@ public class GradingSubmissionService {
             ObjectNode body = objectMapper.createObjectNode();
             body.put("model", endpoint.model());
             body.set("messages", objectMapper.valueToTree(List.of(
-                    chatMessage("system", "你是高校实验课任课教师，只输出严格 JSON，不要 markdown，不要解释。"),
+                    chatMessage("system", "你是高校实验课任课教师，正在批改学生实验报告。输出像真实老师写评语一样自然、有温度的文字。只输出严格 JSON，不要解释。"),
                     chatMessage("user", prompt)
             )));
             body.put("temperature", 0.4);
@@ -835,9 +835,12 @@ public class GradingSubmissionService {
         String review = studentName + "本次实验" + overallPerformanceText(total) + "。"
                 + (focus.isBlank() ? "" : "结合本次实验的目的与上机要求，重点应围绕" + focus + "来判断任务是否真正完成。")
                 + "从当前报告看，" + buildTaskCompletionSummary(total, weaknesses, experimentContext)
-                + knowledgeIssue
-                + reportIssue
+                + "\n\n"
                 + strengthsLine
+                + knowledgeIssue
+                + "\n\n"
+                + reportIssue
+                + "\n\n"
                 + "后续建议优先围绕薄弱环节做一次针对性复盘，重新梳理实验目标、关键步骤、现象解释和结论依据，避免只停留在“做出来了”，而没有说明“为什么成立、为什么有效”。"
                 + extension
                 + buildEncouragement(total, strengths);
@@ -863,19 +866,20 @@ public class GradingSubmissionService {
         String targetedAdvice = buildConcreteStudyDirections(experimentContext, weaknesses);
 
         return """
-                请根据以下实验批改信息，为学生生成一段可直接写入实验报告末尾的“教师总评”。
-
+                请根据以下实验批改信息，为学生生成一段可直接写入实验报告末尾的"教师总评"。
+        
                 硬性要求：
                 1. 只输出 JSON，格式固定为 {"teacherReview":"..."}。
                 2. teacherReview 使用中文，控制在 260 到 360 字之间。
                 3. 只写总结性教师评语，不要写分项得分、数字成绩、百分制、评分细节、AI、模型、系统、维度、续页等词。
                 4. 必须覆盖：实验任务完成度、知识掌握情况、报告撰写主要问题、学生优点、改进建议、课外延伸建议。
                 5. 重点关注学生是否真正完成实验要求、是否理解核心知识和结果分析，不要过分关注格式、实验环境、软件版本、排版。
-                6. 语言要像任课教师，真实、自然、具体，避免套话和机械重复，不能照抄“实验目的/上机要求”原文。
-                7. 不要分点，不要标题，直接输出一整段总评。
-                8. 改进建议和课外延伸必须具体，至少给出 1 到 2 个明确方向，优先写“下一次应补做什么分析/应补看什么方法/应对比什么模型或处理步骤”，不要写空泛的“继续加强”“继续拓展”。
+                6. 语言要像任课教师当面跟学生说话一样，真实、自然、有温度，避免套话和机械重复，不能照抄"实验目的/上机要求"原文。
+                7. 可以用 2 到 3 个自然段来组织，比如第一段说完成情况和优点，第二段说不足和建议。段落之间用换行符 \\n 分隔。
+                8. 改进建议和课外延伸必须具体，至少给出 1 到 2 个明确方向，优先写"下一次应补做什么分析/应补看什么方法/应对比什么模型或处理步骤"，不要写空泛的"继续加强""继续拓展"。
                 9. 如果实验主题较明确，可以直接点名相关方法、算法、特征工程、评价指标或分析角度，例如 TF-IDF、词袋、停用词、n-gram、逻辑回归、SVM、决策树、混淆矩阵、误分类样本分析，但必须与本次实验内容相关。
-                10. 报告问题要指出主要缺口是什么，例如“缺少对 ROC/PR 曲线差异的解释”“没有分析误分类原因”“没有说明预处理对结果的影响”，不要只说“分析不够深入”。
+                10. 报告问题要指出主要缺口是什么，例如"缺少对 ROC/PR 曲线差异的解释""没有分析误分类原因""没有说明预处理对结果的影响"，不要只说"分析不够深入"。
+                11. 每份评语的开头、句式、表达方式都应该不同，禁止使用固定模板。不要总是用"XX同学本次实验…"开头。
 
                 学生信息：
                 - 学生姓名：%s
@@ -909,25 +913,34 @@ public class GradingSubmissionService {
     }
 
     private String compressTeacherReview(String reviewBody) {
-        String normalized = safeText(reviewBody)
-                .replace('\r', ' ')
-                .replace('\n', ' ')
-                .replaceAll("\\s+", " ")
+        // Preserve paragraph breaks (\n\n or \n) but clean up extra whitespace within lines
+        String text = safeText(reviewBody)
+                .replaceAll("\\r\\n?", "\n")     // normalize line endings
+                .replaceAll("\\n{3,}", "\n\n")       // collapse multiple blank lines
                 .replaceAll("分项得分参考[:：].*", "")
                 .replaceAll("实验成绩[:：][^。；]*[。；]?", "")
                 .replace("教师评语（续）", "")
                 .replace("教师评语", "")
                 .trim();
-        if (normalized.isBlank()) {
-            normalized = "本次实验已完成批改。建议继续围绕实验任务完成度、原理理解、结果分析与结论表达进行复盘，把主要知识点真正学懂、讲清并落实到报告中。";
+        if (text.isBlank()) {
+            text = "本次实验已完成批改。建议继续围绕实验任务完成度、原理理解、结果分析与结论表达进行复盘，把主要知识点真正学懂、讲清并落实到报告中。";
         }
-        if (normalized.length() > 380) {
-            normalized = normalized.substring(0, 380);
+        // Limit total length but keep paragraph structure
+        if (text.length() > 520) {
+            // Try to cut at a paragraph boundary
+            int cutPoint = text.lastIndexOf("\n\n", 520);
+            if (cutPoint < 200) {
+                cutPoint = text.lastIndexOf("\n", 520);
+            }
+            if (cutPoint < 200) {
+                cutPoint = 520;
+            }
+            text = text.substring(0, cutPoint).trim();
         }
-        if (!"。！？".contains(String.valueOf(normalized.charAt(normalized.length() - 1)))) {
-            normalized = normalized + "。";
+        if (!"。！？".contains(String.valueOf(text.charAt(text.length() - 1)))) {
+            text = text + "。";
         }
-        return normalized;
+        return text;
     }
 
     private String buildScoreObservationDigest(List<ScoreItemEntity> scoreItems, GradingSubmissionEntity submission) {
@@ -1399,16 +1412,40 @@ public class GradingSubmissionService {
     private List<String> buildAnnotationHighlights(List<ScoreItemEntity> scores, Map<Long, String> dimensionNames) {
         List<DimensionInsight> ranked = buildRankedInsights(scores, dimensionNames);
         List<String> highlights = new ArrayList<>();
-        ranked.stream()
+        List<DimensionInsight> strong = ranked.stream()
                 .sorted(Comparator.comparing(DimensionInsight::ratio).reversed())
-                .limit(2)
-                .forEach(insight -> highlights.add("\u4f18\u70b9\uff1a" + insight.dimensionName() + "\u638c\u63e1\u8f83\u7a33\uff0c" + conciseInsightComment(insight, false)));
-        ranked.stream()
+                .limit(2).toList();
+        List<DimensionInsight> weak = ranked.stream()
                 .sorted(Comparator.comparing(DimensionInsight::ratio))
                 .filter(insight -> !insight.formatOnly())
-                .limit(2)
-                .forEach(insight -> highlights.add("\u5efa\u8bae\uff1a" + insight.dimensionName() + "\u8fd8\u9700\u52a0\u5f3a\uff0c" + conciseInsightComment(insight, true)));
+                .limit(2).toList();
+        for (int i = 0; i < strong.size(); i++) {
+            DimensionInsight ins = strong.get(i);
+            highlights.add(buildNaturalHighlight(ins.dimensionName(), conciseInsightComment(ins, false), true, i));
+        }
+        for (int i = 0; i < weak.size(); i++) {
+            DimensionInsight ins = weak.get(i);
+            highlights.add(buildNaturalHighlight(ins.dimensionName(), conciseInsightComment(ins, false), false, i));
+        }
         return highlights.stream().distinct().limit(4).toList();
+    }
+
+    private String buildNaturalHighlight(String dimName, String comment, boolean isStrong, int variant) {
+        if (isStrong) {
+            return switch (variant % 4) {
+                case 0 -> dimName + "\u8fd9\u90e8\u5206\u505a\u5f97\u4e0d\u9519\uff0c" + comment;
+                case 1 -> dimName + "\u65b9\u9762\u8868\u73b0\u7a33\u5b9a\uff0c" + comment;
+                case 2 -> "\u5728" + dimName + "\u4e0a\u80fd\u770b\u51fa\u4f60\u662f\u8ba4\u771f\u505a\u4e86\u7684\uff0c" + comment;
+                default -> dimName + "\uff1a" + comment;
+            };
+        } else {
+            return switch (variant % 4) {
+                case 0 -> dimName + "\u8fd8\u53ef\u4ee5\u518d\u52a0\u628a\u52b2\uff0c" + comment;
+                case 1 -> dimName + "\u65b9\u9762\u5efa\u8bae\u518d\u7ec6\u5316\u4e00\u4e0b\uff0c" + comment;
+                case 2 -> "\u5982\u679c" + dimName + "\u80fd\u518d\u8865\u5145\u4e9b\u5185\u5bb9\u4f1a\u66f4\u597d\uff0c" + comment;
+                default -> dimName + "\uff1a" + comment;
+            };
+        }
     }
     private String conciseInsightComment(DimensionInsight insight, boolean weak) {
         if (insight.comment().isBlank()) {

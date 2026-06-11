@@ -292,6 +292,10 @@ tap:
     export:
       max-concurrency: ${GRADING_EXPORT_MAX_CONCURRENCY:6}
       submit-interval-ms: ${GRADING_EXPORT_SUBMIT_INTERVAL_MS:30}
+  animation:
+    chat-model: ${ANIMATION_CHAT_MODEL:}
+    tts-model: ${ANIMATION_TTS_MODEL:qwen-tts}
+    tts-voice: ${ANIMATION_TTS_VOICE:Cherry}
 
 # PTA spider service
 pta:
