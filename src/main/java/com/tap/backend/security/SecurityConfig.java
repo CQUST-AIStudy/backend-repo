@@ -40,13 +40,9 @@ public class SecurityConfig {
       "/api/admin/**",
       "/api/hello",
       "/actuator/**",
-      "/api/course-spaces/**",
-      "/api/annotations/**",
       "/api/classes/**",
       "/api/student-classes/**",
       "/api/grading/**",
-      "/api/rag/**",
-      "/api/student-rag/**",
       "/api/pta-cookie/**",
       "/api/teachers/**",
       "/api/users/**",
@@ -90,8 +86,6 @@ public class SecurityConfig {
         .requestMatchers("/api/tap-chat", "/api/tap-chat/**").authenticated()
         .requestMatchers("/api/agent/**").authenticated()
         .requestMatchers("/api/zip-organize/**").authenticated()
-        .requestMatchers("/api/course-spaces/**").hasAnyRole(UserRole.TEACHER.name(), UserRole.ADMIN.name())
-        .requestMatchers("/api/annotations/**").hasAnyRole(UserRole.TEACHER.name(), UserRole.ADMIN.name())
         .requestMatchers(HttpMethod.POST, "/api/classes/join").permitAll()
         // The student class page still uses the legacy session cookie. The controller
         // validates either JWT or a legacy STUDENT session to avoid frontend changes.
@@ -102,8 +96,6 @@ public class SecurityConfig {
         .requestMatchers("/api/teachers/**").hasAnyRole(UserRole.TEACHER.name(), UserRole.ADMIN.name())
         .requestMatchers("/api/users/**").hasRole(UserRole.ADMIN.name())
         .requestMatchers("/api/grading/**").hasAnyRole(UserRole.TEACHER.name(), UserRole.ADMIN.name())
-        .requestMatchers("/api/rag/**").hasAnyRole(UserRole.TEACHER.name(), UserRole.ADMIN.name())
-        .requestMatchers("/api/student-rag/**").hasRole(UserRole.STUDENT.name())
         .requestMatchers("/api/classes/**").hasAnyRole(UserRole.TEACHER.name(), UserRole.ADMIN.name())
         .requestMatchers("/api/analytics/student/**").hasRole(UserRole.STUDENT.name())
         .requestMatchers("/api/analytics/**").hasAnyRole(UserRole.TEACHER.name(), UserRole.ADMIN.name())

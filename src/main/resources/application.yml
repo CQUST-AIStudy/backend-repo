@@ -230,64 +230,8 @@ tap:
       secret-key: ${MINIO_SECRET_KEY:minioadmin}
       bucket: ${MINIO_BUCKET:tap-files}
   rag:
-    maintenance-mode: ${RAG_MAINTENANCE_MODE:false}
-    langchain4j:
-      enabled: ${RAG_LANGCHAIN4J_ENABLED:true}
-      use-streaming: ${RAG_LANGCHAIN4J_USE_STREAMING:true}
-      use-embedding-model: ${RAG_LANGCHAIN4J_USE_EMBEDDING_MODEL:true}
-      chat:
-        base-url: ${RAG_LANGCHAIN4J_CHAT_BASE_URL:}
-        api-key: ${RAG_LANGCHAIN4J_CHAT_API_KEY:}
-        model-name: ${RAG_LANGCHAIN4J_CHAT_MODEL_NAME:}
-        timeout-seconds: ${RAG_LANGCHAIN4J_CHAT_TIMEOUT_SECONDS:120}
-      embedding:
-        base-url: ${RAG_LANGCHAIN4J_EMBEDDING_BASE_URL:${RAG_DASHSCOPE_BASE_URL:${DASHSCOPE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}}}
-        api-key: ${RAG_LANGCHAIN4J_EMBEDDING_API_KEY:${DASHSCOPE_API_KEY:}}
-        model-name: ${RAG_LANGCHAIN4J_EMBEDDING_MODEL_NAME:text-embedding-v3}
-        dimensions: ${RAG_LANGCHAIN4J_EMBEDDING_DIMENSIONS:1024}
-        timeout-seconds: ${RAG_LANGCHAIN4J_EMBEDDING_TIMEOUT_SECONDS:30}
-    dashscope:
-      api-key: ${DASHSCOPE_API_KEY:}
-      base-url: ${RAG_DASHSCOPE_BASE_URL:${DASHSCOPE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}}
-      embedding-model: text-embedding-v3
-      embedding-dimensions: 1024
-    milvus:
-      host: ${MILVUS_HOST:127.0.0.1}
-      port: ${MILVUS_PORT:19530}
-      collection: course_chunks
-    retrieval:
-      top-k: 20
-      top-parent: 5
-      score-threshold: 0.5
-    fusion:
-      alpha: 0.5
-      beta: 0.3
-      gamma: 0.1
-      delta: 0.1
-    rerank:
-      enabled: true
-      provider: heuristic
-      endpoint: ${RAG_RERANK_ENDPOINT:http://127.0.0.1:8101/rerank}
-      timeout-ms: 2500
-      cross-encoder-weight: 0.7
-      top-n: 5
-      base-weight: 0.45
-      overlap-weight: 0.4
-      phrase-weight: 0.1
-      annotation-weight: 0.05
-    mmr:
-      lambda: 0.7
-    coverage:
-      threshold: 0.30
-    evidence:
-      max-sentences: 8
-      token-ratio-min: 0.25
-      token-ratio-max: 0.40
-    web:
-      tavily-api-key: ${TAVILY_API_KEY:}
-      enabled: false
-    lucene:
-      index-path: ${LUCENE_INDEX_PATH:./data/lucene-index}
+    proxy:
+      base-url: ${RAG_SERVICE_BASE_URL:http://127.0.0.1:8001}
   grading:
     export:
       max-concurrency: ${GRADING_EXPORT_MAX_CONCURRENCY:6}

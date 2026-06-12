@@ -71,7 +71,6 @@ public class RateLimitFilter extends OncePerRequestFilter {
 
     private boolean isAiEndpoint(String path) {
         return path.startsWith("/api/tap-chat")
-            || path.startsWith("/api/rag/chat")
             || path.contains("/ai-feedback")
             || path.contains("/summarize");
     }

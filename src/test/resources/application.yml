@@ -77,15 +77,8 @@ tap:
       secret-key: minioadmin
       bucket: tap-test
   rag:
-    maintenance-mode: true
-    langchain4j:
-      enabled: false
-      use-streaming: false
-      use-embedding-model: false
-    web:
-      enabled: false
-    lucene:
-      index-path: ./target/test-lucene-index
+    proxy:
+      base-url: http://127.0.0.1:8001
   grading:
     redis-listener:
       enabled: false
