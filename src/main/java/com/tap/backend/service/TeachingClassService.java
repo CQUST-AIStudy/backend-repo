@@ -108,7 +108,10 @@ public class TeachingClassService {
         if (syncEnabled != null) {
             teachingClass.setSyncEnabled(syncEnabled);
         }
-        return classRepo.save(teachingClass);
+        teachingClass = classRepo.save(teachingClass);
+        // 在事务内触发 teacher 懒加载代理初始化，避免 Controller 端 LazyInitializationException
+        teachingClass.getTeacher().getDisplayName();
+        return teachingClass;
     }
 
     @Transactional
@@ -145,7 +148,10 @@ public class TeachingClassService {
         if (syncEnabled != null) {
             teachingClass.setSyncEnabled(syncEnabled);
         }
-        return classRepo.save(teachingClass);
+        teachingClass = classRepo.save(teachingClass);
+        // 在事务内触发 teacher 懒加载代理初始化，避免 Controller 端 LazyInitializationException
+        teachingClass.getTeacher().getDisplayName();
+        return teachingClass;
     }
 
     @Transactional

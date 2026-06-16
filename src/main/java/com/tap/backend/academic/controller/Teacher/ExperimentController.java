@@ -57,38 +57,42 @@ public class ExperimentController {
             @RequestParam(value = "class", required = false) String classKeyword,
             @RequestParam(value = "classKeyword", required = false) String classKeywordAlias,
             @RequestParam(value = "keyword", required = false) String searchKeyword,
+            @RequestParam(value = "scope", required = false) String scope,
             HttpServletRequest request
     ) {
         try {
             Teacher teacher = resolveCurrentTeacherOrNull(request);
+            boolean adminAllScope = isAllScope(scope) && teacherSessionResolver.isCurrentAdmin(request);
             // 管理员没有Teacher记录时，返回全部实验（支持关键词搜索）
-            if (teacher == null) {
-                List<Experiment> experiments = (searchKeyword != null && !searchKeyword.isBlank())
-                        ? experimentService.searchExperiments(searchKeyword)
-                        : experimentService.findAllExperiments();
+            if (teacher == null || adminAllScope) {
+                String keyword = normalizeKeyword(classKeyword, classKeywordAlias);
+                TeacherExperimentListResult result = teacherExperimentQueryService
+                        .getTeacherExperimentListForAdmin(classId, keyword, "all");
                 List<Map<String, Object>> mapped = new ArrayList<>();
-                for (Experiment e : experiments) {
+                for (com.tap.backend.academic.entity.teacher.TeacherExperiment e : result.getExperiments()) {
+                    if (searchKeyword != null && !searchKeyword.isBlank()
+                            && (e.getName() == null || !e.getName().toLowerCase().contains(searchKeyword.trim().toLowerCase()))) {
+                        continue;
+                    }
                     Map<String, Object> item = new HashMap<>();
-                    item.put("id", e.getExperiment_id());
+                    item.put("id", e.getId());
+                    item.put("experimentId", e.getId());
                     item.put("name", e.getName());
                     item.put("title", e.getName());
                     item.put("deadline", e.getDeadline());
-                    item.put("description", e.getDescribe());
-                    item.put("className", e.getClassName());
-                    item.put("teacherId", e.getTeacherId());
-                    item.put("submissionCount", 0);
-                    item.put("submitCount", 0);
-                    item.put("status", "active");
-                    item.put("averageScore", null);
+                    item.put("submissionCount", e.getSubmissionCount() == null ? 0 : e.getSubmissionCount());
+                    item.put("submitCount", e.getSubmissionCount() == null ? 0 : e.getSubmissionCount());
+                    item.put("status", e.getStatus());
+                    item.put("averageScore", e.getAverageScore());
                     mapped.add(item);
                 }
                 Map<String, Object> response = new HashMap<>();
                 response.put("status", "success");
                 response.put("data", mapped);
                 response.put("total", mapped.size());
-                response.put("studentCount", 0);
+                response.put("studentCount", result.getStudentCount());
                 response.put("classId", classId);
-                response.put("class", normalizeKeyword(classKeyword, classKeywordAlias));
+                response.put("class", keyword);
                 return ResponseEntity.ok(response);
             }
 
@@ -188,12 +192,36 @@ public class ExperimentController {
             @RequestParam(value = "class", required = false) String classKeyword,
             @RequestParam(value = "classKeyword", required = false) String classKeywordAlias,
             @RequestParam(value = "experimentId", required = false) Integer experimentId,
+            @RequestParam(value = "scope", required = false) String scope,
             HttpServletRequest request
     ) {
         Map<String, Object> response = new HashMap<>();
         try {
-            Teacher teacher = requireCurrentTeacher(request);
-            String keyword = resolveClassKeywordForQuery(teacher, classId, normalizeKeyword(classKeyword, classKeywordAlias));
+            String keyword = normalizeKeyword(classKeyword, classKeywordAlias);
+            Teacher teacher = teacherSessionResolver.requireCurrentTeacherOrAdminNull(request);
+            boolean adminAllScope = isAllScope(scope) && teacherSessionResolver.isCurrentAdmin(request);
+
+            // 管理员无 Teacher 记录：走全量分支（不绑定教师），支持 classId/classKeyword/experimentId 过滤
+            if (teacher == null || adminAllScope) {
+                TeacherStudentExperimentResult adminResult = teacherExperimentQueryService
+                        .getAllStudentExperimentsForAdmin(classId, keyword, experimentId, "all");
+                if (!adminResult.hasStudents()) {
+                    response.put("success", true);
+                    response.put("data", new ArrayList<>());
+                    response.put("message", "no students found");
+                    response.put("classId", classId);
+                    response.put("class", keyword);
+                    return ResponseEntity.ok(response);
+                }
+                response.put("success", true);
+                response.put("data", adminResult.getData());
+                response.put("total", adminResult.getData().size());
+                response.put("classId", classId);
+                response.put("class", keyword);
+                return ResponseEntity.ok(response);
+            }
+
+            keyword = resolveClassKeywordForQuery(teacher, classId, keyword);
             TeacherStudentExperimentResult result = teacherExperimentQueryService
                     .getAllStudentExperiments(teacher.getTeacher_id(), classId, keyword, experimentId);
             if (!result.hasStudents()) {
@@ -310,6 +338,10 @@ public class ExperimentController {
 
     private String removeKeywordWhitespace(String value) {
         return value == null ? null : value.replaceAll("[\\s\\u3000]+", "");
+    }
+
+    private boolean isAllScope(String scope) {
+        return scope != null && "all".equalsIgnoreCase(scope.trim());
     }
 
     private String resolveClassKeywordForQuery(Teacher teacher, Long classId, String keyword) {

@@ -364,6 +364,76 @@ public interface TeacherExperimentQueryDao {
     );
 
     /**
+     * 管理员视角：从 class_member + student_profile 全量取学生 roster（不绑定教师）。
+     * 可选 classId 过滤（按 teaching_class.id）。
+     */
+    @Select({
+            "<script>",
+            "SELECT",
+            "  CAST(MIN(tc.id) AS SIGNED) AS classId,",
+            "  sp.student_no AS studentId,",
+            "  sp.real_name AS studentName,",
+            "  COALESCE(NULLIF(TRIM(student_user.username), ''), sp.student_no) AS studentUsername,",
+            "  MIN(tc.name) AS className",
+            "FROM class_member cm",
+            "JOIN student_profile sp",
+            "  ON sp.id = cm.student_id",
+            " AND sp.status != 'DELETED'",
+            "JOIN teaching_class tc ON tc.id = cm.class_id",
+            "LEFT JOIN tap_user student_user ON student_user.id = sp.user_id",
+            "WHERE cm.member_status = 'ACTIVE'",
+            "  <if test='classId != null'>",
+            "    AND tc.id = #{classId}",
+            "  </if>",
+            "GROUP BY sp.id, sp.student_no, sp.real_name, COALESCE(NULLIF(TRIM(student_user.username), ''), sp.student_no)",
+            "ORDER BY className, sp.student_no",
+            "</script>"
+    })
+    List<TeacherStudentAssignmentRow> findAllStudentRosterForAdmin(
+            @Param("classId") Long classId
+    );
+
+    /**
+     * 管理员视角：全量取 assignment_offering 实验列表（不绑定教师）。
+     * 可选 classId 过滤与 classKeyword（pta_keyword/name）匹配。
+     * scope='all' 时跳过课程范围过滤（DATA_STRUCTURE_SCOPE_PREDICATE），返回所有实验。
+     */
+    @Select({
+            "<script>",
+            "SELECT",
+            "  CAST(ao.id AS SIGNED) AS experimentId,",
+            "  " + EXPERIMENT_NAME_EXPR + " AS name,",
+            "  ao.deadline_at AS deadline,",
+            "  ao.created_at AS createdTime",
+            "FROM assignment_offering ao",
+            "JOIN assignment_template at ON at.id = ao.template_id",
+            "JOIN teaching_class tc ON tc.id = ao.class_id",
+            "WHERE 1=1",
+            "  <if test='scope == null or scope != \"all\"'>",
+            "    AND " + DATA_STRUCTURE_SCOPE_PREDICATE,
+            "  </if>",
+            "  <if test='classId != null'>",
+            "    AND ao.class_id = #{classId}",
+            "  </if>",
+            "  <if test='classKeyword != null and classKeyword != \"\"'>",
+            "    AND (",
+            "      " + NORMALIZED_PTA_KEYWORD_EXPR + " COLLATE utf8mb4_unicode_ci = #{classKeyword} COLLATE utf8mb4_unicode_ci",
+            "      OR " + NORMALIZED_CLASS_NAME_EXPR + " COLLATE utf8mb4_unicode_ci = #{classKeyword} COLLATE utf8mb4_unicode_ci",
+            "    )",
+            "  </if>",
+            "ORDER BY",
+            "  CASE WHEN ao.seq_no IS NULL THEN 1 ELSE 0 END,",
+            "  ao.seq_no,",
+            "  ao.id",
+            "</script>"
+    })
+    List<TeacherExperimentSummaryRow> findAllExperimentsForAdmin(
+            @Param("classId") Long classId,
+            @Param("classKeyword") String classKeyword,
+            @Param("scope") String scope
+    );
+
+    /**
      * 获取学生在指定实验中每个题目的所有提交尝试（用于AI错误分析）
      * 查询 student_problem_attempt 获取每次提交的 judgeStatus、compiler、submittedAt 等
      */
