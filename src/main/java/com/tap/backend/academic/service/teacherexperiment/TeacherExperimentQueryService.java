@@ -17,4 +17,6 @@ public interface TeacherExperimentQueryService {
      * scope="all" 时跳过课程范围过滤，返回所有实验（用于管理员大屏）。
      */
     TeacherStudentExperimentResult getAllStudentExperimentsForAdmin(Long classId, String classKeyword, Integer experimentId, String scope);
+
+    TeacherStudentExperimentResult getRecentStudentExperimentsForAdmin(Long classId, String classKeyword, Integer experimentId, String scope, Integer limit);
 }

@@ -393,6 +393,62 @@ public interface TeacherExperimentQueryDao {
             @Param("classId") Long classId
     );
 
+    @Select({
+            "<script>",
+            "SELECT",
+            "  CAST(tc.id AS SIGNED) AS classId,",
+            "  sp.student_no AS studentId,",
+            "  sp.real_name AS studentName,",
+            "  COALESCE(NULLIF(TRIM(student_user.username), ''), sp.student_no) AS studentUsername,",
+            "  tc.name AS className,",
+            "  CAST(ao.id AS SIGNED) AS experimentId,",
+            "  " + EXPERIMENT_NAME_EXPR + " AS experimentName,",
+            "  ao.deadline_at AS deadline,",
+            "  COALESCE(sa.last_submit_at, sa.first_submit_at) AS submitTime,",
+            "  COALESCE(sa.best_total_score, sa.latest_total_score) AS score,",
+            "  sa.submission_status AS submissionStatus,",
+            "  sa.transcript_row_present AS transcriptRowPresent,",
+            "  sa.answer_sheet_count AS answerSheetCount,",
+            "  sa.scored_code_count AS scoredCodeCount,",
+            "  sa.submission_attempt_count AS submissionAttemptCount,",
+            "  sa.completion_evidence AS completionEvidence",
+            "FROM student_assignment sa",
+            "JOIN assignment_offering ao ON ao.id = sa.offering_id",
+            "JOIN assignment_template at ON at.id = ao.template_id",
+            "JOIN teaching_class tc ON tc.id = ao.class_id",
+            "JOIN student_profile sp ON sp.id = sa.student_id",
+            "LEFT JOIN tap_user student_user ON student_user.id = sp.user_id",
+            "WHERE COALESCE(sa.last_submit_at, sa.first_submit_at) IS NOT NULL",
+            "  AND NULLIF(TRIM(COALESCE(sp.real_name, '')), '') IS NOT NULL",
+            "  AND NULLIF(TRIM(COALESCE(tc.name, '')), '') IS NOT NULL",
+            "  AND NULLIF(TRIM(COALESCE(" + EXPERIMENT_NAME_EXPR + ", '')), '') IS NOT NULL",
+            "  <if test='scope == null or scope != \"all\"'>",
+            "    AND " + DATA_STRUCTURE_SCOPE_PREDICATE,
+            "  </if>",
+            "  <if test='classId != null'>",
+            "    AND ao.class_id = #{classId}",
+            "  </if>",
+            "  <if test='classKeyword != null and classKeyword != \"\"'>",
+            "    AND (",
+            "      " + NORMALIZED_PTA_KEYWORD_EXPR + " COLLATE utf8mb4_unicode_ci = #{classKeyword} COLLATE utf8mb4_unicode_ci",
+            "      OR " + NORMALIZED_CLASS_NAME_EXPR + " COLLATE utf8mb4_unicode_ci = #{classKeyword} COLLATE utf8mb4_unicode_ci",
+            "    )",
+            "  </if>",
+            "  <if test='experimentId != null'>",
+            "    AND ao.id = #{experimentId}",
+            "  </if>",
+            "ORDER BY COALESCE(sa.last_submit_at, sa.first_submit_at) DESC, sa.id DESC",
+            "LIMIT #{limit}",
+            "</script>"
+    })
+    List<TeacherStudentAssignmentRow> findRecentSubmittedAssignmentsForAdmin(
+            @Param("classId") Long classId,
+            @Param("classKeyword") String classKeyword,
+            @Param("experimentId") Integer experimentId,
+            @Param("scope") String scope,
+            @Param("limit") Integer limit
+    );
+
     /**
      * 管理员视角：全量取 assignment_offering 实验列表（不绑定教师）。
      * 可选 classId 过滤与 classKeyword（pta_keyword/name）匹配。

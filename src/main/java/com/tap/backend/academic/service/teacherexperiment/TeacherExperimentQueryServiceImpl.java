@@ -326,6 +326,58 @@ public class TeacherExperimentQueryServiceImpl implements TeacherExperimentQuery
         return new TeacherStudentExperimentResult(true, rows);
     }
 
+    @Override
+    public TeacherStudentExperimentResult getRecentStudentExperimentsForAdmin(
+            Long classId,
+            String classKeyword,
+            Integer experimentId,
+            String scope,
+            Integer limit) {
+        String normalizedClassKeyword = normalizeClassKeyword(classKeyword);
+        int queryLimit = limit == null || limit <= 0 ? 20 : limit;
+        List<TeacherStudentAssignmentRow> assignments = teacherExperimentQueryDao
+                .findRecentSubmittedAssignmentsForAdmin(classId, normalizedClassKeyword, experimentId, scope, queryLimit);
+        if (assignments == null || assignments.isEmpty()) {
+            return new TeacherStudentExperimentResult(true, Collections.emptyList());
+        }
+
+        List<Map<String, Object>> rows = new ArrayList<>(assignments.size());
+        for (TeacherStudentAssignmentRow assignment : assignments) {
+            if (assignment == null
+                    || assignment.getSubmitTime() == null
+                    || !hasText(assignment.getStudentName())
+                    || !hasText(assignment.getClassName())
+                    || !hasText(assignment.getExperimentName())) {
+                continue;
+            }
+            Map<String, Object> experimentData = new LinkedHashMap<>();
+            experimentData.put("studentId", assignment.getStudentId());
+            experimentData.put("studentName", assignment.getStudentName());
+            experimentData.put(
+                    "studentUsername",
+                    hasText(assignment.getStudentUsername()) ? assignment.getStudentUsername() : assignment.getStudentId()
+            );
+            experimentData.put("classId", assignment.getClassId());
+            experimentData.put("className", assignment.getClassName());
+            experimentData.put("experimentId", assignment.getExperimentId());
+            experimentData.put("experimentName", assignment.getExperimentName());
+            experimentData.put("submitTime", assignment.getSubmitTime());
+            experimentData.put("status", mapUnifiedStatus(assignment.getSubmissionStatus()));
+            experimentData.put("submissionStatus", assignment.getSubmissionStatus());
+            experimentData.put(
+                    "isResubmission",
+                    assignment.getSubmissionAttemptCount() != null && assignment.getSubmissionAttemptCount() > 1
+            );
+            experimentData.put(
+                    "submissionAttemptCount",
+                    assignment.getSubmissionAttemptCount() == null ? 0 : assignment.getSubmissionAttemptCount()
+            );
+            rows.add(experimentData);
+        }
+
+        return new TeacherStudentExperimentResult(true, rows);
+    }
+
     private TeacherExperimentListResult getLegacyTeacherExperimentList(Integer teacherId, Long classId, String classKeyword) {
         List<TeacherStudentAssignmentRow> roster = teacherExperimentQueryDao.findTeacherStudentRoster(teacherId, classId);
         int studentCount = roster == null ? 0 : roster.size();

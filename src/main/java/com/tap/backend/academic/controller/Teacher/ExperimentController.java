@@ -193,6 +193,7 @@ public class ExperimentController {
             @RequestParam(value = "classKeyword", required = false) String classKeywordAlias,
             @RequestParam(value = "experimentId", required = false) Integer experimentId,
             @RequestParam(value = "scope", required = false) String scope,
+            @RequestParam(value = "limit", required = false) Integer limit,
             HttpServletRequest request
     ) {
         Map<String, Object> response = new HashMap<>();
@@ -203,8 +204,9 @@ public class ExperimentController {
 
             // 管理员无 Teacher 记录：走全量分支（不绑定教师），支持 classId/classKeyword/experimentId 过滤
             if (teacher == null || adminAllScope) {
-                TeacherStudentExperimentResult adminResult = teacherExperimentQueryService
-                        .getAllStudentExperimentsForAdmin(classId, keyword, experimentId, "all");
+                TeacherStudentExperimentResult adminResult = limit == null
+                        ? teacherExperimentQueryService.getAllStudentExperimentsForAdmin(classId, keyword, experimentId, "all")
+                        : teacherExperimentQueryService.getRecentStudentExperimentsForAdmin(classId, keyword, experimentId, "all", limit);
                 if (!adminResult.hasStudents()) {
                     response.put("success", true);
                     response.put("data", new ArrayList<>());
