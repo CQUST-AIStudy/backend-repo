@@ -48,6 +48,23 @@ public class PdfFallbackTextExtractor {
     this.aiProperties = aiProperties;
   }
 
+  public boolean isOcrAvailable() {
+    String command = safe(props.ocrCommand(), "tesseract");
+    try {
+      ProcessBuilder pb = new ProcessBuilder(command, "--version");
+      pb.redirectErrorStream(true);
+      Process process = pb.start();
+      boolean finished = process.waitFor(10, TimeUnit.SECONDS);
+      if (!finished) {
+        process.destroyForcibly();
+        return false;
+      }
+      return process.exitValue() == 0;
+    } catch (Exception e) {
+      return false;
+    }
+  }
+
   public String extract(byte[] pdfBytes, String filename) {
     String ocrText = extractByOcr(pdfBytes, filename);
     if (isUsableText(ocrText)) {

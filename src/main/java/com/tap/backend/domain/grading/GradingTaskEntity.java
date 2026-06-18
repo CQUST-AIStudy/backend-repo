@@ -59,6 +59,19 @@ public class GradingTaskEntity {
     @Column(name = "display_code", length = 16)
     private String displayCode;
 
+    @Column(name = "batch_review_json", columnDefinition = "json")
+    private String batchReviewJson;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "batch_review_status", nullable = false, length = 24)
+    private BatchReviewStatus batchReviewStatus = BatchReviewStatus.PENDING;
+
+    @Column(name = "batch_review_prompt", columnDefinition = "text")
+    private String batchReviewPrompt;
+
+    @Column(name = "batch_review_model", length = 128)
+    private String batchReviewModel;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "batch_id")
     private GradingBatchEntity batch;
@@ -81,6 +94,10 @@ public class GradingTaskEntity {
 
     @PreUpdate
     void onUpdate() { updatedAt = Instant.now(); }
+
+    public enum BatchReviewStatus {
+        PENDING, GENERATING, COMPLETED, FAILED
+    }
 
     public Long getId() { return id; }
     public UserEntity getTeacher() { return teacher; }
@@ -111,6 +128,14 @@ public class GradingTaskEntity {
     public void setFailedCount(int failedCount) { this.failedCount = failedCount; }
     public String getDisplayCode() { return displayCode; }
     public void setDisplayCode(String displayCode) { this.displayCode = displayCode; }
+    public String getBatchReviewJson() { return batchReviewJson; }
+    public void setBatchReviewJson(String batchReviewJson) { this.batchReviewJson = batchReviewJson; }
+    public BatchReviewStatus getBatchReviewStatus() { return batchReviewStatus; }
+    public void setBatchReviewStatus(BatchReviewStatus batchReviewStatus) { this.batchReviewStatus = batchReviewStatus; }
+    public String getBatchReviewPrompt() { return batchReviewPrompt; }
+    public void setBatchReviewPrompt(String batchReviewPrompt) { this.batchReviewPrompt = batchReviewPrompt; }
+    public String getBatchReviewModel() { return batchReviewModel; }
+    public void setBatchReviewModel(String batchReviewModel) { this.batchReviewModel = batchReviewModel; }
     public GradingBatchEntity getBatch() { return batch; }
     public void setBatch(GradingBatchEntity batch) { this.batch = batch; }
     public Long getBatchId() { return batchId; }

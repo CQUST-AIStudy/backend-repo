@@ -57,4 +57,13 @@ public class MockAiProvider implements AiProvider {
         List.of("对数据分布变化仍可能敏感", "启发：可将方法拆成课堂小实验")
     );
   }
+
+  @Override
+  public String chat(String prompt, String modelOverride) {
+    return "{\"summary\":\"\\u8fd9\\u662f\\u6a21\\u62df\\u7684\\u6279\\u6b21\\u603b\\u8bc4\\uff0c\\u5b9e\\u9645\\u90e8\\u7f72\\u65f6\\u8bf7\\u5207\\u6362\\u5230\\u771f\\u5b9eAI\\u63d0\\u4f9b\\u5546\\u3002\","
+        + "\"commonIssues\":[{\"issue\":\"\\u6a21\\u62df\\u5171\\u6027\\u95ee\\u9898\",\"affectedRatio\":\"\\u7ea630%\",\"suggestion\":\"\\u6a21\\u62df\\u6559\\u5b66\\u6539\\u8fdb\\u5efa\\u8bae\"}],"
+        + "\"strengths\":[\"\\u6a21\\u62df\\u4f18\\u70b91\"],"
+        + "\"teachingAdvice\":\"\\u6a21\\u62df\\u6559\\u5b66\\u5efa\\u8bae\\u3002\","
+        + "\"scoreDistribution\":{\"high\":3,\"medium\":10,\"low\":2}}";
+  }
 }

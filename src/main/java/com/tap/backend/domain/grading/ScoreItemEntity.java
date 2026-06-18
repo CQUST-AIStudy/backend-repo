@@ -40,6 +40,9 @@ public class ScoreItemEntity {
     @Column(name = "evidence_ids_json", columnDefinition = "json")
     private String evidenceIdsJson;
 
+    @Column(name = "annotations_json", columnDefinition = "json")
+    private String annotationsJson;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "status", nullable = false, length = 24)
     private ScoreItemStatus status = ScoreItemStatus.PENDING;
@@ -77,6 +80,8 @@ public class ScoreItemEntity {
     public void setComment(String comment) { this.comment = comment; }
     public String getEvidenceIdsJson() { return evidenceIdsJson; }
     public void setEvidenceIdsJson(String evidenceIdsJson) { this.evidenceIdsJson = evidenceIdsJson; }
+    public String getAnnotationsJson() { return annotationsJson; }
+    public void setAnnotationsJson(String annotationsJson) { this.annotationsJson = annotationsJson; }
     public ScoreItemStatus getStatus() { return status; }
     public void setStatus(ScoreItemStatus status) { this.status = status; }
     public Instant getCreatedAt() { return createdAt; }

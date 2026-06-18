@@ -15,6 +15,14 @@ public interface AiProvider {
   /** Structured summary (unchanged) */
   StructuredSummary structuredSummary(StructuredSummaryInput input);
 
+  /**
+   * Raw chat completion. Implementations should call the underlying model and
+   * return the text content of the first choice.
+   */
+  default String chat(String prompt, String modelOverride) {
+    throw new UnsupportedOperationException("chat not implemented");
+  }
+
   // ---- Legacy compat (delegate to new methods) ----
   default DocumentAiResult classifyAndSummarize(DocumentAiInput input) {
     var r = classifyFile(new FileClassifyInput(input.documentId(), input.path(), input.text()));

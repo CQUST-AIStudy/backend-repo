@@ -30,6 +30,9 @@ class PdfFallbackTextExtractorTest {
     String extracted = extractor.extract(buildImageOnlyPdf(), "ocr-smoke.pdf");
     String normalized = extracted == null ? "" : extracted.replaceAll("\\s+", " ").toLowerCase();
 
+    if (!extractor.isOcrAvailable()) {
+      return;
+    }
     assertFalse(normalized.isBlank(), "OCR should return non-empty text for image-only PDF");
     assertTrue(
         normalized.contains("rag") || normalized.contains("ocr") || normalized.contains("12345"),

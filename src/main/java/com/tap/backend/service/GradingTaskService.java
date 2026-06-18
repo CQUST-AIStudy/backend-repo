@@ -5,6 +5,7 @@ import com.tap.backend.domain.grading.*;
 import com.tap.backend.domain.user.UserEntity;
 import com.tap.backend.infra.storage.ObjectStorageService;
 import com.tap.backend.repo.*;
+import com.tap.backend.service.grading.GradingBatchReviewService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -45,6 +46,7 @@ public class GradingTaskService {
     private final GradingUnifiedLinkService gradingUnifiedLinkService;
     private final GradingTraceRepository traceRepo;
     private final OfficeDocumentConversionService officeDocumentConversionService;
+    private final GradingBatchReviewService gradingBatchReviewService;
 
     @Value("${tap.grading.stuck-scan-enabled:true}")
     private boolean stuckScanEnabled;
@@ -63,7 +65,8 @@ public class GradingTaskService {
                               GradingSubmissionService gradingSubmissionService,
                               GradingUnifiedLinkService gradingUnifiedLinkService,
                               GradingTraceRepository traceRepo,
-                              OfficeDocumentConversionService officeDocumentConversionService) {
+                              OfficeDocumentConversionService officeDocumentConversionService,
+                              GradingBatchReviewService gradingBatchReviewService) {
         this.taskRepo = taskRepo;
         this.batchRepo = batchRepo;
         this.submissionRepo = submissionRepo;
@@ -76,6 +79,7 @@ public class GradingTaskService {
         this.gradingUnifiedLinkService = gradingUnifiedLinkService;
         this.traceRepo = traceRepo;
         this.officeDocumentConversionService = officeDocumentConversionService;
+        this.gradingBatchReviewService = gradingBatchReviewService;
     }
 
     @Transactional
@@ -457,6 +461,7 @@ public class GradingTaskService {
         if (done >= task.getTotalCount()) {
             task.setStatus(task.getFailedCount() > 0 ? GradingTaskStatus.FAILED : GradingTaskStatus.COMPLETED);
             taskRepo.save(task);
+            scheduleBatchReviewGeneration(task.getId(), task.getCompletedCount());
         } else if (task.getStatus() != GradingTaskStatus.PROCESSING) {
             task.setStatus(GradingTaskStatus.PROCESSING);
             taskRepo.save(task);
@@ -500,6 +505,29 @@ public class GradingTaskService {
             log.info("Published {} submissions to grading queue for task {}", pending.size(), taskId);
         } catch (Exception e) {
             log.error("Failed to publish to Redis queue", e);
+        }
+    }
+
+    private void scheduleBatchReviewGeneration(Long taskId, int completedCount) {
+        if (taskId == null || completedCount <= 0) {
+            return;
+        }
+        Runnable trigger = () -> {
+            try {
+                gradingBatchReviewService.triggerGeneration(taskId);
+            } catch (Exception e) {
+                log.warn("Auto batch review generation skipped for task {}: {}", taskId, e.getMessage());
+            }
+        };
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    trigger.run();
+                }
+            });
+        } else {
+            trigger.run();
         }
     }
 

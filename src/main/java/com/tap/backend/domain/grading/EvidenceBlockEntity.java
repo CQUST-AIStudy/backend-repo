@@ -43,6 +43,9 @@ public class EvidenceBlockEntity {
     @Column(name = "metadata_json", columnDefinition = "json")
     private String metadataJson;
 
+    @Column(name = "location_json", columnDefinition = "json")
+    private String locationJson;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -69,5 +72,7 @@ public class EvidenceBlockEntity {
     public void setImageKey(String imageKey) { this.imageKey = imageKey; }
     public String getMetadataJson() { return metadataJson; }
     public void setMetadataJson(String metadataJson) { this.metadataJson = metadataJson; }
+    public String getLocationJson() { return locationJson; }
+    public void setLocationJson(String locationJson) { this.locationJson = locationJson; }
     public Instant getCreatedAt() { return createdAt; }
 }

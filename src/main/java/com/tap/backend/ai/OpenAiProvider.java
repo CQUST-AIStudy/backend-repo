@@ -65,16 +65,17 @@ public class OpenAiProvider implements AiProvider {
     return parseJson(chat(prompt), StructuredSummary.class);
   }
 
-  private String chat(String userPrompt) {
+  @Override
+  public String chat(String userPrompt, String modelOverride) {
     try {
       ObjectNode body = om.createObjectNode();
-      body.put("model", model);
+      body.put("model", modelOverride == null || modelOverride.isBlank() ? model : modelOverride);
       body.set("messages", om.valueToTree(List.of(
           msg("system", "You are a helpful assistant. Always respond with valid JSON only."),
           msg("user", userPrompt)
       )));
       body.put("temperature", 0.3);
-      log.info("[AI] model={} prompt_len={}", model, userPrompt.length());
+      log.info("[AI] model={} prompt_len={}", body.get("model").asText(), userPrompt.length());
 
       String resp = restClient.post()
           .uri("/chat/completions")
@@ -88,6 +89,10 @@ public class OpenAiProvider implements AiProvider {
     } catch (Exception e) {
       throw new IllegalStateException("openai call failed", e);
     }
+  }
+
+  private String chat(String userPrompt) {
+    return chat(userPrompt, null);
   }
 
   private ObjectNode msg(String role, String content) {

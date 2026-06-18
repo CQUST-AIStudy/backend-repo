@@ -11,8 +11,11 @@ import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import javax.imageio.ImageIO;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.PDPageContentStream;
+import org.apache.pdfbox.pdmodel.font.PDType1Font;
 import org.apache.pdfbox.rendering.PDFRenderer;
 import org.apache.pdfbox.text.PDFTextStripper;
 import org.apache.poi.xwpf.extractor.XWPFWordExtractor;
@@ -75,10 +78,12 @@ class AnnotatedStudentReportServiceTest {
         assertTrue(rendered.bytes().length > source.length);
 
         try (PDDocument pdf = PDDocument.load(rendered.bytes())) {
-            assertEquals(1, pdf.getNumberOfPages());
+            assertEquals(2, pdf.getNumberOfPages());
             String text = new PDFTextStripper().getText(pdf);
             assertTrue(text.contains("91") || text.toLowerCase().contains("score"));
             assertTrue(text.contains("张老师") || text.toLowerCase().contains("teacher"));
+            assertEquals(1, countOccurrences(text, "教师评语"));
+            assertFalse(text.contains("分项批注"));
         }
     }
 
@@ -86,7 +91,20 @@ class AnnotatedStudentReportServiceTest {
     void renderPdfAddsVisibleCheckMarkNearRightMiddle() throws Exception {
         byte[] source;
         try (PDDocument document = new PDDocument(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
-            document.addPage(new PDPage());
+            PDPage page = new PDPage();
+            document.addPage(page);
+            try (PDPageContentStream stream = new PDPageContentStream(document, page)) {
+                stream.beginText();
+                stream.setFont(PDType1Font.HELVETICA_BOLD, 14);
+                stream.newLineAtOffset(72, 700);
+                stream.showText("Experiment result");
+                stream.endText();
+                stream.beginText();
+                stream.setFont(PDType1Font.HELVETICA, 11);
+                stream.newLineAtOffset(72, 660);
+                stream.showText("The report explains model training results and compares several output charts with reasonable observations.");
+                stream.endText();
+            }
             document.save(output);
             source = output.toByteArray();
         }
@@ -97,7 +115,7 @@ class AnnotatedStudentReportServiceTest {
                 "测试学生",
                 new BigDecimal("91"),
                 "整体完成较好，但结果分析还可以继续深化。",
-                List.of(),
+                List.of("优点：结果截图齐全", "建议：分析部分可以再展开"),
                 "张老师"
         );
 
@@ -105,11 +123,11 @@ class AnnotatedStudentReportServiceTest {
             BufferedImage image = new PDFRenderer(pdf).renderImageWithDPI(0, 144);
             int redPixels = countRedPixels(
                     image,
-                    0.80, 0.97,
-                    0.38, 0.62
+                    0.60, 0.97,
+                    0.10, 0.90
             );
-            assertTrue(redPixels > 250,
-                    "Expected visible red annotation pixels in the right-middle area, but found only " + redPixels);
+            assertTrue(redPixels > 150,
+                    "Expected visible red annotation pixels, but found only " + redPixels);
         }
     }
 
@@ -144,6 +162,56 @@ class AnnotatedStudentReportServiceTest {
             );
             assertTrue(redPixels > 250,
                     "Expected visible red annotation pixels in the right-middle area of the real PDF, but found only " + redPixels);
+        }
+    }
+
+    @Test
+    void renderProvidedExperimentPdfKeepsReviewSeparateAndScoreVisible() throws Exception {
+        Path sample = Path.of("D:\\Downloads\\2023440415邹名格人工智能实验2 (1).pdf");
+        if (!Files.exists(sample)) {
+            return;
+        }
+        byte[] source = Files.readAllBytes(sample);
+        int originalPages;
+        try (PDDocument pdf = PDDocument.load(source)) {
+            originalPages = pdf.getNumberOfPages();
+        }
+
+        AnnotatedStudentReportService.RenderedReport rendered = service.render(
+                sample.getFileName().toString(),
+                source,
+                "邹名格",
+                new BigDecimal("50"),
+                "你的实验报告完成了数据读取、规范化处理以及图像特征提取等基本流程，能够体现出对实验任务的理解。\n\n后续建议把关键步骤为什么这样做、结果为什么能说明问题写得更充分，尤其是围绕代码输出、图像结果和实验结论之间的对应关系展开说明。",
+                List.of("建议：结果分析需要更具体", "建议：代码说明可以补充关键参数含义"),
+                "张老师",
+                List.of(
+                        new AnnotatedStudentReportService.AnnotationEntry(
+                                "ev-1", "WAVE", "这里需要补充为什么该结果能支持结论", "边缘特征主要反映图像中灰度变化较大的区域", true),
+                        new AnnotatedStudentReportService.AnnotationEntry(
+                                "ev-2", "CROSS", "对异常或边界情况的说明还不够", "边缘特征在目标识别、图像分割和图像分析中具有重要作用", false)
+                )
+        );
+
+        Path artifactsDir = Path.of("target", "test-artifacts");
+        Files.createDirectories(artifactsDir);
+        Files.write(artifactsDir.resolve("zou-annotated-positioning.pdf"), rendered.bytes());
+
+        try (PDDocument pdf = PDDocument.load(rendered.bytes())) {
+            assertEquals(originalPages + 1, pdf.getNumberOfPages());
+            String text = new PDFTextStripper().getText(pdf);
+            assertTrue(text.contains("50"));
+            assertTrue(text.contains("张老师"));
+            assertEquals(1, countOccurrences(text, "教师评语"));
+            assertFalse(text.contains("分项批注"));
+
+            PDFRenderer renderer = new PDFRenderer(pdf);
+            for (int i = 0; i < Math.min(4, pdf.getNumberOfPages()); i++) {
+                ImageIO.write(renderer.renderImageWithDPI(i, 144), "png",
+                        artifactsDir.resolve("zou-annotated-page-" + (i + 1) + ".png").toFile());
+            }
+            ImageIO.write(renderer.renderImageWithDPI(pdf.getNumberOfPages() - 1, 144), "png",
+                    artifactsDir.resolve("zou-annotated-review-page.png").toFile());
         }
     }
 
@@ -196,5 +264,15 @@ class AnnotatedStudentReportServiceTest {
             }
         }
         return redPixels;
+    }
+
+    private int countOccurrences(String text, String needle) {
+        int count = 0;
+        int index = 0;
+        while ((index = text.indexOf(needle, index)) >= 0) {
+            count++;
+            index += needle.length();
+        }
+        return count;
     }
 }

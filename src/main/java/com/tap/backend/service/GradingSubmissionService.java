@@ -362,6 +362,7 @@ public class GradingSubmissionService {
         byte[] originalBytes = storageService.getBytes(submission.getPdfObjectKey());
         Map<Long, String> dimensionNames = buildDimensionNameMap(submission);
         List<String> dimensionComments = buildAnnotationHighlights(scores, dimensionNames);
+        List<AnnotatedStudentReportService.AnnotationEntry> annotations = collectAnnotations(scores);
 
         AnnotatedStudentReportService.RenderedReport rendered = annotatedStudentReportService.render(
                 submission.getOriginalFilename(),
@@ -370,7 +371,8 @@ public class GradingSubmissionService {
                 submission.getTotalScore(),
                 teacherComment,
                 dimensionComments,
-                resolveTeacherSignature(submission.getTask())
+                resolveTeacherSignature(submission.getTask()),
+                annotations
         );
 
         String objectKey = "grading/" + submission.getId() + "/annotated/"
@@ -385,6 +387,41 @@ public class GradingSubmissionService {
         reportFileRepo.save(reportFile);
 
         return new AnnotatedReportArtifact(rendered.fileType(), rendered.contentType(), objectKey);
+    }
+
+    private List<AnnotatedStudentReportService.AnnotationEntry> collectAnnotations(List<ScoreItemEntity> scores) {
+        List<AnnotatedStudentReportService.AnnotationEntry> result = new ArrayList<>();
+        if (scores == null) {
+            return result;
+        }
+        for (ScoreItemEntity score : scores) {
+            String raw = score.getAnnotationsJson();
+            if (raw == null || raw.isBlank()) {
+                continue;
+            }
+            try {
+                JsonNode array = objectMapper.readTree(raw);
+                if (!array.isArray()) {
+                    continue;
+                }
+                for (JsonNode node : array) {
+                    if (!node.isObject()) {
+                        continue;
+                    }
+                    String evidenceId = node.has("evidence_id") ? node.get("evidence_id").asText("") : "";
+                    String type = node.has("type") ? node.get("type").asText("CHECK") : "CHECK";
+                    String note = node.has("note") ? node.get("note").asText("") : "";
+                    String anchorText = node.has("anchor_text") ? node.get("anchor_text").asText("") : "";
+                    boolean wavy = node.has("wavy") && node.get("wavy").asBoolean(false);
+                    if (!note.isBlank() || !anchorText.isBlank()) {
+                        result.add(new AnnotatedStudentReportService.AnnotationEntry(evidenceId, type, note, anchorText, wavy));
+                    }
+                }
+            } catch (Exception ignored) {
+                // Ignore malformed annotations JSON
+            }
+        }
+        return result;
     }
 
     private void refreshAnnotatedReportIfPresent(GradingSubmissionEntity submission) {
@@ -506,6 +543,7 @@ public class GradingSubmissionService {
         data.put("comment", scoreItem.getComment());
         data.put("status", scoreItem.getStatus().name());
         data.put("evidenceIdsJson", scoreItem.getEvidenceIdsJson());
+        data.put("annotationsJson", scoreItem.getAnnotationsJson());
         return data;
     }
 
@@ -517,6 +555,7 @@ public class GradingSubmissionService {
         data.put("content", evidenceBlock.getContent());
         data.put("confidence", evidenceBlock.getConfidence());
         data.put("imageKey", evidenceBlock.getImageKey());
+        data.put("locationJson", evidenceBlock.getLocationJson());
         return data;
     }
 

@@ -1,9 +1,11 @@
 package com.tap.backend.api.grading;
 
+import com.tap.backend.domain.grading.EvidenceBlockEntity;
 import com.tap.backend.domain.grading.GradingSubmissionEntity;
 import com.tap.backend.domain.grading.GradingTaskEntity;
 import com.tap.backend.domain.grading.ReportFileEntity;
 import com.tap.backend.infra.storage.ObjectStorageService;
+import com.tap.backend.repo.EvidenceBlockRepository;
 import com.tap.backend.repo.GradingSubmissionRepository;
 import com.tap.backend.repo.GradingTaskRepository;
 import com.tap.backend.repo.ReportFileRepository;
@@ -48,6 +50,7 @@ public class GradingExportController {
     private final GradingTaskRepository taskRepo;
     private final GradingSubmissionRepository submissionRepo;
     private final ReportFileRepository reportFileRepo;
+    private final EvidenceBlockRepository evidenceBlockRepo;
     private final ObjectStorageService storageService;
     private final TeacherPrincipalResolver teacherPrincipalResolver;
     private final GradingSubmissionService gradingSubmissionService;
@@ -62,6 +65,7 @@ public class GradingExportController {
             GradingTaskRepository taskRepo,
             GradingSubmissionRepository submissionRepo,
             ReportFileRepository reportFileRepo,
+            EvidenceBlockRepository evidenceBlockRepo,
             ObjectStorageService storageService,
             TeacherPrincipalResolver teacherPrincipalResolver,
             GradingSubmissionService gradingSubmissionService
@@ -69,6 +73,7 @@ public class GradingExportController {
         this.taskRepo = taskRepo;
         this.submissionRepo = submissionRepo;
         this.reportFileRepo = reportFileRepo;
+        this.evidenceBlockRepo = evidenceBlockRepo;
         this.storageService = storageService;
         this.teacherPrincipalResolver = teacherPrincipalResolver;
         this.gradingSubmissionService = gradingSubmissionService;
@@ -91,6 +96,29 @@ public class GradingExportController {
         return ResponseEntity.ok()
                 .contentType(resolveMediaType(report))
                 .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=" + resolveDownloadName(submission, report))
+                .body(bytes);
+    }
+
+    @GetMapping("/evidence/{evidenceId}/image")
+    public ResponseEntity<?> downloadEvidenceImage(
+            @PathVariable String evidenceId,
+            @AuthenticationPrincipal UserPrincipal principal
+    ) {
+        Long teacherId = teacherPrincipalResolver.requireTeacherId(principal);
+        EvidenceBlockEntity evidence = evidenceBlockRepo.findByEvidenceId(evidenceId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Evidence not found"));
+        if (evidence.getImageKey() == null || evidence.getImageKey().isBlank()) {
+            return ResponseEntity.status(404).body(Map.of("message", "Evidence has no image"));
+        }
+        GradingSubmissionEntity submission = evidence.getSubmission();
+        if (submission == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Submission not found");
+        }
+        requireOwnedTask(submission.getTaskId(), teacherId);
+        byte[] bytes = storageService.getBytes(evidence.getImageKey());
+        return ResponseEntity.ok()
+                .contentType(MediaType.IMAGE_PNG)
+                .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=" + evidenceId + ".png")
                 .body(bytes);
     }
 
