@@ -14,6 +14,7 @@ import okhttp3.Request;
 import okhttp3.RequestBody;
 import okhttp3.Response;
 import okhttp3.ResponseBody;
+import okio.BufferedSink;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
@@ -30,15 +31,19 @@ public class RagProxyService {
     private static final String HEADER_TRANSFER_ENCODING = "transfer-encoding";
     private static final String HEADER_AUTHORIZATION = "authorization";
 
-    private final OkHttpClient httpClient;
+    private final OkHttpClient standardHttpClient;
+    private final OkHttpClient streamingHttpClient;
     private final String ragBaseUrl;
 
-    public RagProxyService(@Value("${tap.rag.proxy.base-url:http://127.0.0.1:8001}") String ragBaseUrl) {
+    public RagProxyService(
+            @Value("${tap.rag.proxy.base-url:http://127.0.0.1:8001}") String ragBaseUrl,
+            @Value("${tap.rag.proxy.connect-timeout-ms:10000}") int connectTimeoutMs,
+            @Value("${tap.rag.proxy.read-timeout-ms:300000}") int readTimeoutMs,
+            @Value("${tap.rag.proxy.stream-read-timeout-ms:0}") int streamReadTimeoutMs
+    ) {
         this.ragBaseUrl = trimTrailingSlash(ragBaseUrl);
-        this.httpClient = new OkHttpClient.Builder()
-                .connectTimeout(10, TimeUnit.SECONDS)
-                .readTimeout(0, TimeUnit.MILLISECONDS)
-                .build();
+        this.standardHttpClient = buildHttpClient(connectTimeoutMs, readTimeoutMs);
+        this.streamingHttpClient = buildHttpClient(connectTimeoutMs, streamReadTimeoutMs);
     }
 
     public void forward(HttpServletRequest request, HttpServletResponse servletResponse, String bearerToken) {
@@ -54,7 +59,7 @@ public class RagProxyService {
         builder.method(method, permitsRequestBody(method) ? body : null);
 
         try {
-            Response response = httpClient.newCall(builder.build()).execute();
+            Response response = selectHttpClient(request).newCall(builder.build()).execute();
             writeProxyResponse(response, servletResponse);
         } catch (IOException ex) {
             writeUnavailableResponse(servletResponse, ex);
@@ -121,13 +126,10 @@ public class RagProxyService {
         if (request instanceof MultipartHttpServletRequest multipartRequest) {
             return buildMultipartRequestBody(multipartRequest);
         }
-        try {
-            byte[] bytes = request.getInputStream().readAllBytes();
-            MediaType mediaType = parseMediaType(request.getContentType());
-            return RequestBody.create(bytes, mediaType);
-        } catch (IOException ex) {
-            throw new IllegalStateException("failed to read request body", ex);
-        }
+        return new StreamingRequestBody(
+                parseMediaType(request.getContentType()),
+                request.getContentLengthLong(),
+                request);
     }
 
     private RequestBody buildMultipartRequestBody(MultipartHttpServletRequest request) {
@@ -157,20 +159,27 @@ public class RagProxyService {
     private void addMultipartFile(MultipartBody.Builder builder, String name, MultipartFile file) {
         String filename = file.getOriginalFilename();
         MediaType mediaType = parseMediaType(file.getContentType());
-        try {
-            builder.addFormDataPart(
-                    name,
-                    filename == null || filename.isBlank() ? "file" : filename,
-                    RequestBody.create(file.getBytes(), mediaType));
-        } catch (IOException ex) {
-            throw new IllegalStateException("failed to read multipart file: " + filename, ex);
-        }
+        builder.addFormDataPart(
+                name,
+                filename == null || filename.isBlank() ? "file" : filename,
+                new MultipartFileRequestBody(file, mediaType));
     }
 
     private String buildTargetUrl(HttpServletRequest request) {
         String requestUri = request.getRequestURI();
         String query = request.getQueryString();
         return ragBaseUrl + requestUri + (query == null || query.isBlank() ? "" : "?" + query);
+    }
+
+    private OkHttpClient selectHttpClient(HttpServletRequest request) {
+        return isStreamingRequest(request) ? streamingHttpClient : standardHttpClient;
+    }
+
+    private boolean isStreamingRequest(HttpServletRequest request) {
+        String requestUri = request == null ? "" : request.getRequestURI();
+        return requestUri.endsWith("/chat/stream")
+                || requestUri.endsWith("/assistant/stream")
+                || requestUri.endsWith("/chat/legacy-stream");
     }
 
     private boolean permitsRequestBody(String method) {
@@ -226,5 +235,72 @@ public class RagProxyService {
             return "unknown";
         }
         return value.replace("\\", "\\\\").replace("\"", "'");
+    }
+
+    private OkHttpClient buildHttpClient(int connectTimeoutMs, int readTimeoutMs) {
+        OkHttpClient.Builder builder = new OkHttpClient.Builder()
+                .connectTimeout(Math.max(1000, connectTimeoutMs), TimeUnit.MILLISECONDS);
+        if (readTimeoutMs <= 0) {
+            builder.readTimeout(0, TimeUnit.MILLISECONDS);
+        } else {
+            builder.readTimeout(Math.max(1000, readTimeoutMs), TimeUnit.MILLISECONDS);
+        }
+        return builder.build();
+    }
+
+    private static final class StreamingRequestBody extends RequestBody {
+        private final MediaType mediaType;
+        private final long contentLength;
+        private final HttpServletRequest request;
+
+        private StreamingRequestBody(MediaType mediaType, long contentLength, HttpServletRequest request) {
+            this.mediaType = mediaType;
+            this.contentLength = contentLength;
+            this.request = request;
+        }
+
+        @Override
+        public MediaType contentType() {
+            return mediaType;
+        }
+
+        @Override
+        public long contentLength() {
+            return contentLength >= 0 ? contentLength : -1;
+        }
+
+        @Override
+        public void writeTo(BufferedSink sink) throws IOException {
+            try (InputStream inputStream = request.getInputStream()) {
+                sink.writeAll(okio.Okio.source(inputStream));
+            }
+        }
+    }
+
+    private static final class MultipartFileRequestBody extends RequestBody {
+        private final MultipartFile file;
+        private final MediaType mediaType;
+
+        private MultipartFileRequestBody(MultipartFile file, MediaType mediaType) {
+            this.file = file;
+            this.mediaType = mediaType;
+        }
+
+        @Override
+        public MediaType contentType() {
+            return mediaType;
+        }
+
+        @Override
+        public long contentLength() {
+            return file.getSize();
+        }
+
+        @Override
+        public void writeTo(BufferedSink sink) throws IOException {
+            try (InputStream inputStream = file.getInputStream()) {
+                sink.writeAll(okio.Okio.source(inputStream));
+            }
+        }
     }
 }
