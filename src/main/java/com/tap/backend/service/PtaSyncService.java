@@ -461,6 +461,19 @@ public class PtaSyncService {
                     : credentialSource);
             result.put("message", responseBody.get("message"));
             return result;
+        } catch (RestClientException e) {
+            log.error("Failed to trigger PTA sync: {}", e.getMessage());
+            String restoredStatus = previousStatus == null || previousStatus.isBlank() ? "IDLE" : previousStatus;
+            teachingClass.setSyncStatus(restoredStatus);
+            classRepo.save(teachingClass);
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("syncStatus", restoredStatus);
+            result.put("blocked", true);
+            result.put("credentialSource", credentialSource);
+            result.put("spiderUrl", spiderUrl);
+            result.put("message", "PTA spider 服务不可达，请先启动或检查 " + spiderUrl);
+            return result;
         } catch (Exception e) {
             log.error("Failed to trigger PTA sync: {}", e.getMessage());
             teachingClass.setSyncStatus("FAILED");
