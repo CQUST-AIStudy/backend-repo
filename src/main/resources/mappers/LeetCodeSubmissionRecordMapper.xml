@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tap.backend.academic.dao.LeetCodeSubmissionRecordDao">
+
+    <resultMap id="recordResultMap" type="com.tap.backend.academic.entity.LeetCodeSubmissionRecord">
+        <id property="id" column="id"/>
+        <result property="studentId" column="student_id"/>
+        <result property="problemId" column="problem_id"/>
+        <result property="code" column="code"/>
+        <result property="language" column="language"/>
+        <result property="accepted" column="accepted"/>
+        <result property="score" column="score"/>
+        <result property="aiFeedback" column="ai_feedback"/>
+        <result property="passedCases" column="passed_cases"/>
+        <result property="totalCases" column="total_cases"/>
+        <result property="confidence" column="confidence"/>
+        <result property="recommendationRequestId" column="recommendation_request_id"/>
+        <result property="recommendationSessionId" column="recommendation_session_id"/>
+        <result property="submittedAt" column="submitted_at"/>
+        <result property="createdAt" column="created_at"/>
+        <result property="problemTitle" column="problem_title"/>
+        <result property="problemDifficulty" column="problem_difficulty"/>
+        <result property="problemSourceUrl" column="problem_source_url"/>
+    </resultMap>
+
+    <insert id="insert" parameterType="com.tap.backend.academic.entity.LeetCodeSubmissionRecord"
+            useGeneratedKeys="true" keyProperty="id">
+        INSERT INTO leetcode_submission_record (
+            student_id, problem_id, code, language,
+            accepted, score, ai_feedback,
+            passed_cases, total_cases, confidence,
+            recommendation_request_id, recommendation_session_id,
+            submitted_at
+        ) VALUES (
+            #{studentId}, #{problemId}, #{code}, #{language},
+            #{accepted}, #{score}, #{aiFeedback},
+            #{passedCases}, #{totalCases}, #{confidence},
+            #{recommendationRequestId}, #{recommendationSessionId},
+            NOW()
+        )
+    </insert>
+
+    <select id="countByStudentId" resultType="java.util.Map">
+        SELECT
+            COUNT(*) AS totalSubmissions,
+            SUM(CASE WHEN accepted = TRUE THEN 1 ELSE 0 END) AS acceptedCount,
+            SUM(CASE WHEN accepted = FALSE THEN 1 ELSE 0 END) AS wrongCount,
+            ROUND(AVG(score), 1) AS avgScore
+        FROM leetcode_submission_record
+        WHERE student_id = #{studentId}
+    </select>
+
+    <select id="findTimelineByStudentId" resultMap="recordResultMap">
+        SELECT
+            lsr.id, lsr.student_id, lsr.problem_id,
+            lsr.accepted, lsr.score, lsr.ai_feedback,
+            lsr.passed_cases, lsr.total_cases, lsr.confidence,
+            lsr.submitted_at, lsr.created_at,
+            lpb.title_main AS problem_title,
+            lpb.difficulty AS problem_difficulty,
+            lpb.source_url AS problem_source_url
+        FROM leetcode_submission_record lsr
+        LEFT JOIN leetcode_problem_bank lpb ON lpb.id = lsr.problem_id
+        WHERE lsr.student_id = #{studentId}
+        ORDER BY lsr.submitted_at DESC
+        <if test="limit != null">LIMIT #{limit}</if>
+    </select>
+
+</mapper>
