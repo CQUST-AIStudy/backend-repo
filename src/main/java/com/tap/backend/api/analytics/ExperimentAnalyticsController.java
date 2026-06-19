@@ -61,18 +61,6 @@ public class ExperimentAnalyticsController {
                     "ELSE tc.name COLLATE utf8mb4_0900_ai_ci " +
                     "END COLLATE utf8mb4_0900_ai_ci)";
 
-    private static final String DATA_STRUCTURE_SCOPE_PREDICATE =
-            "(" +
-                    EXPERIMENT_NAME_EXPR_COLL + " LIKE " + DATA_STRUCTURE_LIKE_PATTERN + " OR " +
-                    "COALESCE(NULLIF(TRIM(tc.pta_keyword), " + EMPTY_STR + "), '')" + COLL + " LIKE " + DATA_STRUCTURE_LIKE_PATTERN + " OR " +
-                    "COALESCE(NULLIF(TRIM(tc.course_name), " + EMPTY_STR + "), '')" + COLL + " LIKE " + DATA_STRUCTURE_LIKE_PATTERN + " OR " +
-                    "COALESCE(NULLIF(TRIM(c.name), " + EMPTY_STR + "), '')" + COLL + " LIKE " + DATA_STRUCTURE_LIKE_PATTERN +
-                    ") AND NOT (" +
-                    EXPERIMENT_NAME_EXPR_COLL + " LIKE " + C_LANGUAGE_LIKE_PATTERN + " OR " +
-                    "COALESCE(NULLIF(TRIM(tc.pta_keyword), " + EMPTY_STR + "), '')" + COLL + " LIKE " + C_LANGUAGE_LIKE_PATTERN + " OR " +
-                    "COALESCE(NULLIF(TRIM(tc.course_name), " + EMPTY_STR + "), '')" + COLL + " LIKE " + C_LANGUAGE_LIKE_PATTERN + " OR " +
-                    "COALESCE(NULLIF(TRIM(c.name), " + EMPTY_STR + "), '')" + COLL + " LIKE " + C_LANGUAGE_LIKE_PATTERN +
-                    ")";
     private static final String SUBMISSION_ACTIVITY_PREDICATE =
             "LOWER(COALESCE(sa.submission_status, '')) IN ('graded', 'submitted') " +
                     "OR COALESCE(sa.completion_evidence, 'NONE') IN ('TRANSCRIPT_SCORE', 'ANSWER_SHEET', 'SCORED_CODE')";
@@ -110,8 +98,7 @@ public class ExperimentAnalyticsController {
                 .append("LEFT JOIN course c ON c.id = tc.course_id ")
                 .append("LEFT JOIN student_assignment sa ON sa.offering_id = ao.id ")
                 .append("LEFT JOIN assignment_problem ap ON ap.offering_id = ao.id AND ap.status = 'ACTIVE' ")
-                .append("WHERE ao.teacher_id = ?1 ")
-                .append("  AND ").append(DATA_STRUCTURE_SCOPE_PREDICATE).append(" ");
+                .append("WHERE ao.teacher_id = ?1 ");
 
         boolean hasPrefix = hasText(classPrefix);
         if (hasPrefix) {
@@ -164,7 +151,6 @@ public class ExperimentAnalyticsController {
                 "JOIN teaching_class tc ON tc.id = ao.class_id " +
                 "LEFT JOIN course c ON c.id = tc.course_id " +
                 "WHERE ao.teacher_id = ?1 " +
-                "  AND " + DATA_STRUCTURE_SCOPE_PREDICATE + " " +
                 "ORDER BY prefix";
 
         @SuppressWarnings("unchecked")
@@ -270,7 +256,6 @@ public class ExperimentAnalyticsController {
                 "LEFT JOIN assignment_problem ap ON ap.offering_id = ao.id AND ap.status = 'ACTIVE' " +
                 "WHERE ao.id = ?1 " +
                 "  AND ao.teacher_id = ?2 " +
-                "  AND " + DATA_STRUCTURE_SCOPE_PREDICATE + " " +
                 "GROUP BY ao.id, " + EXPERIMENT_NAME_EXPR + ", " + CLASS_PREFIX_EXPR + ", tc.name, NULLIF(TRIM(" + COURSE_NAME_EXPR + "), " + EMPTY_STR + ")";
 
         @SuppressWarnings("unchecked")
@@ -300,7 +285,7 @@ public class ExperimentAnalyticsController {
         scope.put("className", experimentMeta.get("className"));
         scope.put("courseName", experimentMeta.get("courseName"));
         scope.put("problemCount", experimentMeta.get("problemCount"));
-        scope.put("dataScope", "data-structure only; C-language data excluded");
+        scope.put("dataScope", "all courses");
         scope.put("rosterCount", overview.get("rosterCount"));
         scope.put("submittedCount", overview.get("submittedCount"));
         scope.put("scoredCount", overview.get("scoredCount"));

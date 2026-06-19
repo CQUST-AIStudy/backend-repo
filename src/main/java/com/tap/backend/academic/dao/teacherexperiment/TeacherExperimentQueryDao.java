@@ -26,19 +26,9 @@ public interface TeacherExperimentQueryDao {
     String EXPERIMENT_NAME_EXPR_COLL = EXPERIMENT_NAME_EXPR + COLL;
     String COURSE_NAME_EXPR_COLL = COURSE_NAME_EXPR + COLL;
     String NORMALIZED_PTA_KEYWORD_EXPR =
-            "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(tc.pta_keyword, ''), ' ', ''), '　', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '')";
+            "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(tc.pta_keyword, ''), ' ', ''), '\u3000', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '')";
     String NORMALIZED_CLASS_NAME_EXPR =
-            "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(tc.name, ''), ' ', ''), '　', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '')";
-    String DATA_STRUCTURE_SCOPE_PREDICATE =
-            "(" +
-                    EXPERIMENT_NAME_EXPR_COLL + " LIKE " + DATA_STRUCTURE_LIKE_PATTERN + " OR " +
-                    "COALESCE(NULLIF(TRIM(tc.pta_keyword), ''), '')" + COLL + " LIKE " + DATA_STRUCTURE_LIKE_PATTERN + " OR " +
-                    COURSE_NAME_EXPR_COLL + " LIKE " + DATA_STRUCTURE_LIKE_PATTERN +
-                    ") AND NOT (" +
-                    EXPERIMENT_NAME_EXPR_COLL + " LIKE " + C_LANGUAGE_LIKE_PATTERN + " OR " +
-                    "COALESCE(NULLIF(TRIM(tc.pta_keyword), ''), '')" + COLL + " LIKE " + C_LANGUAGE_LIKE_PATTERN + " OR " +
-                    COURSE_NAME_EXPR_COLL + " LIKE " + C_LANGUAGE_LIKE_PATTERN +
-                    ")";
+            "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(tc.name, ''), ' ', ''), '\u3000', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '')";
     String SUBMISSION_ACTIVITY_PREDICATE =
             "LOWER(COALESCE(sa.submission_status, '')) IN ('graded', 'submitted') " +
                     "OR COALESCE(sa.completion_evidence, 'NONE') IN ('TRANSCRIPT_SCORE', 'ANSWER_SHEET', 'SCORED_CODE')";
@@ -65,7 +55,6 @@ public interface TeacherExperimentQueryDao {
             "JOIN tap_user tu ON tu.id = #{teacherId}",
             "LEFT JOIN student_assignment sa ON sa.offering_id = ao.id",
             "WHERE ao.teacher_id = tu.id",
-            "  AND " + DATA_STRUCTURE_SCOPE_PREDICATE,
             "  <if test='classId != null'>",
             "    AND ao.class_id = #{classId}",
             "  </if>",
@@ -120,7 +109,6 @@ public interface TeacherExperimentQueryDao {
             " AND ao.source_offering_key LIKE 'LEGACY_EXPERIMENT_OFFERING:%'",
             " AND pct.experiment_id = CAST(SUBSTRING_INDEX(ao.source_offering_key, ':', -1) AS SIGNED)",
             "WHERE ao.teacher_id = teacher_user.id",
-            "  AND " + DATA_STRUCTURE_SCOPE_PREDICATE,
             "  <if test='classId != null'>",
             "    AND ao.class_id = #{classId}",
             "  </if>",
@@ -208,7 +196,6 @@ public interface TeacherExperimentQueryDao {
             " AND pct.experiment_id = CAST(SUBSTRING_INDEX(ao.source_offering_key, ':', -1) AS SIGNED)",
             "WHERE ao.id = #{experimentId}",
             "  AND sp.student_no COLLATE utf8mb4_unicode_ci = #{studentId} COLLATE utf8mb4_unicode_ci",
-            "  AND " + DATA_STRUCTURE_SCOPE_PREDICATE,
             "LIMIT 1"
     })
     TeacherStudentAssignmentRow findStudentAssignmentBySubmissionKey(
@@ -422,9 +409,6 @@ public interface TeacherExperimentQueryDao {
             "  AND NULLIF(TRIM(COALESCE(sp.real_name, '')), '') IS NOT NULL",
             "  AND NULLIF(TRIM(COALESCE(tc.name, '')), '') IS NOT NULL",
             "  AND NULLIF(TRIM(COALESCE(" + EXPERIMENT_NAME_EXPR + ", '')), '') IS NOT NULL",
-            "  <if test='scope == null or scope != \"all\"'>",
-            "    AND " + DATA_STRUCTURE_SCOPE_PREDICATE,
-            "  </if>",
             "  <if test='classId != null'>",
             "    AND ao.class_id = #{classId}",
             "  </if>",
@@ -452,7 +436,6 @@ public interface TeacherExperimentQueryDao {
     /**
      * 管理员视角：全量取 assignment_offering 实验列表（不绑定教师）。
      * 可选 classId 过滤与 classKeyword（pta_keyword/name）匹配。
-     * scope='all' 时跳过课程范围过滤（DATA_STRUCTURE_SCOPE_PREDICATE），返回所有实验。
      */
     @Select({
             "<script>",
@@ -465,9 +448,6 @@ public interface TeacherExperimentQueryDao {
             "JOIN assignment_template at ON at.id = ao.template_id",
             "JOIN teaching_class tc ON tc.id = ao.class_id",
             "WHERE 1=1",
-            "  <if test='scope == null or scope != \"all\"'>",
-            "    AND " + DATA_STRUCTURE_SCOPE_PREDICATE,
-            "  </if>",
             "  <if test='classId != null'>",
             "    AND ao.class_id = #{classId}",
             "  </if>",
