@@ -197,3 +197,45 @@ docker compose up -d minio minio-init
 ```text
 http://localhost:19001
 ```
+## 分别重启前端 / 后端 / RAG
+
+下面这些命令都按你当前仓库位置编写：
+
+```text
+D:\Users\86186\Desktop\比赛\CQUST-AIStudy
+```
+
+### 重启前端（8080）
+
+```powershell
+$p = Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique
+if ($p) { Stop-Process -Id $p -Force }
+Set-Location 'D:\Users\86186\Desktop\比赛\CQUST-AIStudy\frontend-repo'
+npm run serve
+```
+
+### 重启后端（8081）
+
+```powershell
+$p = Get-NetTCPConnection -LocalPort 8081 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique
+if ($p) { Stop-Process -Id $p -Force }
+Set-Location 'D:\Users\86186\Desktop\比赛\CQUST-AIStudy\backend-repo'
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& { if (Test-Path .\local.env.ps1) { . .\local.env.ps1 }; if (-not $env:SPRING_PROFILES_ACTIVE) { $env:SPRING_PROFILES_ACTIVE='dev' }; .\mvnw.cmd spring-boot:run }"
+```
+
+### 重启 RAG（8001）
+
+```powershell
+$p = Get-NetTCPConnection -LocalPort 8001 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique
+if ($p) { Stop-Process -Id $p -Force }
+Set-Location 'D:\Users\86186\Desktop\比赛\CQUST-AIStudy\rag-service'
+uv run uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+```
+
+### 重启成功判断
+
+```text
+前端: http://127.0.0.1:8080
+后端: http://127.0.0.1:8081
+RAG:  http://127.0.0.1:8001/health
+```

@@ -163,6 +163,19 @@ public class ExperimentController {
                 experiment.setTeacherId(teacherId != null ? teacherId : "admin");
             }
             experiment.setTopic_sum(0);
+
+            Experiment duplicateExperiment = experimentService.findRecentDuplicateExperiment(experiment);
+            if (duplicateExperiment != null) {
+                response.put("success", true);
+                response.put("id", duplicateExperiment.getExperiment_id());
+                response.put("data", duplicateExperiment);
+                response.put("message", "experiment already created");
+                if (teacher != null) {
+                    response.put("teacherInfo", teacher);
+                }
+                return ResponseEntity.ok(response);
+            }
+
             experiment.setNum(nextExperimentNum());
 
             if (!experimentService.saveExperiment(experiment)) {

@@ -56,6 +56,22 @@ public class ExperimentServiceImpl implements ExperimentService {
     }
 
     @Override
+    public Experiment findRecentDuplicateExperiment(Experiment experiment) {
+        if (experiment == null) {
+            return null;
+        }
+        List<Experiment> matches = experimentDao.findRecentDuplicateExperiments(
+                experiment.getTeacherId(),
+                experiment.getName(),
+                experiment.getDeadline(),
+                experiment.getClassName(),
+                experiment.getDescribe(),
+                experiment.getRequirements()
+        );
+        return matches == null || matches.isEmpty() ? null : matches.get(0);
+    }
+
+    @Override
     public boolean saveExperiment(Experiment experiment) {
         return experimentDao.saveExperiment(experiment) > 0;
     }

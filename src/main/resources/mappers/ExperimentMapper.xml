@@ -50,6 +50,19 @@
         ORDER BY num ASC, experiment_id ASC
     </select>
 
+    <select id="findRecentDuplicateExperiments" resultMap="experimentResultMap">
+        SELECT *
+        FROM experiment
+        WHERE teacher_id = #{teacherId}
+          AND name = #{name}
+          AND COALESCE(deadline, '') = COALESCE(#{deadline}, '')
+          AND COALESCE(`class`, '') = COALESCE(#{className}, '')
+          AND COALESCE(`describe`, '') = COALESCE(#{describe}, '')
+          AND COALESCE(requirements, '') = COALESCE(#{requirements}, '')
+          AND created_at >= DATE_SUB(NOW(), INTERVAL 10 SECOND)
+        ORDER BY experiment_id DESC
+    </select>
+
     <!-- 保存实验信息 -->
     <insert id="saveExperiment" parameterType="com.tap.backend.academic.entity.Experiment" useGeneratedKeys="true" keyProperty="experiment_id">
         INSERT INTO experiment (num, name, deadline, `describe`, requirements, topic_sum, teacher_id, `class`, created_at)

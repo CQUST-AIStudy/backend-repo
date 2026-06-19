@@ -73,6 +73,8 @@ public interface ExperimentService {
 
     List<Experiment> findExperimentsByClassKeyword(String classKeyword, String teacherId);
 
+    Experiment findRecentDuplicateExperiment(Experiment experiment);
+
     /**
      * 根据关键词搜索实验（匹配名称和描述）
      */
