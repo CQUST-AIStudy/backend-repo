@@ -1,0 +1,101 @@
+# 批改子系统架构
+
+```mermaid
+flowchart LR
+    subgraph Teacher["教师端"]
+        T1["GradingCenter.vue\n批改任务列表"]
+        T2["GradingDetail.vue\n任务详情 / 批次总评 / 批量导出"]
+        T3["SubmissionReview.vue\n单份详情 / 评分覆写 / 发布"]
+    end
+
+    subgraph Backend["后端：批改服务"]
+        direction TB
+        GC["GradingTaskController\n任务 CRUD"]
+        SC["GradingSubmissionController\n提交详情 / 评分覆写 / 发布报告"]
+        GTS["GradingTaskService\n任务状态机 / 队列推送"]
+        GSS["GradingSubmissionService\n评分覆写 / 总评生成 / 发布到旧系统"]
+        GBS["GradingBatchReviewService\nAI 批次总评"]
+        ARS["AnnotatedStudentReportService\n生成 DOCX/PDF 批注报告"]
+        GULS["GradingUnifiedLinkService\n学生身份匹配"]
+    end
+
+    subgraph Queue["消息队列"]
+        RedisQ["Redis List\ngrading_queue"]
+    end
+
+    subgraph Worker["grading_worker"]
+        direction TB
+        Consumer["Celery Consumer"]
+        Parser["pdf_parser / document_parser\n文档解析"]
+        ImgClf["image_classifier\n图片分类"]
+        VLM["vlm_client\n多模态分析"]
+        OCR["ocr_processor\nOCR 兜底"]
+        Scorer["scorer.py\n维度评分 + annotations"]
+    end
+
+    subgraph Storage["存储"]
+        DB[("MySQL\ngrading_task / submission / score_item / evidence_block")]
+        S3[("MinIO\nPDF 原文件 / 批注报告 / 证据图片")]
+    end
+
+    subgraph Legacy["旧系统兼容"]
+        LegacySub["legacy submission 表"]
+        LegacyScore["legacy score 表"]
+    end
+
+    subgraph Student["学生端"]
+        SE["ExperimentDetail.vue\n查看成绩 / 报告"]
+    end
+
+    T1 --> GC
+    T2 --> GC
+    T3 --> SC
+
+    GC --> GTS
+    SC --> GSS
+    GTS --> RedisQ
+    GSS --> ARS
+    GSS --> GBS
+    GSS --> GULS
+
+    RedisQ --> Consumer
+    Consumer --> Parser
+    Parser --> ImgClf
+    ImgClf --> VLM
+    ImgClf --> OCR
+    VLM --> Scorer
+    OCR --> Scorer
+    Scorer --> DB
+    Scorer --> S3
+
+    ARS --> S3
+    GBS --> DB
+    GULS --> DB
+
+    GSS -.->|发布成绩| LegacySub
+    GSS -.->|写入分数| LegacyScore
+
+    LegacySub --> SE
+    LegacyScore --> SE
+
+    classDef vue fill:#e1f5fe,stroke:#01579b
+    classDef controller fill:#fff3e0,stroke:#ef6c00
+    classDef service fill:#e8f5e9,stroke:#2e7d32
+    classDef worker fill:#f3e5f5,stroke:#6a1b9a
+    classDef storage fill:#fff9c4,stroke:#f57f17
+
+    class T1,T2,T3,SE vue
+    class GC,SC controller
+    class GTS,GSS,GBS,ARS,GULS service
+    class Consumer,Parser,ImgClf,VLM,OCR,Scorer worker
+    class DB,S3,LegacySub,LegacyScore storage
+```
+
+## 关键数据流
+
+1. **创建任务**：教师上传多份报告 → `GradingTask` + `GradingSubmission` 写入 MySQL。
+2. **入队**：`GradingTaskService.publishTaskToQueue()` 把待处理提交推入 Redis grading queue。
+3. **Worker 处理**：`grading_worker` 消费任务 → 解析 PDF/DOCX → 提取证据块 → VLM/OCR 识别 → 维度评分 → 保存 `ScoreItem` / `EvidenceBlock`。
+4. **生成报告**：教师触发或自动调用 `AnnotatedStudentReportService`，生成带 √/×/波浪线/inline 批注的 DOCX/PDF。
+5. **批次总评**：`GradingBatchReviewService` 读取整个任务评分结果，调用 LLM 生成班级总评。
+6. **发布成绩**：教师在 `SubmissionReview` 点击「一键导入学生报告」→ `GradingSubmissionService.publishToStudentReport()` 把成绩写入旧系统 `submission` / `score` 表，学生端 `ExperimentDetail.vue` 可见。

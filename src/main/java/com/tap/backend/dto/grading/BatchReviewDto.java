@@ -2,6 +2,7 @@ package com.tap.backend.dto.grading;
 
 import com.tap.backend.domain.grading.GradingTaskEntity;
 
+import java.time.Instant;
 import java.util.List;
 
 public record BatchReviewDto(
@@ -10,10 +11,12 @@ public record BatchReviewDto(
         List<String> commonIssues,
         List<String> strengths,
         List<String> teachingAdvice,
-        ScoreDistributionDto scoreDistribution
+        ScoreDistributionDto scoreDistribution,
+        String errorMessage,
+        Instant generatedAt
 ) {
     public static BatchReviewDto pending() {
         return new BatchReviewDto(GradingTaskEntity.BatchReviewStatus.PENDING.name(),
-                null, null, null, null, null);
+                null, null, null, null, null, null, null);
     }
 }

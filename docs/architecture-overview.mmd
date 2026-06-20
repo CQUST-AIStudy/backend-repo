@@ -1,0 +1,63 @@
+# 实验辅助系统整体架构（合并 origin/main 后）
+
+```mermaid
+flowchart TB
+    subgraph User["用户层"]
+        Teacher["教师 Web 端\nfrontend-repo / Vue"]
+        Student["学生 Web 端\nfrontend-repo / Vue"]
+    end
+
+    subgraph Gateway["接入层"]
+        Nginx["Nginx 反向代理"]
+    end
+
+    subgraph Backend["后端服务\nbackend-repo / Spring Boot"]
+        direction TB
+        Controllers["API Controllers\n/api/**"]
+        Security["Security\nJWT / 角色鉴权"]
+        Services["业务 Services"]
+        Academic["academic 兼容层\n旧系统 Legacy 适配"]
+        Infra["基础设施层"]
+    end
+
+    subgraph Workers["异步 Worker"]
+        GW["grading_worker\nPython FastAPI + Celery"]
+    end
+
+    subgraph Data["数据与存储"]
+        MySQL[("MySQL 8\n业务主库")]
+        Redis[("Redis\n缓存 / 队列")]
+        MinIO[("MinIO\n文件对象存储")]
+    end
+
+    subgraph External["外部依赖"]
+        AI["AI 模型网关\nDeepSeek / 通义千问"]
+        PTA["PTA Spider\n可选"]
+        RAGProxy["外部 RAG 服务\n127.0.0.1:8001\n仅保留代理转发"]
+    end
+
+    Teacher --> Nginx
+    Student --> Nginx
+    Nginx --> Controllers
+
+    Controllers --> Security
+    Security --> Services
+    Services --> Academic
+    Services --> Infra
+
+    Services --> Redis
+    Services --> MySQL
+    Services --> MinIO
+
+    GW -.->|消费队列| Redis
+    GW -.->|读写| MySQL
+    GW -.->|上传证据/报告| MinIO
+    GW -.->|调用| AI
+
+    Services -.->|RAG 代理| RAGProxy
+    Services -.->|PTA 同步| PTA
+    Services -.->|AI 点评/摘要| AI
+
+    classDef deleted fill:#ffcccc,stroke:#ff6666,stroke-dasharray: 5 5
+    class RAGProxy deleted
+```

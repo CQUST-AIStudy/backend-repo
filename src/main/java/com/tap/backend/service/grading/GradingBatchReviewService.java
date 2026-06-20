@@ -21,6 +21,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Instant;
 import java.util.*;
 
 @Service
@@ -53,13 +54,18 @@ public class GradingBatchReviewService {
     public BatchReviewDto getReview(Long taskId) {
         GradingTaskEntity task = taskRepository.findById(taskId)
                 .orElseThrow(() -> new IllegalArgumentException("Task not found: " + taskId));
+        if (task.getBatchReviewStatus() == GradingTaskEntity.BatchReviewStatus.GENERATING) {
+            return new BatchReviewDto(GradingTaskEntity.BatchReviewStatus.GENERATING.name(),
+                    null, null, null, null, buildDistributionForTask(taskId), null, null);
+        }
+        if (task.getBatchReviewStatus() == GradingTaskEntity.BatchReviewStatus.FAILED) {
+            return task.getBatchReviewJson() == null
+                    ? failedResult("批次总评生成失败，后端未记录具体原因")
+                    : parseStored(task.getBatchReviewJson(), task.getBatchReviewStatus());
+        }
         if (task.getBatchReviewStatus() == GradingTaskEntity.BatchReviewStatus.PENDING
                 || task.getBatchReviewJson() == null) {
             return BatchReviewDto.pending();
-        }
-        if (task.getBatchReviewStatus() == GradingTaskEntity.BatchReviewStatus.GENERATING) {
-            return new BatchReviewDto(GradingTaskEntity.BatchReviewStatus.GENERATING.name(),
-                    null, null, null, null, null);
         }
         return parseStored(task.getBatchReviewJson(), task.getBatchReviewStatus());
     }
@@ -72,6 +78,7 @@ public class GradingBatchReviewService {
             return;
         }
         task.setBatchReviewStatus(GradingTaskEntity.BatchReviewStatus.GENERATING);
+        task.setBatchReviewJson(null);
         taskRepository.save(task);
         generateAsync(taskId);
     }
@@ -82,7 +89,7 @@ public class GradingBatchReviewService {
             internalGenerate(taskId);
         } catch (Exception e) {
             log.error("Batch review generation failed for task {}", taskId, e);
-            markFailed(taskId);
+            markFailed(taskId, rootCauseMessage(e));
         }
     }
 
@@ -116,20 +123,23 @@ public class GradingBatchReviewService {
 
     private AgentConfigDto resolveConfig(GradingTaskEntity task) {
         if (task.getBatchReviewPrompt() != null && !task.getBatchReviewPrompt().isBlank()) {
-            String model = task.getBatchReviewModel() != null ? task.getBatchReviewModel() : "";
+            String model = firstNonBlank(task.getBatchReviewModel(), aiProvider.model());
             return new AgentConfigDto(null, null, "task-override",
                     task.getBatchReviewPrompt(), model,
                     new BigDecimal("0.30"), 1600, true);
         }
-        return configService.findByCode(DEFAULT_CONFIG_CODE)
+        AgentConfigDto configured = configService.findByCode(DEFAULT_CONFIG_CODE)
                 .orElseGet(this::fallbackConfig);
+        return new AgentConfigDto(
+                configured.id(), configured.code(), configured.name(), configured.promptTemplate(),
+                aiProvider.model(), configured.temperature(), configured.maxTokens(), configured.enabled());
     }
 
     private AgentConfigDto fallbackConfig() {
         return new AgentConfigDto(null, DEFAULT_CONFIG_CODE, "default",
                 "你是一位高校实验课主讲教师。请根据下面的学生成绩和分项得分，给出批次总结。\n" +
                 "必须严格返回 JSON：{\"summary\":\"...\",\"commonIssues\":[\"...\"],\"strengths\":[\"...\"],\"teachingAdvice\":\"...\"}\n",
-                "qwen-plus-latest", new BigDecimal("0.30"), 1600, true);
+                aiProvider.model(), new BigDecimal("0.30"), 1600, true);
     }
 
     private String buildPrompt(GradingTaskEntity task, List<GradingSubmissionEntity> submissions, String template) {
@@ -179,7 +189,9 @@ public class GradingBatchReviewService {
                 commonIssues,
                 strengths,
                 teachingAdvice,
-                buildDistribution(submissions)
+                buildDistribution(submissions),
+                null,
+                Instant.now()
         );
     }
 
@@ -200,11 +212,14 @@ public class GradingBatchReviewService {
                     commonIssues != null ? commonIssues : List.of(),
                     strengths != null ? strengths : List.of(),
                     teachingAdvice,
-                    parseDistribution(parsed.get("scoreDistribution"))
+                    parseDistribution(parsed.get("scoreDistribution")),
+                    stringValue(parsed.get("errorMessage")),
+                    parseInstant(parsed.get("generatedAt"))
             );
         } catch (JsonProcessingException e) {
             log.warn("Failed to parse stored batch review", e);
-            return new BatchReviewDto(status.name(), json, null, null, null, null);
+            return new BatchReviewDto(status.name(), null, List.of(), List.of(), List.of(), null,
+                    "批次总评结果解析失败: " + e.getOriginalMessage(), null);
         }
     }
 
@@ -216,6 +231,7 @@ public class GradingBatchReviewService {
             map.put("strengths", dto.strengths());
             map.put("teachingAdvice", dto.teachingAdvice());
             map.put("scoreDistribution", dto.scoreDistribution());
+            map.put("generatedAt", dto.generatedAt() == null ? null : dto.generatedAt().toString());
             task.setBatchReviewJson(objectMapper.writeValueAsString(map));
             task.setBatchReviewStatus(GradingTaskEntity.BatchReviewStatus.COMPLETED);
             taskRepository.save(task);
@@ -224,16 +240,62 @@ public class GradingBatchReviewService {
         }
     }
 
-    private void markFailed(Long taskId) {
+    private void markFailed(Long taskId, String errorMessage) {
         taskRepository.findById(taskId).ifPresent(task -> {
             task.setBatchReviewStatus(GradingTaskEntity.BatchReviewStatus.FAILED);
+            try {
+                task.setBatchReviewJson(objectMapper.writeValueAsString(Map.of(
+                        "errorMessage", errorMessage,
+                        "generatedAt", Instant.now().toString())));
+            } catch (JsonProcessingException serializationError) {
+                log.error("Failed to store batch review error for task {}", taskId, serializationError);
+                task.setBatchReviewJson("{\"errorMessage\":\"批次总评生成失败，错误原因序列化失败\"}");
+            }
             taskRepository.save(task);
         });
     }
 
     private BatchReviewDto emptyResult() {
         return new BatchReviewDto(GradingTaskEntity.BatchReviewStatus.COMPLETED.name(),
-                "暂无可分析的学生数据", List.of(), List.of(), List.of(), null);
+                "暂无可分析的学生数据", List.of(), List.of(), List.of(), null, null, Instant.now());
+    }
+
+    private BatchReviewDto failedResult(String errorMessage) {
+        return new BatchReviewDto(GradingTaskEntity.BatchReviewStatus.FAILED.name(),
+                null, List.of(), List.of(), List.of(), null, errorMessage, null);
+    }
+
+    private ScoreDistributionDto buildDistributionForTask(Long taskId) {
+        return buildDistribution(submissionRepository.findAllByTaskId(taskId));
+    }
+
+    private Instant parseInstant(Object value) {
+        if (value == null || String.valueOf(value).isBlank()) return null;
+        try {
+            return Instant.parse(String.valueOf(value));
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private String rootCauseMessage(Throwable error) {
+        Throwable current = error;
+        while (current.getCause() != null && current.getCause() != current) {
+            current = current.getCause();
+        }
+        String message = current.getMessage();
+        if (message == null || message.isBlank()) {
+            message = error.getMessage();
+        }
+        if (message == null || message.isBlank()) {
+            message = error.getClass().getSimpleName();
+        }
+        message = message.replaceAll("[\\r\\n]+", " ").trim();
+        return message.length() > 800 ? message.substring(0, 800) : message;
+    }
+
+    private String firstNonBlank(String primary, String fallback) {
+        return primary != null && !primary.isBlank() ? primary : (fallback == null ? "" : fallback);
     }
 
     private Map<String, Object> parseAiJson(String raw) {
