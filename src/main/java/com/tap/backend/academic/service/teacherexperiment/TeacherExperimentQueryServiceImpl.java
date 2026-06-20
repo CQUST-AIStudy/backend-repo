@@ -84,6 +84,60 @@ public class TeacherExperimentQueryServiceImpl implements TeacherExperimentQuery
     }
 
     @Override
+    public TeacherExperimentListResult getTeacherExperimentListForAdmin(Long classId, String classKeyword, String scope) {
+        String normalizedClassKeyword = normalizeClassKeyword(classKeyword);
+        List<TeacherExperimentSummaryRow> summaries = teacherExperimentQueryDao
+                .findAllExperimentsForAdmin(classId, normalizedClassKeyword, scope);
+        if (summaries == null || summaries.isEmpty()) {
+            return new TeacherExperimentListResult(Collections.emptyList(), 0);
+        }
+
+        List<TeacherStudentAssignmentRow> roster = teacherExperimentQueryDao.findAllStudentRosterForAdmin(classId);
+        int studentCount = roster == null ? 0 : roster.size();
+        List<Integer> experimentIds = summaries.stream()
+                .filter(Objects::nonNull)
+                .map(TeacherExperimentSummaryRow::getExperimentId)
+                .collect(Collectors.toList());
+
+        Map<Integer, TeacherExperimentScoreAggregate> aggregateByExperimentId = experimentIds.isEmpty()
+                ? Collections.emptyMap()
+                : teacherExperimentQueryDao.summarizeByExperimentIds(experimentIds)
+                .stream()
+                .filter(Objects::nonNull)
+                .collect(Collectors.toMap(
+                        TeacherExperimentScoreAggregate::getExperimentId,
+                        aggregate -> aggregate,
+                        (left, right) -> left,
+                        LinkedHashMap::new
+                ));
+
+        List<TeacherExperiment> teacherExperiments = new ArrayList<>(summaries.size());
+        for (TeacherExperimentSummaryRow summary : summaries) {
+            if (summary == null) {
+                continue;
+            }
+            TeacherExperiment teacherExperiment = new TeacherExperiment(
+                    summary.getExperimentId(),
+                    summary.getName(),
+                    summary.getDeadline(),
+                    summary.getCreatedTime()
+            );
+            TeacherExperimentScoreAggregate aggregate = aggregateByExperimentId.get(summary.getExperimentId());
+            int submissionCount = aggregate == null || aggregate.getSubmissionCount() == null
+                    ? 0
+                    : aggregate.getSubmissionCount();
+            double averageScore = studentCount <= 0 || aggregate == null || aggregate.getTotalPositiveScore() == null
+                    ? 0.0
+                    : roundTwoDecimals((double) aggregate.getTotalPositiveScore() / studentCount);
+            teacherExperiment.setSubmissionCount(submissionCount);
+            teacherExperiment.setAverageScore(averageScore);
+            teacherExperiments.add(teacherExperiment);
+        }
+
+        return new TeacherExperimentListResult(teacherExperiments, studentCount);
+    }
+
+    @Override
     public TeacherStudentExperimentResult getAllStudentExperiments(Integer teacherId, Long classId, String classKeyword, Integer experimentId) {
         String normalizedClassKeyword = normalizeClassKeyword(classKeyword);
         if (!unifiedExperimentQueriesEnabled) {
@@ -128,6 +182,195 @@ public class TeacherExperimentQueryServiceImpl implements TeacherExperimentQuery
             experimentData.put(
                     "plagiarismRate",
                     roundTwoDecimals(calculateAveragePlagiarismRate(assignment.getPlagiarismRate()))
+            );
+            rows.add(experimentData);
+        }
+
+        return new TeacherStudentExperimentResult(true, rows);
+    }
+
+    @Override
+    public TeacherStudentExperimentResult getAllStudentExperimentsForAdmin(Long classId, String classKeyword, Integer experimentId, String scope) {
+        String normalizedClassKeyword = normalizeClassKeyword(classKeyword);
+
+        // roster：从 class_member + student_profile 全量取（不绑定教师），可选 classId 过滤
+        List<TeacherStudentAssignmentRow> roster = teacherExperimentQueryDao.findAllStudentRosterForAdmin(classId);
+
+        // 兜底：class_member 没有学生记录但 experimentId 指定时，从 submit_situation 补
+        if ((roster == null || roster.isEmpty()) && experimentId != null) {
+            roster = teacherExperimentQueryDao.findStudentRosterFromSubmitSituation(experimentId);
+        }
+        if (roster == null || roster.isEmpty()) {
+            return new TeacherStudentExperimentResult(false, Collections.emptyList());
+        }
+
+        // experiments：从 assignment_offering 全量取（不绑定教师），scope='all' 时跳过课程范围过滤
+        List<TeacherExperimentSummaryRow> summaries = teacherExperimentQueryDao
+                .findAllExperimentsForAdmin(classId, normalizedClassKeyword, scope);
+
+        // 当 experimentId 明确指定时，只保留该实验；若全量列表中无此实验，直接返回空结果
+        if (experimentId != null) {
+            if (summaries != null && !summaries.isEmpty()) {
+                List<TeacherExperimentSummaryRow> filtered = summaries.stream()
+                        .filter(s -> s != null && experimentId.equals(s.getExperimentId()))
+                        .collect(Collectors.toList());
+                summaries = filtered;
+            } else {
+                summaries = Collections.emptyList();
+            }
+        }
+
+        if (summaries == null || summaries.isEmpty()) {
+            return new TeacherStudentExperimentResult(true, Collections.emptyList());
+        }
+
+        List<Integer> experimentIds = summaries.stream()
+                .filter(Objects::nonNull)
+                .map(TeacherExperimentSummaryRow::getExperimentId)
+                .collect(Collectors.toList());
+
+        Set<String> lookupKeys = new LinkedHashSet<>();
+        Set<String> studentIds = new LinkedHashSet<>();
+        for (TeacherStudentAssignmentRow student : roster) {
+            if (hasText(student.getStudentUsername())) {
+                lookupKeys.add(student.getStudentUsername());
+            }
+            if (hasText(student.getStudentId())) {
+                lookupKeys.add(student.getStudentId());
+                studentIds.add(student.getStudentId());
+            }
+        }
+
+        // 与教师流一致：score 表 + submit_situation 兜底
+        Map<String, TeacherExperimentScoreRow> scoreByCompositeKey = lookupKeys.isEmpty()
+                ? Collections.emptyMap()
+                : teacherExperimentQueryDao.findPerExperimentSumScoresByUsernames(new ArrayList<>(lookupKeys))
+                .stream()
+                .filter(Objects::nonNull)
+                .collect(Collectors.toMap(
+                        row -> buildCompositeKey(row.getUsername(), row.getExperimentId()),
+                        row -> row,
+                        (left, right) -> preferLegacyScoreRow(left, right),
+                        LinkedHashMap::new
+                ));
+
+        Map<String, TeacherExperimentScoreRow> submitSituationByCompositeKey = lookupKeys.isEmpty()
+                ? Collections.emptyMap()
+                : teacherExperimentQueryDao.findPerExperimentSumScoresFromSubmitSituation(
+                        new ArrayList<>(lookupKeys), experimentId)
+                .stream()
+                .filter(Objects::nonNull)
+                .collect(Collectors.toMap(
+                        row -> buildCompositeKey(row.getUsername(), row.getExperimentId()),
+                        row -> row,
+                        (left, right) -> preferLegacyScoreRow(left, right),
+                        LinkedHashMap::new
+                ));
+
+        for (Map.Entry<String, TeacherExperimentScoreRow> entry : submitSituationByCompositeKey.entrySet()) {
+            scoreByCompositeKey.putIfAbsent(entry.getKey(), entry.getValue());
+        }
+
+        Map<String, TeacherExperimentPlagiarismRow> plagiarismByCompositeKey =
+                studentIds.isEmpty() || experimentIds.isEmpty()
+                        ? Collections.emptyMap()
+                        : teacherExperimentQueryDao.findPlagiarismRates(
+                                new ArrayList<>(studentIds),
+                                experimentIds
+                        ).stream()
+                        .filter(Objects::nonNull)
+                        .collect(Collectors.toMap(
+                                row -> buildCompositeKey(row.getStudentId(), row.getExperimentId()),
+                                row -> row,
+                                (left, right) -> left,
+                                LinkedHashMap::new
+                        ));
+
+        List<Map<String, Object>> rows = new ArrayList<>(roster.size() * summaries.size());
+        for (TeacherStudentAssignmentRow student : roster) {
+            for (TeacherExperimentSummaryRow summary : summaries) {
+                Integer experimentIdValue = summary.getExperimentId();
+                TeacherExperimentScoreRow scoreRow = findLegacyScoreRow(scoreByCompositeKey, student, experimentIdValue);
+                TeacherExperimentPlagiarismRow plagiarismRow = plagiarismByCompositeKey.get(
+                        buildCompositeKey(student.getStudentId(), experimentIdValue)
+                );
+
+                Map<String, Object> experimentData = new LinkedHashMap<>();
+                experimentData.put("studentId", student.getStudentId());
+                experimentData.put("studentName", student.getStudentName());
+                experimentData.put(
+                        "studentUsername",
+                        hasText(student.getStudentUsername()) ? student.getStudentUsername() : student.getStudentId()
+                );
+                experimentData.put("classId", student.getClassId());
+                experimentData.put("className", student.getClassName());
+                experimentData.put("experimentId", experimentIdValue);
+                experimentData.put("experimentName", summary.getName());
+                experimentData.put("deadline", summary.getDeadline());
+                experimentData.put("status", mapLegacyStatus(scoreRow));
+                experimentData.put("submitTime", scoreRow == null ? null : scoreRow.getSubmitTime());
+                experimentData.put(
+                        "score",
+                        scoreRow == null || scoreRow.getScore() == null ? 0.0 : scoreRow.getScore().doubleValue()
+                );
+                experimentData.put(
+                        "plagiarismRate",
+                        roundTwoDecimals(calculateAveragePlagiarismRate(
+                                plagiarismRow == null ? null : plagiarismRow.getPlagiarismRate()
+                        ))
+                );
+                rows.add(experimentData);
+            }
+        }
+
+        return new TeacherStudentExperimentResult(true, rows);
+    }
+
+    @Override
+    public TeacherStudentExperimentResult getRecentStudentExperimentsForAdmin(
+            Long classId,
+            String classKeyword,
+            Integer experimentId,
+            String scope,
+            Integer limit) {
+        String normalizedClassKeyword = normalizeClassKeyword(classKeyword);
+        int queryLimit = limit == null || limit <= 0 ? 20 : limit;
+        List<TeacherStudentAssignmentRow> assignments = teacherExperimentQueryDao
+                .findRecentSubmittedAssignmentsForAdmin(classId, normalizedClassKeyword, experimentId, scope, queryLimit);
+        if (assignments == null || assignments.isEmpty()) {
+            return new TeacherStudentExperimentResult(true, Collections.emptyList());
+        }
+
+        List<Map<String, Object>> rows = new ArrayList<>(assignments.size());
+        for (TeacherStudentAssignmentRow assignment : assignments) {
+            if (assignment == null
+                    || assignment.getSubmitTime() == null
+                    || !hasText(assignment.getStudentName())
+                    || !hasText(assignment.getClassName())
+                    || !hasText(assignment.getExperimentName())) {
+                continue;
+            }
+            Map<String, Object> experimentData = new LinkedHashMap<>();
+            experimentData.put("studentId", assignment.getStudentId());
+            experimentData.put("studentName", assignment.getStudentName());
+            experimentData.put(
+                    "studentUsername",
+                    hasText(assignment.getStudentUsername()) ? assignment.getStudentUsername() : assignment.getStudentId()
+            );
+            experimentData.put("classId", assignment.getClassId());
+            experimentData.put("className", assignment.getClassName());
+            experimentData.put("experimentId", assignment.getExperimentId());
+            experimentData.put("experimentName", assignment.getExperimentName());
+            experimentData.put("submitTime", assignment.getSubmitTime());
+            experimentData.put("status", mapUnifiedStatus(assignment.getSubmissionStatus()));
+            experimentData.put("submissionStatus", assignment.getSubmissionStatus());
+            experimentData.put(
+                    "isResubmission",
+                    assignment.getSubmissionAttemptCount() != null && assignment.getSubmissionAttemptCount() > 1
+            );
+            experimentData.put(
+                    "submissionAttemptCount",
+                    assignment.getSubmissionAttemptCount() == null ? 0 : assignment.getSubmissionAttemptCount()
             );
             rows.add(experimentData);
         }

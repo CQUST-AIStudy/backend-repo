@@ -19,15 +19,15 @@ $env:JWT_SECRET  = "replace-with-a-long-random-secret-at-least-32-chars"
 # $env:DB_NAME = "ptadatabase"
 # $env:DB_USERNAME = "root"
 #
-# Shared Redis / MinIO / Milvus endpoints:
+# Shared Redis / MinIO endpoints:
 # $env:REDIS_HOST = "127.0.0.1"
 # $env:REDIS_PORT = "6379"
 # $env:MINIO_ENDPOINT = "http://127.0.0.1:19000"
 # $env:MINIO_ACCESS_KEY = "minioadmin"
 # $env:MINIO_SECRET_KEY = "minioadmin"
 # $env:MINIO_BUCKET = "tap-files"
-# $env:MILVUS_HOST = "127.0.0.1"
-# $env:MILVUS_PORT = "19530"
+# Java backend proxies /rag requests to the independent rag-service.
+# $env:RAG_SERVICE_BASE_URL = "http://127.0.0.1:8001"
 
 $env:AI_PROVIDER = "openai"
 $env:OPENAI_API_KEY = ""
@@ -35,7 +35,7 @@ $env:OPENAI_BASE_URL = "https://api.deepseek.com/v1"
 $env:OPENAI_MODEL = "deepseek-chat"
 
 $env:DEEPL_API_KEY = ""
-# RAG embeddings still require DashScope even if AI_PROVIDER=openai.
+# Set this for rag-service document indexing/retrieval.
 $env:DASHSCOPE_API_KEY = ""
 $env:VOLCANO_API_KEY = ""
 $env:ARK_API_KEY = ""

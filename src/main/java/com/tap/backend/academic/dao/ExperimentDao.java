@@ -37,6 +37,15 @@ public interface ExperimentDao {
             @Param("classKeyword") String classKeyword,
             @Param("teacherId") String teacherId
     );
+
+    List<Experiment> findRecentDuplicateExperiments(
+            @Param("teacherId") String teacherId,
+            @Param("name") String name,
+            @Param("deadline") String deadline,
+            @Param("className") String className,
+            @Param("describe") String describe,
+            @Param("requirements") String requirements
+    );
     
     /**
      * 保存实验信息

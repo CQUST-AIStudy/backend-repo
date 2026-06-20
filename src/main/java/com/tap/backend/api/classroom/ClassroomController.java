@@ -348,6 +348,13 @@ public class ClassroomController {
 
     private Map<String, Object> toMap(TeachingClassEntity teachingClass) {
         long studentCount = classService.countStudents(teachingClass.getId());
+        String teacherName = "";
+        if (teachingClass.getTeacher() != null) {
+            UserEntity t = teachingClass.getTeacher();
+            teacherName = t.getDisplayName() != null && !t.getDisplayName().isBlank()
+                ? t.getDisplayName().trim()
+                : (t.getUsername() != null ? t.getUsername().trim() : "");
+        }
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("id", teachingClass.getId());
         result.put("name", teachingClass.getName());
@@ -356,6 +363,7 @@ public class ClassroomController {
         result.put("grade", teachingClass.getGrade());
         result.put("courseName", teachingClass.getCourseName());
         result.put("description", teachingClass.getDescription());
+        result.put("teacherName", teacherName);
         result.put("studentCount", studentCount);
         result.put("ptaKeyword", teachingClass.getPtaKeyword());
         result.put("ptaProblemSetId", teachingClass.getPtaProblemSetId());

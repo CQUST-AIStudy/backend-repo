@@ -169,8 +169,10 @@ public class UserManagementController {
     user.setRole(parseRole(req.getRole()));
     user.setPasswordHash(passwordEncoder.encode(req.getPassword()));
     user.setEmail(req.getEmail() != null ? req.getEmail().trim() : null);
+    user.setPhone(req.getPhone() != null ? req.getPhone().trim() : null);
     user.setUsernum(req.getUsernum() != null ? req.getUsernum().trim() : null);
     user.setClassname(req.getClassname() != null ? req.getClassname().trim() : null);
+    user.setDepartment(req.getDepartment() != null ? req.getDepartment().trim() : null);
     user.setEnabled(req.getEnabled() == null || req.getEnabled());
     user = userRepository.save(user);
     if (user.getRole() == UserRole.STUDENT && Boolean.TRUE.equals(user.getEnabled())) {

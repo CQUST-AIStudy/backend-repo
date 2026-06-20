@@ -31,6 +31,27 @@ public class TeacherSessionResolver {
         return teacher;
     }
 
+    /**
+     * 尝试获取当前 Teacher：admin 角色但没有 Teacher 记录时返回 null（不抛异常），
+     * teacher 角色但没有 Teacher 记录时仍抛 403。
+     * 供管理员视角的只读接口使用，例如查看全量学生/全量实验。
+     */
+    public Teacher requireCurrentTeacherOrAdminNull(HttpServletRequest request) {
+        UserEntity user = legacySessionAccessResolver.requireTeacherOrAdmin(request);
+        String role = normalize(user.getRole());
+        String username = normalize(user.getUsername());
+        Teacher teacher = username == null ? null : teacherService.findByUsername(username);
+        if (teacher == null && !"admin".equals(role)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "teacher info not found");
+        }
+        return teacher;
+    }
+
+    public boolean isCurrentAdmin(HttpServletRequest request) {
+        UserEntity user = legacySessionAccessResolver.requireTeacherOrAdmin(request);
+        return "admin".equals(normalize(user.getRole()));
+    }
+
     public Teacher requireTeacherAccess(Integer teacherId, HttpServletRequest request) {
         if (teacherId == null || teacherId <= 0) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "teacher id required");

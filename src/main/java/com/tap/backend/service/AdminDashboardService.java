@@ -1,23 +1,33 @@
 package com.tap.backend.service;
 
 import com.tap.backend.domain.classroom.TeachingClassEntity;
+import com.tap.backend.domain.grading.GradingSubmissionEntity;
+import com.tap.backend.domain.grading.GradingTaskEntity;
+import com.tap.backend.domain.grading.SubmissionStatus;
 import com.tap.backend.domain.user.UserEntity;
 import com.tap.backend.domain.user.UserRole;
 import com.tap.backend.quota.UserDailyQuotaUsageEntity;
 import com.tap.backend.quota.UserDailyQuotaUsageRepository;
+import com.tap.backend.repo.ClassStudentRepository;
+import com.tap.backend.repo.GradingSubmissionRepository;
+import com.tap.backend.repo.GradingTaskRepository;
 import com.tap.backend.repo.TeachingClassRepository;
 import com.tap.backend.repo.UserRepository;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
@@ -36,6 +46,9 @@ public class AdminDashboardService {
   private final TeachingClassRepository classRepository;
   private final UserDailyQuotaUsageRepository usageRepository;
   private final PtaCookieService ptaCookieService;
+  private final ClassStudentRepository classStudentRepository;
+  private final GradingTaskRepository gradingTaskRepository;
+  private final GradingSubmissionRepository gradingSubmissionRepository;
   private final RestTemplate restTemplate;
 
   @Value("${tap.quota.translation-chars-per-day:200000}")
@@ -85,12 +98,18 @@ public class AdminDashboardService {
       TeachingClassRepository classRepository,
       UserDailyQuotaUsageRepository usageRepository,
       PtaCookieService ptaCookieService,
+      ClassStudentRepository classStudentRepository,
+      GradingTaskRepository gradingTaskRepository,
+      GradingSubmissionRepository gradingSubmissionRepository,
       @Value("${pta.connect-timeout-ms:5000}") int connectTimeoutMs,
       @Value("${pta.read-timeout-ms:20000}") int readTimeoutMs) {
     this.userRepository = userRepository;
     this.classRepository = classRepository;
     this.usageRepository = usageRepository;
     this.ptaCookieService = ptaCookieService;
+    this.classStudentRepository = classStudentRepository;
+    this.gradingTaskRepository = gradingTaskRepository;
+    this.gradingSubmissionRepository = gradingSubmissionRepository;
 
     SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
     requestFactory.setConnectTimeout(Math.max(1000, connectTimeoutMs));
@@ -125,20 +144,34 @@ public class AdminDashboardService {
         .filter(c -> "RUNNING".equalsIgnoreCase(safeText(c.getSyncStatus())))
         .count();
 
+    // --- P0: 补充 experimentCount / studentCount ---
+    long studentCount = classes.stream()
+        .mapToLong(tc -> classStudentRepository.countByClassId(tc.getId()))
+        .sum();
+    List<GradingTaskEntity> allGradingTasks = gradingTaskRepository.findAll();
+    long experimentCount = allGradingTasks.stream()
+        .map(GradingTaskEntity::getExperimentId)
+        .filter(Objects::nonNull)
+        .distinct()
+        .count();
+
+    Map<String, Object> stats = new LinkedHashMap<>();
+    stats.put("teacherCount", userRepository.countByRole(UserRole.TEACHER));
+    stats.put("adminCount", userRepository.countByRole(UserRole.ADMIN));
+    stats.put("classCount", classes.size());
+    stats.put("studentCount", studentCount);
+    stats.put("experimentCount", experimentCount);
+    stats.put("syncEnabledClassCount", enabledClasses);
+    stats.put("runningClassCount", runningClasses);
+    stats.put("attentionClassCount", staleClasses);
+    stats.put("aiRequestsUsedToday", aiRequestsUsed);
+    stats.put("aiRequestsLimit", aiRequestsLimit);
+    stats.put("translationCharsUsedToday", translationCharsUsed);
+    stats.put("translationCharsLimit", translationCharsLimit);
+
     Map<String, Object> overview = new LinkedHashMap<>();
     overview.put("generatedAt", Instant.now());
-    overview.put("stats", Map.of(
-        "teacherCount", userRepository.countByRole(UserRole.TEACHER),
-        "adminCount", userRepository.countByRole(UserRole.ADMIN),
-        "classCount", classes.size(),
-        "syncEnabledClassCount", enabledClasses,
-        "runningClassCount", runningClasses,
-        "attentionClassCount", staleClasses,
-        "aiRequestsUsedToday", aiRequestsUsed,
-        "aiRequestsLimit", aiRequestsLimit,
-        "translationCharsUsedToday", translationCharsUsed,
-        "translationCharsLimit", translationCharsLimit
-    ));
+    overview.put("stats", stats);
     overview.put("quota", Map.of(
         "date", today.toString(),
         "adminUnlimited", adminUnlimited,
@@ -152,7 +185,284 @@ public class AdminDashboardService {
     overview.put("spider", spider);
     overview.put("classes", classItems);
     overview.put("recentTasks", recentTasks);
+
+    // --- P1: riskMetrics 预警中心数据 ---
+    overview.put("riskMetrics", buildRiskMetrics(classes, teachersById, allGradingTasks));
+
     return overview;
+  }
+
+  // ============================================================
+  //  riskMetrics — 预警中心 4 个 Top5 数组
+  //  供前端大屏「预警中心」模块消费，替代 mock 数据
+  // ============================================================
+
+  private Map<String, Object> buildRiskMetrics(
+      List<TeachingClassEntity> classes,
+      Map<Long, UserEntity> teachersById,
+      List<GradingTaskEntity> allGradingTasks) {
+
+    // 1. 按班级聚合 grading_submission
+    //    通过 grading_task.class_id 关联到 teaching_class
+    Map<Long, List<GradingTaskEntity>> tasksByClass = allGradingTasks.stream()
+        .filter(t -> t.getClassId() != null)
+        .collect(Collectors.groupingBy(GradingTaskEntity::getClassId));
+
+    // 2. 按实验聚合 (experimentId 可能为 null)
+    Map<Long, List<GradingTaskEntity>> tasksByExperiment = allGradingTasks.stream()
+        .filter(t -> t.getExperimentId() != null)
+        .collect(Collectors.groupingBy(GradingTaskEntity::getExperimentId));
+
+    // 批量获取所有评分提交（用于低完成率和低分率计算）
+    List<GradingSubmissionEntity> allSubmissions = gradingSubmissionRepository.findAll();
+
+    // 按 taskId 聚合提交
+    Map<Long, List<GradingSubmissionEntity>> subsByTask = allSubmissions.stream()
+        .collect(Collectors.groupingBy(GradingSubmissionEntity::getTaskId));
+
+    Map<String, Object> riskMetrics = new LinkedHashMap<>();
+    riskMetrics.put("lowCompletionClasses", buildLowCompletionClasses(classes, teachersById, tasksByClass, subsByTask));
+    riskMetrics.put("lowScoreClasses", buildLowScoreClasses(classes, teachersById, tasksByClass, subsByTask));
+    riskMetrics.put("ungradedExperiments", buildUngradedExperiments(allGradingTasks, tasksByExperiment, subsByTask));
+    riskMetrics.put("syncAnomalies", buildSyncAnomalies(classes, teachersById));
+    return riskMetrics;
+  }
+
+  /**
+   * 低完成率班级 Top5 — 完成率 &lt; 40%，按完成率升序
+   * 完成率 = grading_task.completedCount / grading_task.totalCount
+   * 如果一个班级有多个 task，取加权平均
+   */
+  private List<Map<String, Object>> buildLowCompletionClasses(
+      List<TeachingClassEntity> classes,
+      Map<Long, UserEntity> teachersById,
+      Map<Long, List<GradingTaskEntity>> tasksByClass,
+      Map<Long, List<GradingSubmissionEntity>> subsByTask) {
+
+    List<Map<String, Object>> result = new ArrayList<>();
+
+    for (TeachingClassEntity tc : classes) {
+      List<GradingTaskEntity> classTasks = tasksByClass.getOrDefault(tc.getId(), List.of());
+      if (classTasks.isEmpty()) {
+        continue;
+      }
+
+      // 计算该班级的总完成率
+      long totalSubmissions = 0;
+      long completedSubmissions = 0;
+      for (GradingTaskEntity task : classTasks) {
+        List<GradingSubmissionEntity> subs = subsByTask.getOrDefault(task.getId(), List.of());
+        totalSubmissions += subs.size();
+        completedSubmissions += subs.stream()
+            .filter(s -> s.getStatus() == SubmissionStatus.SCORED
+                || s.getStatus() == SubmissionStatus.NEED_MORE_EVIDENCE)
+            .count();
+      }
+
+      if (totalSubmissions == 0) {
+        continue;
+      }
+
+      int completionRate = BigDecimal.valueOf(completedSubmissions)
+          .multiply(BigDecimal.valueOf(100))
+          .divide(BigDecimal.valueOf(totalSubmissions), 0, RoundingMode.HALF_UP)
+          .intValue();
+
+      if (completionRate >= 40) {
+        continue;
+      }
+
+      long studentCount = classStudentRepository.countByClassId(tc.getId());
+      UserEntity teacher = teachersById.get(tc.getTeacherId());
+
+      Map<String, Object> item = new LinkedHashMap<>();
+      item.put("id", tc.getId());
+      item.put("name", tc.getName());
+      item.put("completionRate", completionRate);
+      item.put("teacherName", teacher == null
+          ? ("teacher-" + tc.getTeacherId())
+          : firstNonBlank(teacher.getDisplayName(), teacher.getUsername(), "teacher-" + tc.getTeacherId()));
+      item.put("studentCount", studentCount);
+      result.add(item);
+    }
+
+    return result.stream()
+        .sorted(Comparator.comparingInt(m -> (int) m.get("completionRate")))
+        .limit(5)
+        .toList();
+  }
+
+  /**
+   * 低分率班级 Top5 — 不及格占比 &gt; 30%，按低分率降序
+   * 不及格 = totalScore &lt; 60 (满分100假定)
+   */
+  private List<Map<String, Object>> buildLowScoreClasses(
+      List<TeachingClassEntity> classes,
+      Map<Long, UserEntity> teachersById,
+      Map<Long, List<GradingTaskEntity>> tasksByClass,
+      Map<Long, List<GradingSubmissionEntity>> subsByTask) {
+
+    List<Map<String, Object>> result = new ArrayList<>();
+
+    for (TeachingClassEntity tc : classes) {
+      List<GradingTaskEntity> classTasks = tasksByClass.getOrDefault(tc.getId(), List.of());
+      if (classTasks.isEmpty()) {
+        continue;
+      }
+
+      // 收集该班级所有已评分的提交
+      List<GradingSubmissionEntity> scoredSubs = classTasks.stream()
+          .flatMap(task -> subsByTask.getOrDefault(task.getId(), List.of()).stream())
+          .filter(s -> s.getStatus() == SubmissionStatus.SCORED && s.getTotalScore() != null)
+          .toList();
+
+      if (scoredSubs.size() < 3) {
+        // 样本太少不纳入统计
+        continue;
+      }
+
+      long failCount = scoredSubs.stream()
+          .filter(s -> s.getTotalScore().compareTo(BigDecimal.valueOf(60)) < 0)
+          .count();
+
+      int lowScoreRate = BigDecimal.valueOf(failCount)
+          .multiply(BigDecimal.valueOf(100))
+          .divide(BigDecimal.valueOf(scoredSubs.size()), 0, RoundingMode.HALF_UP)
+          .intValue();
+
+      if (lowScoreRate <= 30) {
+        continue;
+      }
+
+      // 计算均分
+      BigDecimal avgScore = scoredSubs.stream()
+          .map(GradingSubmissionEntity::getTotalScore)
+          .reduce(BigDecimal.ZERO, BigDecimal::add)
+          .divide(BigDecimal.valueOf(scoredSubs.size()), 1, RoundingMode.HALF_UP);
+
+      long studentCount = classStudentRepository.countByClassId(tc.getId());
+      UserEntity teacher = teachersById.get(tc.getTeacherId());
+
+      Map<String, Object> item = new LinkedHashMap<>();
+      item.put("id", tc.getId());
+      item.put("name", tc.getName());
+      item.put("lowScoreRate", lowScoreRate);
+      item.put("avgScore", avgScore);
+      item.put("teacherName", teacher == null
+          ? ("teacher-" + tc.getTeacherId())
+          : firstNonBlank(teacher.getDisplayName(), teacher.getUsername(), "teacher-" + tc.getTeacherId()));
+      item.put("studentCount", studentCount);
+      result.add(item);
+    }
+
+    return result.stream()
+        .sorted(Comparator.comparingInt(m -> -(int) m.get("lowScoreRate")))
+        .limit(5)
+        .toList();
+  }
+
+  /**
+   * 未评分实验 Top5 — 按待评分数降序
+   * ungradedCount = grading_task.totalCount - grading_task.completedCount
+   */
+  private List<Map<String, Object>> buildUngradedExperiments(
+      List<GradingTaskEntity> allGradingTasks,
+      Map<Long, List<GradingTaskEntity>> tasksByExperiment,
+      Map<Long, List<GradingSubmissionEntity>> subsByTask) {
+
+    // 按实验维度聚合
+    Map<Long, Integer> ungradedByExp = new LinkedHashMap<>();
+    Map<Long, Integer> totalByExp = new LinkedHashMap<>();
+    Set<Long> teacherIds = new LinkedHashSet<>();
+
+    for (GradingTaskEntity task : allGradingTasks) {
+      Long expId = task.getExperimentId();
+      if (expId == null) {
+        continue;
+      }
+
+      // 精确计算：从 submissions 统计 PENDING/PROCESSING 数量
+      List<GradingSubmissionEntity> subs = subsByTask.getOrDefault(task.getId(), List.of());
+      long ungraded = subs.stream()
+          .filter(s -> s.getStatus() == SubmissionStatus.PENDING || s.getStatus() == SubmissionStatus.PROCESSING)
+          .count();
+      long total = subs.size();
+
+      ungradedByExp.merge(expId, (int) ungraded, Integer::sum);
+      totalByExp.merge(expId, (int) total, Integer::sum);
+
+      if (task.getTeacherId() != null) {
+        teacherIds.add(task.getTeacherId());
+      }
+    }
+
+    // 批量获取教师名称
+    Map<Long, UserEntity> teachers = userRepository.findAllById(teacherIds).stream()
+        .collect(Collectors.toMap(UserEntity::getId, u -> u));
+
+    // 只保留有待评分的实验
+    List<Map<String, Object>> result = new ArrayList<>();
+    for (Map.Entry<Long, Integer> entry : ungradedByExp.entrySet()) {
+      Long expId = entry.getKey();
+      int ungradedCount = entry.getValue();
+      if (ungradedCount <= 0) {
+        continue;
+      }
+
+      int totalCount = totalByExp.getOrDefault(expId, 0);
+
+      // 找到该实验关联的教师
+      String teacherName = tasksByExperiment.getOrDefault(expId, List.of()).stream()
+          .map(t -> {
+            UserEntity teacher = teachers.get(t.getTeacherId());
+            return teacher == null ? null
+                : firstNonBlank(teacher.getDisplayName(), teacher.getUsername());
+          })
+          .filter(Objects::nonNull)
+          .findFirst()
+          .orElse("—");
+
+      Map<String, Object> item = new LinkedHashMap<>();
+      item.put("id", expId);
+      item.put("name", "实验 #" + expId); // experiment 名称需从 experiment 表补查，此处用 ID 占位
+      item.put("ungradedCount", ungradedCount);
+      item.put("totalCount", totalCount);
+      item.put("teacherName", teacherName);
+      result.add(item);
+    }
+
+    return result.stream()
+        .sorted(Comparator.comparingInt(m -> -(int) m.get("ungradedCount")))
+        .limit(5)
+        .toList();
+  }
+
+  /**
+   * 同步异常 Top5 — FAILED / 48h 未更新，按异常严重程度排序
+   */
+  private List<Map<String, Object>> buildSyncAnomalies(
+      List<TeachingClassEntity> classes,
+      Map<Long, UserEntity> teachersById) {
+
+    return classes.stream()
+        .filter(this::needsAttention)
+        .sorted(Comparator
+            .<TeachingClassEntity, Integer>comparing(tc ->
+                "FAILED".equalsIgnoreCase(safeText(tc.getSyncStatus())) ? 0 : 1)
+            .thenComparing(TeachingClassEntity::getLastSyncAt,
+                Comparator.nullsFirst(Comparator.naturalOrder())))
+        .limit(5)
+        .map(tc -> {
+          Map<String, Object> item = new LinkedHashMap<>();
+          item.put("id", tc.getId());
+          item.put("className", tc.getName());
+          item.put("ptaKeyword", safeText(tc.getPtaKeyword()));
+          item.put("status", safeText(tc.getSyncStatus()));
+          item.put("lastSync", tc.getLastSyncAt());
+          item.put("reason", buildAttentionReason(tc));
+          return item;
+        })
+        .toList();
   }
 
   @Transactional
@@ -326,12 +636,14 @@ public class AdminDashboardService {
             Comparator.nullsLast(Comparator.reverseOrder())))
         .map(tc -> {
           UserEntity teacher = teachersById.get(tc.getTeacherId());
+          long studentCount = classStudentRepository.countByClassId(tc.getId());
           Map<String, Object> item = new LinkedHashMap<>();
           item.put("id", tc.getId());
           item.put("name", tc.getName());
           item.put("teacherName", teacher == null
               ? ("teacher-" + tc.getTeacherId())
               : firstNonBlank(teacher.getDisplayName(), teacher.getUsername(), "teacher-" + tc.getTeacherId()));
+          item.put("studentCount", studentCount);
           item.put("ptaKeyword", safeText(tc.getPtaKeyword()));
           item.put("syncEnabled", Boolean.TRUE.equals(tc.getSyncEnabled()));
           item.put("syncStatus", safeText(tc.getSyncStatus()));

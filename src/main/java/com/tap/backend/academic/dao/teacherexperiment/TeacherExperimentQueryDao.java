@@ -26,19 +26,9 @@ public interface TeacherExperimentQueryDao {
     String EXPERIMENT_NAME_EXPR_COLL = EXPERIMENT_NAME_EXPR + COLL;
     String COURSE_NAME_EXPR_COLL = COURSE_NAME_EXPR + COLL;
     String NORMALIZED_PTA_KEYWORD_EXPR =
-            "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(tc.pta_keyword, ''), ' ', ''), '　', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '')";
+            "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(tc.pta_keyword, ''), ' ', ''), '\u3000', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '')";
     String NORMALIZED_CLASS_NAME_EXPR =
-            "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(tc.name, ''), ' ', ''), '　', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '')";
-    String DATA_STRUCTURE_SCOPE_PREDICATE =
-            "(" +
-                    EXPERIMENT_NAME_EXPR_COLL + " LIKE " + DATA_STRUCTURE_LIKE_PATTERN + " OR " +
-                    "COALESCE(NULLIF(TRIM(tc.pta_keyword), ''), '')" + COLL + " LIKE " + DATA_STRUCTURE_LIKE_PATTERN + " OR " +
-                    COURSE_NAME_EXPR_COLL + " LIKE " + DATA_STRUCTURE_LIKE_PATTERN +
-                    ") AND NOT (" +
-                    EXPERIMENT_NAME_EXPR_COLL + " LIKE " + C_LANGUAGE_LIKE_PATTERN + " OR " +
-                    "COALESCE(NULLIF(TRIM(tc.pta_keyword), ''), '')" + COLL + " LIKE " + C_LANGUAGE_LIKE_PATTERN + " OR " +
-                    COURSE_NAME_EXPR_COLL + " LIKE " + C_LANGUAGE_LIKE_PATTERN +
-                    ")";
+            "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(tc.name, ''), ' ', ''), '\u3000', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '')";
     String SUBMISSION_ACTIVITY_PREDICATE =
             "LOWER(COALESCE(sa.submission_status, '')) IN ('graded', 'submitted') " +
                     "OR COALESCE(sa.completion_evidence, 'NONE') IN ('TRANSCRIPT_SCORE', 'ANSWER_SHEET', 'SCORED_CODE')";
@@ -65,7 +55,6 @@ public interface TeacherExperimentQueryDao {
             "JOIN tap_user tu ON tu.id = #{teacherId}",
             "LEFT JOIN student_assignment sa ON sa.offering_id = ao.id",
             "WHERE ao.teacher_id = tu.id",
-            "  AND " + DATA_STRUCTURE_SCOPE_PREDICATE,
             "  <if test='classId != null'>",
             "    AND ao.class_id = #{classId}",
             "  </if>",
@@ -120,7 +109,6 @@ public interface TeacherExperimentQueryDao {
             " AND ao.source_offering_key LIKE 'LEGACY_EXPERIMENT_OFFERING:%'",
             " AND pct.experiment_id = CAST(SUBSTRING_INDEX(ao.source_offering_key, ':', -1) AS SIGNED)",
             "WHERE ao.teacher_id = teacher_user.id",
-            "  AND " + DATA_STRUCTURE_SCOPE_PREDICATE,
             "  <if test='classId != null'>",
             "    AND ao.class_id = #{classId}",
             "  </if>",
@@ -208,7 +196,6 @@ public interface TeacherExperimentQueryDao {
             " AND pct.experiment_id = CAST(SUBSTRING_INDEX(ao.source_offering_key, ':', -1) AS SIGNED)",
             "WHERE ao.id = #{experimentId}",
             "  AND sp.student_no COLLATE utf8mb4_unicode_ci = #{studentId} COLLATE utf8mb4_unicode_ci",
-            "  AND " + DATA_STRUCTURE_SCOPE_PREDICATE,
             "LIMIT 1"
     })
     TeacherStudentAssignmentRow findStudentAssignmentBySubmissionKey(
@@ -361,6 +348,125 @@ public interface TeacherExperimentQueryDao {
     })
     List<TeacherStudentAssignmentRow> findStudentRosterFromSubmitSituation(
             @Param("experimentId") Integer experimentId
+    );
+
+    /**
+     * 管理员视角：从 class_member + student_profile 全量取学生 roster（不绑定教师）。
+     * 可选 classId 过滤（按 teaching_class.id）。
+     */
+    @Select({
+            "<script>",
+            "SELECT",
+            "  CAST(MIN(tc.id) AS SIGNED) AS classId,",
+            "  sp.student_no AS studentId,",
+            "  sp.real_name AS studentName,",
+            "  COALESCE(NULLIF(TRIM(student_user.username), ''), sp.student_no) AS studentUsername,",
+            "  MIN(tc.name) AS className",
+            "FROM class_member cm",
+            "JOIN student_profile sp",
+            "  ON sp.id = cm.student_id",
+            " AND sp.status != 'DELETED'",
+            "JOIN teaching_class tc ON tc.id = cm.class_id",
+            "LEFT JOIN tap_user student_user ON student_user.id = sp.user_id",
+            "WHERE cm.member_status = 'ACTIVE'",
+            "  <if test='classId != null'>",
+            "    AND tc.id = #{classId}",
+            "  </if>",
+            "GROUP BY sp.id, sp.student_no, sp.real_name, COALESCE(NULLIF(TRIM(student_user.username), ''), sp.student_no)",
+            "ORDER BY className, sp.student_no",
+            "</script>"
+    })
+    List<TeacherStudentAssignmentRow> findAllStudentRosterForAdmin(
+            @Param("classId") Long classId
+    );
+
+    @Select({
+            "<script>",
+            "SELECT",
+            "  CAST(tc.id AS SIGNED) AS classId,",
+            "  sp.student_no AS studentId,",
+            "  sp.real_name AS studentName,",
+            "  COALESCE(NULLIF(TRIM(student_user.username), ''), sp.student_no) AS studentUsername,",
+            "  tc.name AS className,",
+            "  CAST(ao.id AS SIGNED) AS experimentId,",
+            "  " + EXPERIMENT_NAME_EXPR + " AS experimentName,",
+            "  ao.deadline_at AS deadline,",
+            "  COALESCE(sa.last_submit_at, sa.first_submit_at) AS submitTime,",
+            "  COALESCE(sa.best_total_score, sa.latest_total_score) AS score,",
+            "  sa.submission_status AS submissionStatus,",
+            "  sa.transcript_row_present AS transcriptRowPresent,",
+            "  sa.answer_sheet_count AS answerSheetCount,",
+            "  sa.scored_code_count AS scoredCodeCount,",
+            "  sa.submission_attempt_count AS submissionAttemptCount,",
+            "  sa.completion_evidence AS completionEvidence",
+            "FROM student_assignment sa",
+            "JOIN assignment_offering ao ON ao.id = sa.offering_id",
+            "JOIN assignment_template at ON at.id = ao.template_id",
+            "JOIN teaching_class tc ON tc.id = ao.class_id",
+            "JOIN student_profile sp ON sp.id = sa.student_id",
+            "LEFT JOIN tap_user student_user ON student_user.id = sp.user_id",
+            "WHERE COALESCE(sa.last_submit_at, sa.first_submit_at) IS NOT NULL",
+            "  AND NULLIF(TRIM(COALESCE(sp.real_name, '')), '') IS NOT NULL",
+            "  AND NULLIF(TRIM(COALESCE(tc.name, '')), '') IS NOT NULL",
+            "  AND NULLIF(TRIM(COALESCE(" + EXPERIMENT_NAME_EXPR + ", '')), '') IS NOT NULL",
+            "  <if test='classId != null'>",
+            "    AND ao.class_id = #{classId}",
+            "  </if>",
+            "  <if test='classKeyword != null and classKeyword != \"\"'>",
+            "    AND (",
+            "      " + NORMALIZED_PTA_KEYWORD_EXPR + " COLLATE utf8mb4_unicode_ci = #{classKeyword} COLLATE utf8mb4_unicode_ci",
+            "      OR " + NORMALIZED_CLASS_NAME_EXPR + " COLLATE utf8mb4_unicode_ci = #{classKeyword} COLLATE utf8mb4_unicode_ci",
+            "    )",
+            "  </if>",
+            "  <if test='experimentId != null'>",
+            "    AND ao.id = #{experimentId}",
+            "  </if>",
+            "ORDER BY COALESCE(sa.last_submit_at, sa.first_submit_at) DESC, sa.id DESC",
+            "LIMIT #{limit}",
+            "</script>"
+    })
+    List<TeacherStudentAssignmentRow> findRecentSubmittedAssignmentsForAdmin(
+            @Param("classId") Long classId,
+            @Param("classKeyword") String classKeyword,
+            @Param("experimentId") Integer experimentId,
+            @Param("scope") String scope,
+            @Param("limit") Integer limit
+    );
+
+    /**
+     * 管理员视角：全量取 assignment_offering 实验列表（不绑定教师）。
+     * 可选 classId 过滤与 classKeyword（pta_keyword/name）匹配。
+     */
+    @Select({
+            "<script>",
+            "SELECT",
+            "  CAST(ao.id AS SIGNED) AS experimentId,",
+            "  " + EXPERIMENT_NAME_EXPR + " AS name,",
+            "  ao.deadline_at AS deadline,",
+            "  ao.created_at AS createdTime",
+            "FROM assignment_offering ao",
+            "JOIN assignment_template at ON at.id = ao.template_id",
+            "JOIN teaching_class tc ON tc.id = ao.class_id",
+            "WHERE 1=1",
+            "  <if test='classId != null'>",
+            "    AND ao.class_id = #{classId}",
+            "  </if>",
+            "  <if test='classKeyword != null and classKeyword != \"\"'>",
+            "    AND (",
+            "      " + NORMALIZED_PTA_KEYWORD_EXPR + " COLLATE utf8mb4_unicode_ci = #{classKeyword} COLLATE utf8mb4_unicode_ci",
+            "      OR " + NORMALIZED_CLASS_NAME_EXPR + " COLLATE utf8mb4_unicode_ci = #{classKeyword} COLLATE utf8mb4_unicode_ci",
+            "    )",
+            "  </if>",
+            "ORDER BY",
+            "  CASE WHEN ao.seq_no IS NULL THEN 1 ELSE 0 END,",
+            "  ao.seq_no,",
+            "  ao.id",
+            "</script>"
+    })
+    List<TeacherExperimentSummaryRow> findAllExperimentsForAdmin(
+            @Param("classId") Long classId,
+            @Param("classKeyword") String classKeyword,
+            @Param("scope") String scope
     );
 
     /**
