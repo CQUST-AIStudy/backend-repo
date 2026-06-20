@@ -215,6 +215,169 @@ class AnnotatedStudentReportServiceTest {
         }
     }
 
+    @Test
+    void renderPdfKeepsMultipleAnnotationsOnSameAnchorWhenNotesDiffer() throws Exception {
+        byte[] source = createSimpleErrorReportPdf(
+                "Experiment result",
+                "The environment is Python 3.10 + OpenCV 4.8 and it supports this edge detection task."
+        );
+
+        AnnotatedStudentReportService.RenderedReport rendered = service.render(
+                "same-anchor.pdf",
+                source,
+                "测试学生",
+                new BigDecimal("85"),
+                "整体完成较好。",
+                List.of(),
+                "张老师",
+                List.of(
+                        new AnnotatedStudentReportService.AnnotationEntry(
+                                "ev-1", "CHECK", "clear environment version", "Python 3.10 + OpenCV 4.8", false),
+                        new AnnotatedStudentReportService.AnnotationEntry(
+                                "ev-2", "WAVE", "explain why these libraries were chosen", "Python 3.10 + OpenCV 4.8", true)
+                )
+        );
+
+        try (PDDocument pdf = PDDocument.load(rendered.bytes())) {
+            String text = new PDFTextStripper().getText(pdf);
+            assertTrue(text.contains("clear environment version"));
+            assertTrue(text.contains("explain why these libraries were chosen"));
+        }
+    }
+
+    @Test
+    void renderPdfFindsAnchorWithSmallTextDifferences() throws Exception {
+        byte[] source = createSimpleErrorReportPdf(
+                "Experiment result",
+                "The student writes that Sobel is a second order derivative operator, which is inaccurate."
+        );
+
+        AnnotatedStudentReportService.RenderedReport rendered = service.render(
+                "fuzzy-anchor.pdf",
+                source,
+                "测试学生",
+                new BigDecimal("72"),
+                "原理说明需要修正。",
+                List.of(),
+                "张老师",
+                List.of(new AnnotatedStudentReportService.AnnotationEntry(
+                        "ev-sobel",
+                        "WAVE",
+                        "Sobel 不是二阶导数算子，需要修正原理描述",
+                        "second-order derivative operator",
+                        true
+                ))
+        );
+
+        try (PDDocument pdf = PDDocument.load(rendered.bytes())) {
+            String text = new PDFTextStripper().getText(pdf);
+            assertTrue(text.contains("Sobel"));
+            assertTrue(text.contains("Sobel 不是二阶导数算子"));
+
+            BufferedImage image = new PDFRenderer(pdf).renderImageWithDPI(0, 144);
+            int redPixels = countRedPixels(image, 0.10, 0.95, 0.10, 0.90);
+            assertTrue(redPixels > 120, "Expected visible fuzzy-anchored red annotation pixels, found " + redPixels);
+        }
+    }
+
+    @Test
+    void renderPdfDoesNotAppendSecondReviewWhenSourceAlreadyHasInlineReview() throws Exception {
+        byte[] source = createPdfWithInlineGeneratedReview();
+
+        AnnotatedStudentReportService.RenderedReport rendered = service.render(
+                "already-reviewed.pdf",
+                source,
+                "测试学生",
+                new BigDecimal("82"),
+                "This new teacher review should not be appended again.",
+                List.of("分项批注不应被追加到最终评语页"),
+                "Teacher Wang",
+                List.of()
+        );
+
+        try (PDDocument pdf = PDDocument.load(rendered.bytes())) {
+            String text = new PDFTextStripper().getText(pdf);
+            assertEquals(1, countOccurrences(text, "Teacher Review"));
+            assertFalse(text.contains("This new teacher review should not be appended again."));
+            assertFalse(text.contains("Teacher Wang"));
+            assertFalse(text.contains("分项批注"));
+        }
+    }
+
+    @Test
+    void generateErrorReportFixtureForManualAcceptance() throws Exception {
+        byte[] source = createSimpleErrorReportPdf(
+                "Experiment result",
+                List.of(
+                        "The environment is Python 3.10 + OpenCV 4.8 and it supports this edge detection task.",
+                        "The student writes that Sobel is a second-order derivative operator, which is inaccurate.",
+                        "The image path is hard-coded as C:/data/image.jpg, so the experiment is not reproducible.",
+                        "The conclusion says the accuracy reaches 100 percent without showing validation evidence."
+                )
+        );
+
+        Path artifactsDir = Path.of("target", "test-artifacts");
+        Files.createDirectories(artifactsDir);
+        Path sourcePdf = artifactsDir.resolve("annotation-positioning-error-report.pdf");
+        Files.write(sourcePdf, source);
+
+        AnnotatedStudentReportService.RenderedReport rendered = service.render(
+                "annotation-positioning-error-report.pdf",
+                source,
+                "验收学生",
+                new BigDecimal("72"),
+                "报告能够覆盖基本实验步骤，但对关键原理和结果证据的说明还不够充分。建议补充算子原理、路径配置说明和验证数据，让结论能被复现和核查。",
+                List.of("Sobel 算子原理表述不准确", "实验路径硬编码影响复现", "准确率结论缺少验证证据"),
+                "张老师",
+                List.of(
+                        new AnnotatedStudentReportService.AnnotationEntry(
+                                "ev-ok", "CHECK", "环境版本写得比较清楚", "Python 3.10 + OpenCV 4.8", false),
+                        new AnnotatedStudentReportService.AnnotationEntry(
+                                "ev-sobel", "WAVE", "Sobel 不是二阶导数算子，需要修正原理描述", "second-order derivative operator", true),
+                        new AnnotatedStudentReportService.AnnotationEntry(
+                                "ev-path", "CROSS", "硬编码本地路径会影响他人复现实验", "C:/data/image.jpg", false),
+                        new AnnotatedStudentReportService.AnnotationEntry(
+                                "ev-accuracy", "WAVE", "100 percent accuracy 需要给出验证集或测试依据", "accuracy reaches 100 percent", true)
+                )
+        );
+
+        Path annotatedPdf = artifactsDir.resolve("annotation-positioning-error-report-annotated.pdf");
+        Files.write(annotatedPdf, rendered.bytes());
+
+        try (PDDocument pdf = PDDocument.load(rendered.bytes())) {
+            String text = new PDFTextStripper().getText(pdf);
+            assertTrue(text.contains("Sobel"));
+            assertTrue(text.contains("硬编码本地路径"));
+            assertTrue(text.contains("100 percent accuracy"));
+            PDFRenderer renderer = new PDFRenderer(pdf);
+            ImageIO.write(renderer.renderImageWithDPI(0, 144), "png",
+                    artifactsDir.resolve("annotation-positioning-error-report-annotated-page-1.png").toFile());
+        }
+    }
+
+    @Test
+    void renderPdfRemovesTrailingGeneratedReviewBeforeAddingNewOne() throws Exception {
+        byte[] source = createPdfWithTrailingGeneratedReviewPage();
+
+        AnnotatedStudentReportService.RenderedReport rendered = service.render(
+                "old-annotated.pdf",
+                source,
+                "测试学生",
+                new BigDecimal("78"),
+                "This is the only current teacher review.",
+                List.of(),
+                "Teacher Zhang",
+                List.of()
+        );
+
+        try (PDDocument pdf = PDDocument.load(rendered.bytes())) {
+            String text = new PDFTextStripper().getText(pdf);
+            assertEquals(1, countOccurrences(text, "This is the only current teacher review."));
+            assertEquals(1, countOccurrences(text, "Teacher Zhang"));
+            assertFalse(text.contains("Old generated review should be removed."));
+        }
+    }
+
     private Path findRealPdfSample() throws Exception {
         List<Path> roots = List.of(
                 Path.of("G:\\myapps"),
@@ -237,6 +400,126 @@ class AnnotatedStudentReportServiceTest {
             }
         }
         return null;
+    }
+
+    private byte[] createSimpleErrorReportPdf(String heading, String bodyLine) throws Exception {
+        return createSimpleErrorReportPdf(heading, List.of(bodyLine));
+    }
+
+    private byte[] createSimpleErrorReportPdf(String heading, List<String> bodyLines) throws Exception {
+        try (PDDocument document = new PDDocument(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            PDPage page = new PDPage();
+            document.addPage(page);
+            try (PDPageContentStream stream = new PDPageContentStream(document, page)) {
+                stream.beginText();
+                stream.setFont(PDType1Font.HELVETICA_BOLD, 14);
+                stream.newLineAtOffset(72, 720);
+                stream.showText("Chongqing University of Science and Technology");
+                stream.endText();
+
+                stream.beginText();
+                stream.setFont(PDType1Font.HELVETICA_BOLD, 13);
+                stream.newLineAtOffset(72, 660);
+                stream.showText(heading);
+                stream.endText();
+
+                float y = 625;
+                for (String bodyLine : bodyLines) {
+                    stream.beginText();
+                    stream.setFont(PDType1Font.HELVETICA, 11);
+                    stream.newLineAtOffset(72, y);
+                    stream.showText(bodyLine);
+                    stream.endText();
+                    y -= 26;
+                }
+            }
+            document.save(output);
+            return output.toByteArray();
+        }
+    }
+
+    private byte[] createPdfWithTrailingGeneratedReviewPage() throws Exception {
+        try (PDDocument document = new PDDocument(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            PDPage reportPage = new PDPage();
+            document.addPage(reportPage);
+            try (PDPageContentStream stream = new PDPageContentStream(document, reportPage)) {
+                stream.beginText();
+                stream.setFont(PDType1Font.HELVETICA_BOLD, 14);
+                stream.newLineAtOffset(72, 720);
+                stream.showText("Experiment result");
+                stream.endText();
+
+                stream.beginText();
+                stream.setFont(PDType1Font.HELVETICA, 11);
+                stream.newLineAtOffset(72, 680);
+                stream.showText("The experiment implements a basic image preprocessing workflow.");
+                stream.endText();
+            }
+
+            PDPage oldReviewPage = new PDPage();
+            document.addPage(oldReviewPage);
+            try (PDPageContentStream stream = new PDPageContentStream(document, oldReviewPage)) {
+                stream.beginText();
+                stream.setFont(PDType1Font.HELVETICA_BOLD, 16);
+                stream.newLineAtOffset(72, 720);
+                stream.showText("Teacher Review");
+                stream.endText();
+
+                stream.beginText();
+                stream.setFont(PDType1Font.HELVETICA, 11);
+                stream.newLineAtOffset(72, 680);
+                stream.showText("Old generated review should be removed.");
+                stream.endText();
+
+                stream.beginText();
+                stream.setFont(PDType1Font.HELVETICA, 12);
+                stream.newLineAtOffset(430, 620);
+                stream.showText("Teacher Zhang");
+                stream.endText();
+            }
+            document.save(output);
+            return output.toByteArray();
+        }
+    }
+
+    private byte[] createPdfWithInlineGeneratedReview() throws Exception {
+        try (PDDocument document = new PDDocument(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            PDPage page = new PDPage();
+            document.addPage(page);
+            try (PDPageContentStream stream = new PDPageContentStream(document, page)) {
+                stream.beginText();
+                stream.setFont(PDType1Font.HELVETICA_BOLD, 14);
+                stream.newLineAtOffset(72, 720);
+                stream.showText("Experiment result");
+                stream.endText();
+
+                stream.beginText();
+                stream.setFont(PDType1Font.HELVETICA, 11);
+                stream.newLineAtOffset(72, 680);
+                stream.showText("The experiment implements a basic image preprocessing workflow.");
+                stream.endText();
+
+                stream.beginText();
+                stream.setFont(PDType1Font.HELVETICA_BOLD, 16);
+                stream.newLineAtOffset(72, 260);
+                stream.showText("Teacher Review");
+                stream.endText();
+
+                stream.beginText();
+                stream.setFont(PDType1Font.HELVETICA, 11);
+                stream.newLineAtOffset(72, 228);
+                stream.showText("Existing inline review should be kept without duplication.");
+                stream.endText();
+
+                stream.beginText();
+                stream.setFont(PDType1Font.HELVETICA, 12);
+                stream.newLineAtOffset(430, 190);
+                stream.showText("Teacher Zhang");
+                stream.endText();
+            }
+            document.save(output);
+            return output.toByteArray();
+        }
     }
 
     private int countRedPixels(BufferedImage image,

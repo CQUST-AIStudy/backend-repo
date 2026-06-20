@@ -627,24 +627,34 @@ public class AnnotatedStudentReportService {
                 document.addPage(new PDPage(PDRectangle.A4));
             }
 
+            removeTrailingGeneratedReviewPages(document);
+
             List<PDPage> pages = new ArrayList<>();
             document.getPages().forEach(pages::add);
 
             // 1) Prefer the report table cell instead of a decorative corner score.
             drawPdfScoreInReport(document, pages, fontSelection, totalScore);
 
+            boolean hasPreciseAnnotations = annotations != null && !annotations.isEmpty();
+
             // 2) AI-driven inline annotations (new real-correction path)
-            if (annotations != null && !annotations.isEmpty()) {
+            if (hasPreciseAnnotations) {
                 drawPdfAnnotationMarks(document, pages, fontSelection, annotations);
             }
 
-            // 3) Draw content-aware marks: checks on solid paragraphs, crosses +
-            //    margin annotations on weak dimensions (anchored to real text lines)
-            drawPdfContentMarks(document, pages, fontSelection, dimensionComments, random);
+            // 3) Legacy fallback for old grading results that do not carry exact
+            // anchors.  When AI annotations are present, do not add random
+            // content-aware marks on top of them; otherwise cover pages and
+            // metadata fields can receive misleading check marks.
+            if (!hasPreciseAnnotations) {
+                drawPdfContentMarks(document, pages, fontSelection, dimensionComments, random);
+            }
 
             // 3) Draw review on last page
-            drawPdfReviewOnLastPage(document, pages.get(pages.size() - 1), fontSelection,
-                    teacherComment, dimensionComments, teacherSignature);
+            if (!documentContainsGeneratedReview(document)) {
+                drawPdfReviewOnLastPage(document, pages.get(pages.size() - 1), fontSelection,
+                        teacherComment, dimensionComments, teacherSignature);
+            }
 
             document.save(outputStream);
             return new RenderedReport(FILE_TYPE_ANNOTATED_PDF, ".pdf", "application/pdf", outputStream.toByteArray());
@@ -687,6 +697,43 @@ public class AnnotatedStudentReportService {
             stream.lineTo(x + textWidth, y - 3f);
             stream.stroke();
         }
+    }
+
+    private void removeTrailingGeneratedReviewPages(PDDocument document) throws IOException {
+        if (document.getNumberOfPages() <= 1) {
+            return;
+        }
+        PDFTextStripper stripper = new PDFTextStripper();
+        for (int pageIndex = document.getNumberOfPages() - 1; pageIndex >= 1; pageIndex--) {
+            stripper.setStartPage(pageIndex + 1);
+            stripper.setEndPage(pageIndex + 1);
+            String text = normalizePdfText(stripper.getText(document));
+            if (!isGeneratedReviewPageText(text)) {
+                break;
+            }
+            document.removePage(pageIndex);
+        }
+    }
+
+    private boolean isGeneratedReviewPageText(String normalizedText) {
+        if (normalizedText == null || normalizedText.isBlank()) {
+            return false;
+        }
+        String compact = normalizedText.replace(" ", "");
+        return normalizedText.contains("teacher review")
+                || compact.contains("教师评语");
+    }
+
+    private boolean documentContainsGeneratedReview(PDDocument document) throws IOException {
+        PDFTextStripper stripper = new PDFTextStripper();
+        for (int pageIndex = 0; pageIndex < document.getNumberOfPages(); pageIndex++) {
+            stripper.setStartPage(pageIndex + 1);
+            stripper.setEndPage(pageIndex + 1);
+            if (isGeneratedReviewPageText(normalizePdfText(stripper.getText(document)))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean drawPdfScoreInExperimentScoreCell(PDDocument document,
@@ -795,7 +842,7 @@ public class AnnotatedStudentReportService {
 
             boolean isCross = crossAnchors.contains(anchorIdx);
             float size = isCross ? 38f + random.nextInt(12) : 58f + random.nextInt(18);
-            float markX = Math.min(line.endX() + 14f + size * 0.5f, box.getUpperRightX() - size * 0.7f - 8f);
+            float markX = Math.min(line.endX() + 14f + size * 0.5f, box.getUpperRightX() - size * 0.92f - 16f);
             float markY = line.baselineY() + size * 0.12f;
             float angle = (float) Math.toRadians(-18 + random.nextInt(36));
 
@@ -814,7 +861,7 @@ public class AnnotatedStudentReportService {
                     }
                 }
                 if (note != null && !note.isBlank()) {
-                    drawPdfMarginNote(stream, fontSelection, box, line, markX + size * 0.8f, note);
+                    drawPdfMarginNote(stream, fontSelection, box, line, markX + size * 0.8f, note, 0f);
                 }
             }
         }
@@ -824,16 +871,19 @@ public class AnnotatedStudentReportService {
                                         List<PDPage> pages,
                                         FontSelection fontSelection,
                                         List<AnnotationEntry> annotations) throws IOException {
-        Set<String> usedAnchors = new HashSet<>();
+        Set<String> usedAnnotations = new HashSet<>();
+        Map<String, Integer> anchorNoteUsage = new HashMap<>();
         Map<Integer, Float> bodyStartByPage = findBodyStartYByPage(collectPdfLines(document));
         for (AnnotationEntry ann : annotations) {
             if (ann.anchorText() == null || ann.anchorText().isBlank()) {
                 continue;
             }
-            if (usedAnchors.contains(ann.anchorText())) {
+            String dedupeKey = normalizePdfText(ann.anchorText()) + "|" + safeText(ann.type()).toUpperCase(Locale.ROOT)
+                    + "|" + normalizePdfText(ann.note());
+            if (usedAnnotations.contains(dedupeKey)) {
                 continue;
             }
-            usedAnchors.add(ann.anchorText());
+            usedAnnotations.add(dedupeKey);
 
             TextAnchor anchor = findPdfAnchorContaining(document, ann.anchorText());
             if (anchor == null || anchor.pageIndex() < 0 || anchor.pageIndex() >= pages.size()) {
@@ -847,7 +897,9 @@ public class AnnotatedStudentReportService {
             PDPage page = pages.get(anchor.pageIndex());
             PDRectangle box = visibleBox(page);
             String type = safeText(ann.type()).toUpperCase(Locale.ROOT);
-            float size = "CROSS".equals(type) ? 42f : 58f;
+            String anchorKey = normalizePdfText(ann.anchorText());
+            int noteOffsetIndex = anchorNoteUsage.merge(anchorKey, 1, Integer::sum) - 1;
+            float size = "CROSS".equals(type) ? 42f : 87f;
             float markX;
             float markY;
             if ("CROSS".equals(type)) {
@@ -855,7 +907,7 @@ public class AnnotatedStudentReportService {
                 markY = anchor.baselineY() + anchor.fontSize() * 0.8f + size * 0.1f;
                 if (markY + size * 0.6f > box.getUpperRightY() - 16f) {
                     markX = anchor.endX() + size * 0.4f;
-                    markY = anchor.baselineY() + size * 0.1f;
+                    markY = anchor.baselineY() + anchor.fontSize() + size * 0.5f;
                 }
                 if (markX + size * 0.6f > box.getUpperRightX() - 16f) {
                     markX = anchor.startX() - size * 0.4f;
@@ -864,7 +916,7 @@ public class AnnotatedStudentReportService {
                     markX = Math.min(anchor.endX() + size * 0.4f, box.getUpperRightX() - 16f - size * 0.6f);
                 }
             } else {
-                markX = Math.min(containingLine.endX() + 14f + size * 0.5f, box.getUpperRightX() - size * 0.7f - 8f);
+                markX = Math.min(containingLine.endX() + 14f + size * 0.5f, box.getUpperRightX() - size * 0.92f - 16f);
                 markY = containingLine.baselineY() + size * 0.12f;
             }
             float angle = (float) Math.toRadians(-18 + (ann.anchorText().hashCode() % 36));
@@ -882,7 +934,8 @@ public class AnnotatedStudentReportService {
                     default -> drawPdfCheckStroke(stream, markX, markY, size, angle);
                 }
                 if (ann.note() != null && !ann.note().isBlank()) {
-                    drawPdfMarginNote(stream, fontSelection, box, containingLine, anchor.endX() + 8f, ann.note());
+                    drawPdfMarginNote(stream, fontSelection, box, containingLine,
+                            anchor.endX() + 8f, ann.note(), noteOffsetIndex * 16f);
                 }
             }
         }
@@ -993,14 +1046,25 @@ public class AnnotatedStudentReportService {
                                    PDRectangle box,
                                    TextLine line,
                                    float preferredX,
-                                   String note) throws IOException {
+                                   String note,
+                                   float verticalOffset) throws IOException {
         if (!fontSelection.supportsChinese() && note.codePoints().anyMatch(cp -> cp > 0x024F)) {
             return;
         }
-        String[] lines = safeText(note).split("\\r?\\n");
         float fontSize = 10.5f;
         float lineHeight = fontSize + 2f;
         float rightLimit = box.getUpperRightX() - 16f;
+        float noteMaxWidth = Math.min(210f, box.getWidth() - 48f);
+        List<String> noteLines = new ArrayList<>();
+        for (String paragraph : safeText(note).split("\\r?\\n")) {
+            List<String> wrapped = wrapPdfText(fontSelection, paragraph, fontSize, noteMaxWidth);
+            if (wrapped.isEmpty()) {
+                noteLines.add(paragraph);
+            } else {
+                noteLines.addAll(wrapped);
+            }
+        }
+        String[] lines = noteLines.toArray(String[]::new);
         float maxWidth = 0f;
         for (String single : lines) {
             maxWidth = Math.max(maxWidth, measurePdfTextWidth(fontSelection, single, fontSize));
@@ -1009,14 +1073,20 @@ public class AnnotatedStudentReportService {
 
         float startX;
         float startY;
-        boolean fitsRight = preferredX + 6f + maxWidth <= rightLimit;
+        float rightOfLineX = Math.max(preferredX + 6f, line.endX() + 12f);
+        boolean fitsRight = rightOfLineX + maxWidth + 24f <= rightLimit;
         if (fitsRight) {
-            startX = preferredX + 6f;
-            startY = line.baselineY();
+            startX = rightOfLineX;
+            startY = Math.min(line.baselineY() + verticalOffset, box.getUpperRightY() - 24f);
         } else {
-            // Fall back: right-aligned in the gap above the line
+            // Fall back: right-aligned in the gap above the line, with enough
+            // vertical clearance to avoid covering the original text.
             startX = Math.max(box.getLowerLeftX() + 16f, rightLimit - maxWidth);
-            startY = line.baselineY() + Math.max(line.fontSize(), 9f) + 4f + (lines.length - 1) * lineHeight;
+            startY = Math.min(
+                    line.baselineY() + Math.max(line.fontSize(), 9f) + 10f + verticalOffset
+                            + (lines.length - 1) * lineHeight,
+                    box.getUpperRightY() - 24f
+            );
         }
 
         for (int i = 0; i < lines.length; i++) {
@@ -1651,10 +1721,18 @@ public class AnnotatedStudentReportService {
         for (int i = 0; i < value.length(); i++) {
             char ch = value.charAt(i);
             if (Character.isWhitespace(ch)) {
+                if (normalized.length() > 0 && normalized.charAt(normalized.length() - 1) != ' ') {
+                    normalized.append(' ');
+                    indexMap.add(i);
+                }
                 continue;
             }
             normalized.append(normalizePdfChar(ch));
             indexMap.add(i);
+        }
+        while (normalized.length() > 0 && normalized.charAt(normalized.length() - 1) == ' ') {
+            normalized.deleteCharAt(normalized.length() - 1);
+            indexMap.remove(indexMap.size() - 1);
         }
         int[] originalIndices = new int[indexMap.size()];
         for (int i = 0; i < indexMap.size(); i++) {
@@ -1792,12 +1870,19 @@ public class AnnotatedStudentReportService {
             }
             NormalizedTextMap lineMap = normalizePdfTextWithIndexMap(text);
             String normalizedAnchor = normalizePdfText(anchorText);
+            if (normalizedAnchor.isBlank()) {
+                return;
+            }
             int normalizedIdx = lineMap.normalized().indexOf(normalizedAnchor);
-            if (normalizedIdx < 0 || normalizedAnchor.isBlank()) {
+            if (normalizedIdx < 0) {
+                normalizedIdx = findFuzzyAnchorStart(lineMap.normalized(), normalizedAnchor);
+            }
+            if (normalizedIdx < 0) {
                 return;
             }
             int originalStart = lineMap.originalIndexAt(normalizedIdx);
-            int originalEnd = lineMap.originalIndexAt(normalizedIdx + normalizedAnchor.length() - 1);
+            int originalEnd = lineMap.originalIndexAt(Math.min(lineMap.normalized().length() - 1,
+                    normalizedIdx + normalizedAnchor.length() - 1));
             TextPosition first = positions.get(Math.min(originalStart, positions.size() - 1));
             TextPosition last = positions.get(Math.min(originalEnd, positions.size() - 1));
             TextPosition lineFirst = positions.get(0);
@@ -1824,6 +1909,52 @@ public class AnnotatedStudentReportService {
 
         private TextAnchor anchor() {
             return anchor;
+        }
+
+        private static int findFuzzyAnchorStart(String line, String anchor) {
+            if (line == null || anchor == null || anchor.length() < 6 || line.length() < Math.max(4, anchor.length() - 3)) {
+                return -1;
+            }
+            int bestStart = -1;
+            double bestScore = 0d;
+            int minLen = Math.max(4, anchor.length() - 3);
+            int maxLen = Math.min(line.length(), anchor.length() + 3);
+            for (int windowLen = minLen; windowLen <= maxLen; windowLen++) {
+                for (int start = 0; start + windowLen <= line.length(); start++) {
+                    String window = line.substring(start, start + windowLen);
+                    double score = similarity(window, anchor);
+                    if (score > bestScore) {
+                        bestScore = score;
+                        bestStart = start;
+                    }
+                }
+            }
+            return bestScore >= 0.82d ? bestStart : -1;
+        }
+
+        private static double similarity(String left, String right) {
+            int distance = levenshtein(left, right);
+            int max = Math.max(left.length(), right.length());
+            return max == 0 ? 1d : 1d - (distance / (double) max);
+        }
+
+        private static int levenshtein(String left, String right) {
+            int[] prev = new int[right.length() + 1];
+            int[] curr = new int[right.length() + 1];
+            for (int j = 0; j <= right.length(); j++) {
+                prev[j] = j;
+            }
+            for (int i = 1; i <= left.length(); i++) {
+                curr[0] = i;
+                for (int j = 1; j <= right.length(); j++) {
+                    int cost = left.charAt(i - 1) == right.charAt(j - 1) ? 0 : 1;
+                    curr[j] = Math.min(Math.min(curr[j - 1] + 1, prev[j] + 1), prev[j - 1] + cost);
+                }
+                int[] tmp = prev;
+                prev = curr;
+                curr = tmp;
+            }
+            return prev[right.length()];
         }
     }
 
