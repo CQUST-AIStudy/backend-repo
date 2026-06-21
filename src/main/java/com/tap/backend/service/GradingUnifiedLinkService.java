@@ -2,6 +2,8 @@ package com.tap.backend.service;
 
 import com.tap.backend.domain.grading.GradingSubmissionEntity;
 import com.tap.backend.domain.grading.GradingTaskEntity;
+import com.tap.backend.domain.grading.SubmissionMatchStatus;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.regex.Matcher;
@@ -15,9 +17,162 @@ public class GradingUnifiedLinkService {
     private static final Pattern STUDENT_NO_PATTERN = Pattern.compile("(?<!\\d)(\\d{6,20})(?!\\d)");
 
     private final JdbcTemplate jdbcTemplate;
+    private final GradingFilenameIdentityParser filenameIdentityParser;
 
-    public GradingUnifiedLinkService(JdbcTemplate jdbcTemplate) {
+    public GradingUnifiedLinkService(JdbcTemplate jdbcTemplate,
+                                     GradingFilenameIdentityParser filenameIdentityParser) {
         this.jdbcTemplate = jdbcTemplate;
+        this.filenameIdentityParser = filenameIdentityParser;
+    }
+
+    public MatchDecision resolveSubmissionMatch(GradingTaskEntity task, GradingSubmissionEntity submission) {
+        if (submission == null) {
+            return MatchDecision.unmatched("提交不存在");
+        }
+        List<SubmissionIdentity> roster = listRoster(task);
+        if (!roster.isEmpty()) {
+            if (submission.getStudentId() != null) {
+                List<SubmissionIdentity> byId = roster.stream()
+                        .filter(item -> Objects.equals(item.studentProfileId(), submission.getStudentId()))
+                        .toList();
+                if (byId.size() == 1) {
+                    return MatchDecision.confirmed(byId.get(0), "已按学生主键匹配");
+                }
+            }
+
+            GradingFilenameIdentityParser.FilenameIdentity parsed =
+                    filenameIdentityParser.parse(submission.getOriginalFilename());
+            String studentNo = firstNonBlank(parsed.studentNo(), submission.getStudentNo());
+            if (studentNo != null) {
+                List<SubmissionIdentity> byNumber = roster.stream()
+                        .filter(item -> Objects.equals(normalizeStudentNo(studentNo), normalizeStudentNo(item.studentNo())))
+                        .toList();
+                if (byNumber.size() == 1) {
+                    return MatchDecision.confirmed(byNumber.get(0), "已按文件名学号匹配");
+                }
+            }
+
+            String studentName = firstNonBlank(parsed.studentName(), normalizeFilenameBackedName(submission));
+            if (studentName != null) {
+                List<SubmissionIdentity> byName = roster.stream()
+                        .filter(item -> Objects.equals(normalizeText(studentName), normalizeText(item.studentName())))
+                        .toList();
+                if (byName.size() == 1) {
+                    return MatchDecision.confirmed(byName.get(0), "已按班级内唯一姓名匹配");
+                }
+                if (byName.size() > 1) {
+                    return new MatchDecision(SubmissionMatchStatus.AMBIGUOUS, null, byName, "班级内存在重名学生");
+                }
+            }
+            return MatchDecision.unmatched("文件名未能匹配当前教学班学生");
+        }
+
+        SubmissionIdentity legacyIdentity = resolveSubmissionIdentity(task, submission);
+        return legacyIdentity == null
+                ? MatchDecision.unmatched("任务未关联可用班级花名册")
+                : MatchDecision.confirmed(legacyIdentity, "已通过兼容身份链路匹配");
+    }
+
+    public List<SubmissionIdentity> listRoster(GradingTaskEntity task) {
+        if (task == null) {
+            return List.of();
+        }
+        Long offeringId = task.getAssignmentOfferingId();
+        Long classId = task.getClassId();
+        if (offeringId == null && classId == null) {
+            Long teacherId = task.getTeacherId();
+            if (teacherId == null && task.getTeacher() != null) {
+                teacherId = task.getTeacher().getId();
+            }
+            classId = findSoleOwnedClassId(teacherId);
+        }
+        String sql;
+        Object id;
+        if (offeringId != null) {
+            sql = """
+                    SELECT DISTINCT sp.id, sp.student_no, sp.real_name, tc.name AS class_name, tu.username
+                    FROM assignment_offering ao
+                    JOIN teaching_class tc ON tc.id = ao.class_id
+                    JOIN class_member cm ON cm.class_id = ao.class_id AND cm.member_status = 'ACTIVE'
+                    JOIN student_profile sp ON sp.id = cm.student_id
+                    LEFT JOIN tap_user tu ON tu.id = sp.user_id
+                    WHERE ao.id = ?
+                    ORDER BY sp.student_no, sp.id
+                    """;
+            id = offeringId;
+        } else if (classId != null) {
+            return loadRosterByClassId(classId);
+        } else {
+            return List.of();
+        }
+        return jdbcTemplate.query(sql, (rs, rowNum) -> new SubmissionIdentity(
+                rs.getLong("id"),
+                normalizeStudentNo(rs.getString("student_no")),
+                normalizeText(rs.getString("real_name")),
+                normalizeText(rs.getString("class_name")),
+                normalizeText(rs.getString("username")),
+                parseLegacyStudentId(normalizeStudentNo(rs.getString("student_no")))
+        ), id);
+    }
+
+    public Long resolveEffectiveClassId(Long requestedClassId, Long teacherId) {
+        return requestedClassId != null ? requestedClassId : findSoleOwnedClassId(teacherId);
+    }
+
+    protected Long findSoleOwnedClassId(Long teacherId) {
+        if (teacherId == null) {
+            return null;
+        }
+        List<Long> classIds = jdbcTemplate.query(
+                """
+                SELECT id
+                FROM teaching_class
+                WHERE teacher_id = ? AND status = 'ACTIVE'
+                ORDER BY id
+                LIMIT 2
+                """,
+                (rs, rowNum) -> rs.getLong("id"),
+                teacherId
+        );
+        return classIds.size() == 1 ? classIds.get(0) : null;
+    }
+
+    protected List<SubmissionIdentity> loadRosterByClassId(Long classId) {
+        return jdbcTemplate.query(
+                """
+                SELECT DISTINCT sp.id, sp.student_no, sp.real_name, tc.name AS class_name, tu.username
+                FROM teaching_class tc
+                JOIN class_member cm ON cm.class_id = tc.id AND cm.member_status = 'ACTIVE'
+                JOIN student_profile sp ON sp.id = cm.student_id
+                LEFT JOIN tap_user tu ON tu.id = sp.user_id
+                WHERE tc.id = ?
+                ORDER BY sp.student_no, sp.id
+                """,
+                (rs, rowNum) -> new SubmissionIdentity(
+                        rs.getLong("id"),
+                        normalizeStudentNo(rs.getString("student_no")),
+                        normalizeText(rs.getString("real_name")),
+                        normalizeText(rs.getString("class_name")),
+                        normalizeText(rs.getString("username")),
+                        parseLegacyStudentId(normalizeStudentNo(rs.getString("student_no")))
+                ),
+                classId
+        );
+    }
+
+    public SubmissionIdentity requireRosterStudent(GradingTaskEntity task, Long studentProfileId) {
+        return listRoster(task).stream()
+                .filter(item -> Objects.equals(item.studentProfileId(), studentProfileId))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("所选学生不在当前教学班中"));
+    }
+
+    private String normalizeFilenameBackedName(GradingSubmissionEntity submission) {
+        String value = normalizeText(submission.getStudentName());
+        if (value == null || Objects.equals(value, normalizeText(submission.getOriginalFilename()))) {
+            return null;
+        }
+        return value;
     }
 
     public Long resolveAssignmentOfferingId(Long experimentId, Long classId, Long teacherId) {
@@ -345,6 +500,23 @@ public class GradingUnifiedLinkService {
             }
             String normalized = value.trim().replaceAll("\\s+", " ");
             return normalized.isBlank() ? null : normalized;
+        }
+    }
+
+    public record MatchDecision(SubmissionMatchStatus status,
+                                SubmissionIdentity identity,
+                                List<SubmissionIdentity> candidates,
+                                String reason) {
+        public MatchDecision {
+            candidates = candidates == null ? List.of() : List.copyOf(candidates);
+        }
+
+        public static MatchDecision confirmed(SubmissionIdentity identity, String reason) {
+            return new MatchDecision(SubmissionMatchStatus.AUTO_CONFIRMED, identity, List.of(identity), reason);
+        }
+
+        public static MatchDecision unmatched(String reason) {
+            return new MatchDecision(SubmissionMatchStatus.UNMATCHED, null, List.of(), reason);
         }
     }
 }

@@ -27,6 +27,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import javax.imageio.ImageIO;
 import org.apache.fontbox.ttf.TrueTypeCollection;
 import org.apache.fontbox.ttf.TrueTypeFont;
@@ -84,6 +86,8 @@ public class AnnotatedStudentReportService {
     /* 鈹€鈹€ marks 鈹€鈹€ */
     private static final String DOCX_CHECK_MARK = "\u2713";
     private static final String PDF_CHECK_MARK = "V";
+    private static final Pattern QUOTED_ANNOTATION_FRAGMENT = Pattern.compile("['‘“`](.{2,80}?)['’”`]");
+    private static final Pattern BRACKETED_ANNOTATION_FRAGMENT = Pattern.compile("\\[[^\\]\\r\\n]{2,80}]");
     private static final byte[] PDF_MAGIC = {0x25, 0x50, 0x44, 0x46};
     private static final List<String> SCORE_KEYWORDS = List.of(
             "\u5f97\u5206",
@@ -635,18 +639,22 @@ public class AnnotatedStudentReportService {
             // 1) Prefer the report table cell instead of a decorative corner score.
             drawPdfScoreInReport(document, pages, fontSelection, totalScore);
 
-            boolean hasPreciseAnnotations = annotations != null && !annotations.isEmpty();
+            int renderedAnnotationCount = drawPdfAnnotationMarks(
+                    document, pages, fontSelection, annotations == null ? List.of() : annotations);
 
-            // 2) AI-driven inline annotations (new real-correction path)
-            if (hasPreciseAnnotations) {
-                drawPdfAnnotationMarks(document, pages, fontSelection, annotations);
+            // Older workers may return scores and detailed comments without the
+            // structured annotations field. Recover only text fragments that
+            // really occur in the report, so the fallback stays deterministic.
+            if (renderedAnnotationCount < 2) {
+                List<AnnotationEntry> derivedAnnotations = derivePdfAnnotationsFromComments(
+                        document, dimensionComments, annotations);
+                renderedAnnotationCount += drawPdfAnnotationMarks(
+                        document, pages, fontSelection, derivedAnnotations);
             }
 
-            // 3) Legacy fallback for old grading results that do not carry exact
-            // anchors.  When AI annotations are present, do not add random
-            // content-aware marks on top of them; otherwise cover pages and
-            // metadata fields can receive misleading check marks.
-            if (!hasPreciseAnnotations) {
+            // Keep the legacy visual fallback only for historical reports that
+            // contain neither usable anchors nor concrete quoted evidence.
+            if (renderedAnnotationCount == 0) {
                 drawPdfContentMarks(document, pages, fontSelection, dimensionComments, random);
             }
 
@@ -867,13 +875,14 @@ public class AnnotatedStudentReportService {
         }
     }
 
-    private void drawPdfAnnotationMarks(PDDocument document,
-                                        List<PDPage> pages,
-                                        FontSelection fontSelection,
-                                        List<AnnotationEntry> annotations) throws IOException {
+    private int drawPdfAnnotationMarks(PDDocument document,
+                                       List<PDPage> pages,
+                                       FontSelection fontSelection,
+                                       List<AnnotationEntry> annotations) throws IOException {
         Set<String> usedAnnotations = new HashSet<>();
         Map<String, Integer> anchorNoteUsage = new HashMap<>();
         Map<Integer, Float> bodyStartByPage = findBodyStartYByPage(collectPdfLines(document));
+        int renderedCount = 0;
         for (AnnotationEntry ann : annotations) {
             if (ann.anchorText() == null || ann.anchorText().isBlank()) {
                 continue;
@@ -890,7 +899,8 @@ public class AnnotatedStudentReportService {
                 continue;
             }
             TextLine containingLine = anchor.containingLine();
-            if (!isWithinReportBody(containingLine, bodyStartByPage) || !isLikelyAnnotationTarget(containingLine, pages.size())) {
+            if (!isWithinReportBody(containingLine, bodyStartByPage)
+                    || !isReliablePreciseAnnotationTarget(containingLine, pages.size())) {
                 continue;
             }
 
@@ -938,13 +948,107 @@ public class AnnotatedStudentReportService {
                             anchor.endX() + 8f, ann.note(), noteOffsetIndex * 16f);
                 }
             }
+            renderedCount++;
         }
+        return renderedCount;
+    }
+
+    private List<AnnotationEntry> derivePdfAnnotationsFromComments(PDDocument document,
+                                                                    List<String> comments,
+                                                                    List<AnnotationEntry> explicitAnnotations)
+            throws IOException {
+        Set<String> explicitAnchors = new HashSet<>();
+        for (AnnotationEntry annotation : explicitAnnotations == null ? List.<AnnotationEntry>of() : explicitAnnotations) {
+            explicitAnchors.add(normalizePdfText(annotation.anchorText()));
+        }
+
+        List<AnnotationEntry> derived = new ArrayList<>();
+        Set<String> usedAnchors = new HashSet<>();
+        for (String comment : comments == null ? List.<String>of() : comments) {
+            String value = safeText(comment).trim();
+            if (value.isBlank()) {
+                continue;
+            }
+            List<String> fragments = new ArrayList<>();
+            Matcher quoted = QUOTED_ANNOTATION_FRAGMENT.matcher(value);
+            while (quoted.find()) {
+                fragments.add(quoted.group(1).trim());
+            }
+            Matcher bracketed = BRACKETED_ANNOTATION_FRAGMENT.matcher(value);
+            while (bracketed.find()) {
+                fragments.add(bracketed.group().trim());
+            }
+
+            for (String fragment : fragments) {
+                String normalized = normalizePdfText(fragment);
+                if (normalized.length() < 2 || explicitAnchors.contains(normalized) || !usedAnchors.add(normalized)) {
+                    continue;
+                }
+                if (findPdfAnchorContaining(document, fragment) == null) {
+                    continue;
+                }
+                String clause = annotationClause(value, fragment);
+                boolean positive = containsAny(clause, "正确", "预期", "清楚", "完整", "合理")
+                        && !containsAny(clause, "错误", "异常", "越界", "未初始化", "矛盾", "不足", "缺少");
+                boolean severe = containsAny(clause, "错误", "异常", "越界", "未初始化", "崩溃", "终止", "矛盾");
+                String type = positive ? "CHECK" : severe ? "CROSS" : "WAVE";
+                String note = compactAnnotationNote(clause);
+                derived.add(new AnnotationEntry(
+                        "derived-" + derived.size(), type, note, fragment, !positive));
+                if (derived.size() >= 6) {
+                    return derived;
+                }
+            }
+        }
+        return derived;
+    }
+
+    private String annotationClause(String comment, String fragment) {
+        int anchorIndex = comment.indexOf(fragment);
+        if (anchorIndex < 0) {
+            return comment;
+        }
+        int start = anchorIndex;
+        while (start > 0 && "，,；;。\n".indexOf(comment.charAt(start - 1)) < 0) {
+            start--;
+        }
+        int end = anchorIndex + fragment.length();
+        while (end < comment.length() && "，,；;。\n".indexOf(comment.charAt(end)) < 0) {
+            end++;
+        }
+        return comment.substring(start, end).trim();
+    }
+
+    private String compactAnnotationNote(String clause) {
+        String note = safeText(clause)
+                .replace("'", "")
+                .replace("‘", "")
+                .replace("’", "")
+                .replace("“", "")
+                .replace("”", "")
+                .replace("`", "")
+                .trim();
+        return note.length() > 50 ? note.substring(0, 50) : note;
+    }
+
+    private boolean containsAny(String value, String... needles) {
+        for (String needle : needles) {
+            if (value.contains(needle)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private TextAnchor findPdfAnchorContaining(PDDocument document, String anchorText) throws IOException {
-        PdfAnchorLocator locator = new PdfAnchorLocator(anchorText);
-        locator.getText(document);
-        return locator.anchor();
+        PdfAnchorLocator exactLocator = new PdfAnchorLocator(anchorText, false);
+        exactLocator.getText(document);
+        if (exactLocator.anchor() != null) {
+            return exactLocator.anchor();
+        }
+        PdfAnchorLocator fuzzyLocator = new PdfAnchorLocator(anchorText, true);
+        fuzzyLocator.getText(document);
+        return fuzzyLocator.anchor();
     }
 
     /** Strip the "优点：" / "建议：" prefix and trailing punctuation for short margin notes. */
@@ -993,6 +1097,23 @@ public class AnnotatedStudentReportService {
             return false;
         }
         return pageCount <= 1 || line.fontSize() < 28f;
+    }
+
+    private boolean isReliablePreciseAnnotationTarget(TextLine line, int pageCount) {
+        String compact = safeText(line.text()).replaceAll("\\s+", "");
+        if (compact.length() < 2 || isReportBodyHeading(compact)) {
+            return false;
+        }
+        if (pageCount > 1 && line.pageIndex() == 0) {
+            return false;
+        }
+        String lower = compact.toLowerCase(Locale.ROOT);
+        for (String keyword : COVER_OR_METADATA_KEYWORDS) {
+            if (lower.contains(keyword.toLowerCase(Locale.ROOT))) {
+                return false;
+            }
+        }
+        return line.fontSize() < 28f;
     }
 
     private Map<Integer, Float> findBodyStartYByPage(List<TextLine> lines) {
@@ -1856,10 +1977,12 @@ public class AnnotatedStudentReportService {
 
     private static final class PdfAnchorLocator extends PDFTextStripper {
         private final String anchorText;
+        private final boolean fuzzyMatching;
         private TextAnchor anchor;
 
-        private PdfAnchorLocator(String anchorText) throws IOException {
+        private PdfAnchorLocator(String anchorText, boolean fuzzyMatching) throws IOException {
             this.anchorText = anchorText;
+            this.fuzzyMatching = fuzzyMatching;
             setSortByPosition(true);
         }
 
@@ -1874,7 +1997,7 @@ public class AnnotatedStudentReportService {
                 return;
             }
             int normalizedIdx = lineMap.normalized().indexOf(normalizedAnchor);
-            if (normalizedIdx < 0) {
+            if (normalizedIdx < 0 && fuzzyMatching) {
                 normalizedIdx = findFuzzyAnchorStart(lineMap.normalized(), normalizedAnchor);
             }
             if (normalizedIdx < 0) {

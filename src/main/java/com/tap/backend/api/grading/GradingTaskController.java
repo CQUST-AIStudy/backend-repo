@@ -150,6 +150,56 @@ public class GradingTaskController {
         }
     }
 
+    @GetMapping("/{id}/match-candidates")
+    public ResponseEntity<?> matchCandidates(
+            @PathVariable Long id,
+            @AuthenticationPrincipal UserPrincipal principal
+    ) {
+        Long teacherId = teacherPrincipalResolver.requireTeacherId(principal);
+        try {
+            List<Map<String, Object>> candidates = taskService.getMatchCandidates(id, teacherId).stream()
+                    .map(identity -> {
+                        Map<String, Object> item = new LinkedHashMap<>();
+                        item.put("studentId", identity.studentProfileId());
+                        item.put("studentNo", identity.studentNo());
+                        item.put("studentName", identity.studentName());
+                        item.put("className", identity.className());
+                        return item;
+                    }).toList();
+            return ResponseEntity.ok(ApiResponse.of(candidates));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(404).body(Map.of("message", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/{id}/publish-confirmed")
+    public ResponseEntity<?> publishConfirmed(
+            @PathVariable Long id,
+            @AuthenticationPrincipal UserPrincipal principal
+    ) {
+        Long teacherId = teacherPrincipalResolver.requireTeacherId(principal);
+        try {
+            return ResponseEntity.ok(ApiResponse.of(
+                    gradingSubmissionService.publishConfirmedTask(id, teacherId)));
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+        }
+    }
+
+    @DeleteMapping("/{id}/publish")
+    public ResponseEntity<?> revokePublished(
+            @PathVariable Long id,
+            @AuthenticationPrincipal UserPrincipal principal
+    ) {
+        Long teacherId = teacherPrincipalResolver.requireTeacherId(principal);
+        try {
+            return ResponseEntity.ok(ApiResponse.of(
+                    gradingSubmissionService.revokeTaskPublications(id, teacherId)));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+        }
+    }
+
     @PostMapping("/{id}/retry")
     public ResponseEntity<?> retry(
             @PathVariable Long id,
@@ -344,6 +394,10 @@ public class GradingTaskController {
         dto.put("totalScore", submission.getTotalScore());
         dto.put("originalFilename", submission.getOriginalFilename());
         dto.put("finalReviewComment", submission.getFinalReviewComment());
+        dto.put("studentId", submission.getStudentId());
+        dto.put("matchStatus", submission.getMatchStatus() != null ? submission.getMatchStatus().name() : "UNMATCHED");
+        dto.put("published", submission.getPublishedAt() != null);
+        dto.put("publishedAt", submission.getPublishedAt() != null ? submission.getPublishedAt().toString() : null);
         dto.put("hasDownloadableReport", preferredReport != null);
         dto.put("preferredReportFileType", preferredReport != null ? preferredReport.getFileType() : null);
         return dto;

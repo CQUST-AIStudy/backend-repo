@@ -123,8 +123,9 @@ public class GradingTaskService {
         GradingTaskEntity task = new GradingTaskEntity();
         task.setTeacher(teacher);
         task.setExperimentId(experimentId);
-        task.setAssignmentOfferingId(gradingUnifiedLinkService.resolveAssignmentOfferingId(experimentId, classId, teacherId));
-        task.setClassId(classId);
+        Long effectiveClassId = gradingUnifiedLinkService.resolveEffectiveClassId(classId, teacherId);
+        task.setAssignmentOfferingId(gradingUnifiedLinkService.resolveAssignmentOfferingId(experimentId, effectiveClassId, teacherId));
+        task.setClassId(effectiveClassId);
         task.setTeacherSignature(resolveTeacherSignature(teacher, teacherSignature));
         task.setRubric(rubric);
         task.setScoreRangeMin(resolvedScoreRange.min());
@@ -142,7 +143,7 @@ public class GradingTaskService {
         task = taskRepo.save(task);
         if (experimentId != null && task.getAssignmentOfferingId() == null) {
             log.warn("No assignment_offering_id resolved for grading task. experimentId={}, classId={}, teacherId={}",
-                    experimentId, classId, teacherId);
+                    experimentId, effectiveClassId, teacherId);
         }
 
         // Store documents and create submissions
@@ -225,6 +226,12 @@ public class GradingTaskService {
     public List<GradingSubmissionEntity> getTaskSubmissions(Long taskId, Long teacherId) {
         requireOwnedTask(taskId, teacherId);
         return submissionRepo.findAllByTaskId(taskId);
+    }
+
+    @Transactional(readOnly = true)
+    public List<GradingUnifiedLinkService.SubmissionIdentity> getMatchCandidates(Long taskId, Long teacherId) {
+        GradingTaskEntity task = requireOwnedTask(taskId, teacherId);
+        return gradingUnifiedLinkService.listRoster(task);
     }
 
     @Transactional
@@ -565,8 +572,10 @@ public class GradingTaskService {
     }
 
     private void applyUnifiedSubmissionIdentity(GradingTaskEntity task, GradingSubmissionEntity submission) {
-        GradingUnifiedLinkService.SubmissionIdentity identity =
-                gradingUnifiedLinkService.resolveSubmissionIdentity(task, submission);
+        GradingUnifiedLinkService.MatchDecision decision =
+                gradingUnifiedLinkService.resolveSubmissionMatch(task, submission);
+        submission.setMatchStatus(decision.status());
+        GradingUnifiedLinkService.SubmissionIdentity identity = decision.identity();
         if (identity == null) {
             String className = gradingUnifiedLinkService.resolveClassName(
                     task == null ? null : task.getAssignmentOfferingId(),

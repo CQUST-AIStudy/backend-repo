@@ -10,6 +10,7 @@ import java.util.Map;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -106,7 +107,48 @@ public class GradingSubmissionController {
     ) {
         Long teacherId = teacherPrincipalResolver.requireTeacherId(principal);
         try {
-            return ResponseEntity.ok(ApiResponse.of(submissionService.refreshReviewAndAnnotatedReport(id, teacherId)));
+            return ResponseEntity.ok(ApiResponse.of(submissionService.publishToStudentReport(id, teacherId)));
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+        }
+    }
+
+    @PutMapping("/{id}/student-match")
+    public ResponseEntity<?> confirmStudentMatch(
+            @PathVariable Long id,
+            @AuthenticationPrincipal UserPrincipal principal,
+            @RequestBody StudentMatchRequest request
+    ) {
+        Long teacherId = teacherPrincipalResolver.requireTeacherId(principal);
+        try {
+            return ResponseEntity.ok(ApiResponse.of(
+                    submissionService.confirmStudentMatch(id, request.studentId(), teacherId)));
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/{id}/publish")
+    public ResponseEntity<?> publish(
+            @PathVariable Long id,
+            @AuthenticationPrincipal UserPrincipal principal
+    ) {
+        Long teacherId = teacherPrincipalResolver.requireTeacherId(principal);
+        try {
+            return ResponseEntity.ok(ApiResponse.of(submissionService.publishToStudentReport(id, teacherId)));
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+        }
+    }
+
+    @DeleteMapping("/{id}/publish")
+    public ResponseEntity<?> revokePublish(
+            @PathVariable Long id,
+            @AuthenticationPrincipal UserPrincipal principal
+    ) {
+        Long teacherId = teacherPrincipalResolver.requireTeacherId(principal);
+        try {
+            return ResponseEntity.ok(ApiResponse.of(submissionService.revokePublication(id, teacherId)));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
         }
@@ -132,4 +174,6 @@ public class GradingSubmissionController {
             String newComment,
             String reason
     ) {}
+
+    public record StudentMatchRequest(Long studentId) {}
 }

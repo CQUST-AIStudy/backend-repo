@@ -78,6 +78,7 @@ public class GradingSubmissionService {
     private final SubmissionDao submissionDao;
     private final ScoreDao scoreDao;
     private final GradingUnifiedLinkService gradingUnifiedLinkService;
+    private final GradingPublicationPolicy publicationPolicy;
     private final HttpClient httpClient;
 
     public GradingSubmissionService(GradingSubmissionRepository submissionRepo,
@@ -98,7 +99,8 @@ public class GradingSubmissionService {
                                     StudentDao studentDao,
                                     SubmissionDao submissionDao,
                                     ScoreDao scoreDao,
-                                    GradingUnifiedLinkService gradingUnifiedLinkService) {
+                                    GradingUnifiedLinkService gradingUnifiedLinkService,
+                                    GradingPublicationPolicy publicationPolicy) {
         this.submissionRepo = submissionRepo;
         this.taskRepo = taskRepo;
         this.scoreItemRepo = scoreItemRepo;
@@ -118,6 +120,7 @@ public class GradingSubmissionService {
         this.submissionDao = submissionDao;
         this.scoreDao = scoreDao;
         this.gradingUnifiedLinkService = gradingUnifiedLinkService;
+        this.publicationPolicy = publicationPolicy;
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(java.time.Duration.ofSeconds(15))
                 .build();
@@ -141,6 +144,11 @@ public class GradingSubmissionService {
         result.put("status", submission.getStatus().name());
         result.put("totalScore", submission.getTotalScore());
         result.put("finalReviewComment", submission.getFinalReviewComment());
+        result.put("studentId", submission.getStudentId());
+        result.put("matchStatus", submission.getMatchStatus() != null ? submission.getMatchStatus().name() : "UNMATCHED");
+        result.put("publishedAt", submission.getPublishedAt() != null ? submission.getPublishedAt().toString() : null);
+        result.put("publishedBy", submission.getPublishedBy());
+        result.put("published", submission.getPublishedAt() != null);
         result.put("scores", scores.stream().map(this::scoreDto).toList());
         result.put("evidenceBlocks", evidence.stream().map(this::evidenceDto).toList());
         result.put("traces", traces.stream().map(this::traceDto).toList());
@@ -238,6 +246,10 @@ public class GradingSubmissionService {
     @Transactional
     public Map<String, Object> publishToStudentReport(Long submissionId, Long teacherId) {
         GradingSubmissionEntity submission = requireOwnedSubmission(submissionId, teacherId);
+        publicationPolicy.validatePublish(submission, teacherId);
+        if (submission.getPublishedAt() != null) {
+            return publicationResult(submission, true, List.of());
+        }
         resolveSubmissionIdentity(submission, true);
         List<ScoreItemEntity> scores = scoreItemRepo.findAllBySubmissionId(submissionId);
         Map<Long, String> dimensionNames = buildDimensionNameMap(submission);
@@ -267,7 +279,80 @@ public class GradingSubmissionService {
         if (!warnings.isEmpty()) {
             result.put("warnings", warnings);
         }
+        submission.setPublishedAt(Instant.now());
+        submission.setPublishedBy(teacherId);
+        submissionRepo.save(submission);
+        result.put("published", true);
+        result.put("publishedAt", submission.getPublishedAt().toString());
         return result;
+    }
+
+    @Transactional
+    public Map<String, Object> confirmStudentMatch(Long submissionId, Long studentProfileId, Long teacherId) {
+        GradingSubmissionEntity submission = requireOwnedSubmission(submissionId, teacherId);
+        if (submission.getPublishedAt() != null) {
+            throw new IllegalStateException("请先撤回发布后再修改学生匹配");
+        }
+        GradingUnifiedLinkService.SubmissionIdentity identity =
+                gradingUnifiedLinkService.requireRosterStudent(submission.getTask(), studentProfileId);
+        applyIdentity(submission, identity);
+        submission.setMatchStatus(com.tap.backend.domain.grading.SubmissionMatchStatus.MANUAL_CONFIRMED);
+        submissionRepo.save(submission);
+        return matchResult(submission);
+    }
+
+    @Transactional
+    public Map<String, Object> revokePublication(Long submissionId, Long teacherId) {
+        GradingSubmissionEntity submission = requireOwnedSubmission(submissionId, teacherId);
+        submission.setPublishedAt(null);
+        submission.setPublishedBy(null);
+        submissionRepo.save(submission);
+        return publicationResult(submission, false, List.of());
+    }
+
+    @Transactional
+    public Map<String, Object> publishConfirmedTask(Long taskId, Long teacherId) {
+        requireOwnedTask(taskId, teacherId);
+        List<GradingSubmissionEntity> submissions = submissionRepo.findAllByTaskId(taskId);
+        boolean hasUnconfirmed = submissions.stream().anyMatch(submission ->
+                submission.getMatchStatus() == null || !submission.getMatchStatus().isConfirmed()
+                        || submission.getStudentId() == null);
+        if (hasUnconfirmed) {
+            throw new IllegalStateException("请先确认学生匹配");
+        }
+        int publishedCount = 0;
+        int skippedCount = 0;
+        for (GradingSubmissionEntity submission : submissions) {
+            if (submission.getStatus() != com.tap.backend.domain.grading.SubmissionStatus.SCORED
+                    || submission.getTotalScore() == null) {
+                skippedCount++;
+                continue;
+            }
+            publishToStudentReport(submission.getId(), teacherId);
+            publishedCount++;
+        }
+        return Map.of(
+                "taskId", taskId,
+                "publishedCount", publishedCount,
+                "skippedCount", skippedCount,
+                "allPublished", skippedCount == 0 && publishedCount == submissions.size()
+        );
+    }
+
+    @Transactional
+    public Map<String, Object> revokeTaskPublications(Long taskId, Long teacherId) {
+        requireOwnedTask(taskId, teacherId);
+        List<GradingSubmissionEntity> submissions = submissionRepo.findAllByTaskId(taskId);
+        int revokedCount = 0;
+        for (GradingSubmissionEntity submission : submissions) {
+            if (submission.getPublishedAt() != null) {
+                submission.setPublishedAt(null);
+                submission.setPublishedBy(null);
+                revokedCount++;
+            }
+        }
+        submissionRepo.saveAll(submissions);
+        return Map.of("taskId", taskId, "revokedCount", revokedCount);
     }
 
     @Transactional
@@ -286,7 +371,12 @@ public class GradingSubmissionService {
         }
 
         if (needsAnnotatedReport || needsReview) {
-            return publishToStudentReport(submissionId, teacherId);
+            List<ScoreItemEntity> scores = scoreItemRepo.findAllBySubmissionId(submissionId);
+            Map<Long, String> dimensionNames = buildDimensionNameMap(submission);
+            ExperimentContext experimentContext = extractExperimentContext(submissionId);
+            String teacherComment = buildTeacherComment(submission, scores, dimensionNames, experimentContext);
+            AnnotatedReportArtifact artifact = createAnnotatedReport(submission, scores, teacherComment);
+            return preparedReportResult(submission, artifact);
         }
 
         ReportFileEntity preferredReport = selectPreferredReport(submissionId);
@@ -309,7 +399,65 @@ public class GradingSubmissionService {
         if (submission.getFinalReviewComment() == null || submission.getFinalReviewComment().isBlank()) {
             generateFinalReview(submissionId, teacherId);
         }
-        return publishToStudentReport(submissionId, teacherId);
+        submission = requireOwnedSubmission(submissionId, teacherId);
+        List<ScoreItemEntity> scores = scoreItemRepo.findAllBySubmissionId(submissionId);
+        Map<Long, String> dimensionNames = buildDimensionNameMap(submission);
+        ExperimentContext experimentContext = extractExperimentContext(submissionId);
+        String teacherComment = buildTeacherComment(submission, scores, dimensionNames, experimentContext);
+        return preparedReportResult(submission, createAnnotatedReport(submission, scores, teacherComment));
+    }
+
+    private Map<String, Object> preparedReportResult(GradingSubmissionEntity submission,
+                                                     AnnotatedReportArtifact artifact) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("submissionId", submission.getId());
+        result.put("studentName", submission.getStudentName());
+        result.put("finalReviewComment", submission.getFinalReviewComment());
+        result.put("annotatedReady", true);
+        result.put("annotatedFileType", artifact.fileType());
+        result.put("annotatedObjectKey", artifact.objectKey());
+        return result;
+    }
+
+    private Map<String, Object> publicationResult(GradingSubmissionEntity submission,
+                                                  boolean published,
+                                                  List<String> warnings) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("submissionId", submission.getId());
+        result.put("published", published);
+        result.put("publishedAt", submission.getPublishedAt() != null ? submission.getPublishedAt().toString() : null);
+        if (warnings != null && !warnings.isEmpty()) {
+            result.put("warnings", warnings);
+        }
+        return result;
+    }
+
+    private Map<String, Object> matchResult(GradingSubmissionEntity submission) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("submissionId", submission.getId());
+        result.put("studentId", submission.getStudentId());
+        result.put("studentNo", submission.getStudentNo());
+        result.put("studentName", submission.getStudentName());
+        result.put("className", submission.getClassName());
+        result.put("matchStatus", submission.getMatchStatus().name());
+        return result;
+    }
+
+    private void applyIdentity(GradingSubmissionEntity submission,
+                               GradingUnifiedLinkService.SubmissionIdentity identity) {
+        submission.setStudentId(identity.studentProfileId());
+        submission.setStudentNo(identity.studentNo());
+        submission.setStudentName(identity.studentName());
+        submission.setClassName(identity.className());
+    }
+
+    private GradingTaskEntity requireOwnedTask(Long taskId, Long teacherId) {
+        GradingTaskEntity task = taskRepo.findById(taskId)
+                .orElseThrow(() -> new IllegalArgumentException("任务不存在"));
+        if (!Objects.equals(task.getTeacherId(), teacherId)) {
+            throw new IllegalArgumentException("任务不存在");
+        }
+        return task;
     }
 
     private void publishLegacyReport(GradingSubmissionEntity submission,

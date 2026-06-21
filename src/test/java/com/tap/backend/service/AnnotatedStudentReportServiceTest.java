@@ -356,6 +356,52 @@ class AnnotatedStudentReportServiceTest {
     }
 
     @Test
+    void renderRealPointerReportDerivesPreciseErrorAnnotationsWhenWorkerOmitsThem() throws Exception {
+        Path sourcePdf = Path.of("src", "test", "resources", "reports",
+                "pointer-array-report-with-errors.pdf");
+        byte[] source = Files.readAllBytes(sourcePdf);
+
+        AnnotatedStudentReportService.RenderedReport rendered = service.render(
+                "pointer-array-report-with-errors.pdf",
+                source,
+                "邹名格",
+                new BigDecimal("51"),
+                "报告完成了基本实验流程，但循环边界和临时指针的使用存在明显错误，需要结合异常输出重新检查代码。",
+                List.of(
+                        "代码正确性这部分需要重点修正：循环条件'i <= n'会越界访问，swap函数中的'temp'未初始化就被解引用。",
+                        "数组遍历也使用了'i <= 5'，因此错误读取了arr[5]。",
+                        "报告把[程序异常终止]解释为成功交换，结论与运行结果矛盾。"
+                ),
+                "张老师",
+                List.of()
+        );
+
+        Path artifactsDir = Path.of("target", "test-artifacts");
+        Files.createDirectories(artifactsDir);
+        Path annotatedPdf = artifactsDir.resolve("pointer-array-report-with-errors-annotated.pdf");
+        Files.write(annotatedPdf, rendered.bytes());
+
+        try (PDDocument pdf = PDDocument.load(rendered.bytes())) {
+            assertEquals(7, pdf.getNumberOfPages());
+            PDFRenderer renderer = new PDFRenderer(pdf);
+            int markedErrorPages = 0;
+            for (int pageIndex : List.of(2, 4, 5)) {
+                BufferedImage image = renderer.renderImageWithDPI(pageIndex, 144);
+                ImageIO.write(image, "png", artifactsDir.resolve(
+                        "pointer-array-report-annotated-page-" + (pageIndex + 1) + ".png").toFile());
+                if (countRedPixels(image, 0.08, 0.96, 0.08, 0.94) > 250) {
+                    markedErrorPages++;
+                }
+            }
+            assertTrue(markedErrorPages >= 2,
+                    "Expected visible error marks on at least two real report pages, found " + markedErrorPages);
+            BufferedImage cover = renderer.renderImageWithDPI(0, 144);
+            assertTrue(countRedPixels(cover, 0.08, 0.96, 0.08, 0.94) < 1800,
+                    "The cover page must not receive a large random correction mark");
+        }
+    }
+
+    @Test
     void renderPdfRemovesTrailingGeneratedReviewBeforeAddingNewOne() throws Exception {
         byte[] source = createPdfWithTrailingGeneratedReviewPage();
 
