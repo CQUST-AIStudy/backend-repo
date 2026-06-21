@@ -249,6 +249,8 @@ pta:
   connect-timeout-ms: ${PTA_SPIDER_CONNECT_TIMEOUT_MS:5000}
   read-timeout-ms: ${PTA_SPIDER_READ_TIMEOUT_MS:20000}
   scheduler:
+    cron: ${PTA_SYNC_CRON:0 0 * * * ?}
+    mode: ${PTA_SYNC_MODE:full}
     max-concurrency: ${PTA_SYNC_MAX_CONCURRENCY:3}
     submit-interval-ms: ${PTA_SYNC_SUBMIT_INTERVAL_MS:200}
   auto-start: ${PTA_SPIDER_AUTO_START:false}

@@ -29,7 +29,10 @@ public class GradingUnifiedLinkService {
                 SELECT ao.id
                 FROM assignment_offering ao
                 WHERE ao.source_system = 'LEGACY_TAP'
-                  AND ao.source_offering_key = CONCAT('LEGACY_EXPERIMENT_OFFERING:', ?)
+                  AND ao.source_offering_key IN (
+                    CONCAT('LEGACY_EXPERIMENT_OFFERING:', ?, ':CLASS:', ?),
+                    CONCAT('LEGACY_EXPERIMENT_OFFERING:', ?)
+                  )
                 ORDER BY
                   CASE WHEN ? IS NOT NULL AND ao.class_id = ? THEN 0 ELSE 1 END,
                   CASE WHEN ? IS NOT NULL AND ao.teacher_id = ? THEN 0 ELSE 1 END,
@@ -37,6 +40,8 @@ public class GradingUnifiedLinkService {
                 LIMIT 1
                 """,
                 (rs, rowNum) -> rs.getLong("id"),
+                experimentId,
+                classId,
                 experimentId,
                 classId,
                 classId,
