@@ -127,11 +127,11 @@ public class PtaSyncController {
         return ApiResponse.of(syncService.importStudents(classId, teacherId));
     }
 
-    record CallbackRequest(String status) {}
+    record CallbackRequest(String status, String taskId) {}
 
     @PutMapping("/callback")
     public ApiResponse<Void> callback(@PathVariable Long classId, @RequestBody CallbackRequest req) {
-        syncService.updateSyncResult(classId, req.status());
+        syncService.updateSyncResult(classId, req.status(), req.taskId());
         return ApiResponse.of(null);
     }
 }

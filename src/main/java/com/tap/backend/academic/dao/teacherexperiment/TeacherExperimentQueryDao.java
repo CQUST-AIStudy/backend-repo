@@ -17,6 +17,8 @@ public interface TeacherExperimentQueryDao {
     String DATA_STRUCTURE_KEYWORD = "\u6570\u636e\u7ed3\u6784";
     String C_LANGUAGE_KEYWORD = "C\u8bed\u8a00";
     String EXPERIMENT_NAME_EXPR = "COALESCE(NULLIF(TRIM(ao.title_override), ''), at.title)";
+    String LEGACY_EXPERIMENT_ID_EXPR =
+            "CAST(SUBSTRING_INDEX(SUBSTRING_INDEX(ao.source_offering_key, ':CLASS:', 1), ':', -1) AS SIGNED)";
     String COURSE_NAME_EXPR = "COALESCE(NULLIF(TRIM(tc.course_name), ''), '')";
     String COLL = " COLLATE utf8mb4_0900_ai_ci";
     String DATA_STRUCTURE_SQL_LITERAL = "_utf8mb4'" + DATA_STRUCTURE_KEYWORD + "' COLLATE utf8mb4_0900_ai_ci";
@@ -107,7 +109,7 @@ public interface TeacherExperimentQueryDao {
             "LEFT JOIN Plagiarism_Check_Table pct",
             "  ON pct.student_id COLLATE utf8mb4_unicode_ci = sp.student_no COLLATE utf8mb4_unicode_ci",
             " AND ao.source_offering_key LIKE 'LEGACY_EXPERIMENT_OFFERING:%'",
-            " AND pct.experiment_id = CAST(SUBSTRING_INDEX(ao.source_offering_key, ':', -1) AS SIGNED)",
+            " AND pct.experiment_id = " + LEGACY_EXPERIMENT_ID_EXPR,
             "WHERE ao.teacher_id = teacher_user.id",
             "  <if test='classId != null'>",
             "    AND ao.class_id = #{classId}",
@@ -193,7 +195,7 @@ public interface TeacherExperimentQueryDao {
             "LEFT JOIN Plagiarism_Check_Table pct",
             "  ON pct.student_id COLLATE utf8mb4_unicode_ci = sp.student_no COLLATE utf8mb4_unicode_ci",
             " AND ao.source_offering_key LIKE 'LEGACY_EXPERIMENT_OFFERING:%'",
-            " AND pct.experiment_id = CAST(SUBSTRING_INDEX(ao.source_offering_key, ':', -1) AS SIGNED)",
+            " AND pct.experiment_id = " + LEGACY_EXPERIMENT_ID_EXPR,
             "WHERE ao.id = #{experimentId}",
             "  AND sp.student_no COLLATE utf8mb4_unicode_ci = #{studentId} COLLATE utf8mb4_unicode_ci",
             "LIMIT 1"
@@ -505,3 +507,4 @@ public interface TeacherExperimentQueryDao {
             @Param("experimentId") Integer experimentId
     );
 }
+
