@@ -40,6 +40,7 @@ public class PtaSyncService {
     private final EntityManager entityManager;
     private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper;
+    private final com.tap.backend.service.practice.impl.WrongQuestionPtaIngestionService wrongQuestionPtaIngestionService;
 
     @Value("${pta.spider-url:http://127.0.0.1:8100}")
     private String spiderUrl;
@@ -53,6 +54,7 @@ public class PtaSyncService {
             TeacherPtaCredentialService teacherPtaCredentialService,
             EntityManager entityManager,
             ObjectMapper objectMapper,
+            com.tap.backend.service.practice.impl.WrongQuestionPtaIngestionService wrongQuestionPtaIngestionService,
             @Value("${pta.connect-timeout-ms:5000}") int connectTimeoutMs,
             @Value("${pta.read-timeout-ms:20000}") int readTimeoutMs
     ) {
@@ -61,6 +63,7 @@ public class PtaSyncService {
         this.teacherPtaCredentialService = teacherPtaCredentialService;
         this.entityManager = entityManager;
         this.objectMapper = objectMapper;
+        this.wrongQuestionPtaIngestionService = wrongQuestionPtaIngestionService;
         SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
         requestFactory.setConnectTimeout(Math.max(1000, connectTimeoutMs));
         requestFactory.setReadTimeout(Math.max(1000, readTimeoutMs));
@@ -349,6 +352,14 @@ public class PtaSyncService {
             }
             classRepo.save(teachingClass);
             markCrawlJobFromCallback(classId, spiderTaskId, effectiveStatus);
+
+            if ("SUCCESS".equals(effectiveStatus)) {
+                try {
+                    wrongQuestionPtaIngestionService.ingestRecentPtaWrongAttempts(classId);
+                } catch (Exception ex) {
+                    log.error("PTA wrong-question ingest failed for class {}: {}", classId, ex.getMessage());
+                }
+            }
         });
     }
 
