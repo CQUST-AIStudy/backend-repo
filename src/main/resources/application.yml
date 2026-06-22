@@ -167,6 +167,12 @@ tap:
     translation-chars-per-day: ${QUOTA_TRANSLATION_CHARS_PER_DAY:200000}
     ai-requests-per-day: ${QUOTA_AI_REQUESTS_PER_DAY:200}
     admin-unlimited: ${QUOTA_ADMIN_UNLIMITED:true}
+  recommendation:
+    base-url: ${RECOMMENDATION_SERVICE_BASE_URL:http://127.0.0.1:8003}
+    connect-timeout-ms: ${RECOMMENDATION_SERVICE_CONNECT_TIMEOUT_MS:3000}
+    read-timeout-ms: ${RECOMMENDATION_SERVICE_READ_TIMEOUT_MS:10000}
+  error-analysis:
+    base-url: ${TAP_ERROR_ANALYSIS_BASE_URL:http://127.0.0.1:8002}
   ai:
     provider: ${AI_PROVIDER:mock}
     openai:
