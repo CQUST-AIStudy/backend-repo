@@ -5,9 +5,9 @@ spring:
     name: teaching-assistant-backend
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://rm-bp179y7vm468o6yc5qo.mysql.rds.aliyuncs.com:3306/ptadatabase?useSSL=false&serverTimezone=Asia/Shanghai&characterEncoding=utf8mb4
+    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:ptadatabase}?useUnicode=true&characterEncoding=utf-8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&cachePrepStmts=true&prepStmtCacheSize=250&prepStmtCacheSqlLimit=2048&useServerPrepStmts=true&rewriteBatchedStatements=true
     username: ${DB_USERNAME:root}
-    password: ${DB_PASSWORD:${DB_PASS:cqust!admin123}}
+    password: ${DB_PASSWORD:${DB_PASS:}}
     hikari:
       connection-timeout: 20000
       maximum-pool-size: ${DB_POOL_MAX:30}
@@ -40,6 +40,7 @@ spring:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
       lettuce:
         pool:
           max-active: ${REDIS_POOL_MAX:16}
@@ -49,6 +50,21 @@ spring:
       # 临时禁用Redis以便测试
       timeout: 1000ms
       connect-timeout: 1000ms
+  mail:
+    host: ${TAP_MAIL_HOST:smtp.163.com}
+    port: ${TAP_MAIL_PORT:465}
+    username: ${TAP_MAIL_USERNAME:}
+    password: ${TAP_MAIL_PASSWORD:}
+    protocol: smtps
+    properties:
+      mail:
+        smtp:
+          auth: true
+          ssl:
+            enable: true
+          starttls:
+            enable: true
+            required: true
   servlet:
     session:
       timeout: 3600

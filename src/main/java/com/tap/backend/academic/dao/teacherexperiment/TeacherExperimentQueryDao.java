@@ -503,6 +503,7 @@ public interface TeacherExperimentQueryDao {
             "  spa.runtime_ms AS runtimeMs,",
             "  spa.memory_kb AS memoryKb,",
             "  code_artifact.text_content AS code,",
+            "  spa.problem_id AS problemId,",
             "  ap.title AS problemTitle",
             "FROM student_problem_attempt spa",
             "JOIN student_problem_state sps",
@@ -524,4 +525,12 @@ public interface TeacherExperimentQueryDao {
             @Param("studentNo") String studentNo,
             @Param("experimentId") Integer experimentId
     );
+
+    @Select({
+            "SELECT COALESCE(NULLIF(TRIM(ao.title_override), ''), at.title)",
+            "FROM assignment_offering ao",
+            "JOIN assignment_template at ON at.id = ao.template_id",
+            "WHERE ao.id = #{offeringId}"
+    })
+    String findOfferingName(@Param("offeringId") int offeringId);
 }

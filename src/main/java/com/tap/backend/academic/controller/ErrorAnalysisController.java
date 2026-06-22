@@ -267,4 +267,5 @@ public class ErrorAnalysisController {
         if (!(raw instanceof List)) return false;
         return !((List<?>) raw).isEmpty();
     }
+
 }
