@@ -457,6 +457,8 @@ public class AdminDashboardService {
           item.put("id", tc.getId());
           item.put("className", tc.getName());
           item.put("ptaKeyword", safeText(tc.getPtaKeyword()));
+          item.put("ptaGroupId", safeText(tc.getPtaGroupId()));
+          item.put("ptaGroupName", safeText(tc.getPtaGroupName()));
           item.put("status", safeText(tc.getSyncStatus()));
           item.put("lastSync", tc.getLastSyncAt());
           item.put("reason", buildAttentionReason(tc));
@@ -469,13 +471,20 @@ public class AdminDashboardService {
   public Map<String, Object> triggerClassSync(Long classId, String mode, boolean force) {
     TeachingClassEntity tc = classRepository.findById(classId)
         .orElseThrow(() -> new NoSuchElementException("class not found"));
-    if (tc.getPtaKeyword() == null || tc.getPtaKeyword().isBlank()) {
-      throw new IllegalStateException("PTA keyword is not configured for this class");
+    String groupName = firstNonBlank(tc.getPtaGroupName(), null);
+    String groupId = firstNonBlank(tc.getPtaGroupId(), null);
+    if ((groupName == null || groupName.isBlank()) && (groupId == null || groupId.isBlank())) {
+      throw new IllegalStateException("PTA user group is not configured for this class");
     }
 
     Map<String, Object> body = new LinkedHashMap<>();
-    body.put("keyword", tc.getPtaKeyword().trim());
     body.put("class_id", classId.intValue());
+    if (groupId != null && !groupId.isBlank()) {
+      body.put("group_id", groupId.trim());
+    }
+    if (groupName != null && !groupName.isBlank()) {
+      body.put("group_name", groupName.trim());
+    }
     body.put("mode", normalizeMode(mode));
     body.put("force", force);
 
@@ -645,6 +654,8 @@ public class AdminDashboardService {
               : firstNonBlank(teacher.getDisplayName(), teacher.getUsername(), "teacher-" + tc.getTeacherId()));
           item.put("studentCount", studentCount);
           item.put("ptaKeyword", safeText(tc.getPtaKeyword()));
+          item.put("ptaGroupId", safeText(tc.getPtaGroupId()));
+          item.put("ptaGroupName", safeText(tc.getPtaGroupName()));
           item.put("syncEnabled", Boolean.TRUE.equals(tc.getSyncEnabled()));
           item.put("syncStatus", safeText(tc.getSyncStatus()));
           item.put("lastSyncAt", tc.getLastSyncAt());
@@ -727,7 +738,7 @@ public class AdminDashboardService {
         .map(task -> {
           Map<String, Object> item = new LinkedHashMap<>();
           item.put("taskId", task.getOrDefault("task_id", ""));
-          item.put("keyword", task.getOrDefault("keyword", ""));
+          item.put("groupName", task.getOrDefault("group_name", task.getOrDefault("group_id", "")));
           item.put("mode", task.getOrDefault("mode", "incremental"));
           item.put("status", task.getOrDefault("status", ""));
           item.put("createdAt", task.getOrDefault("created_at", ""));

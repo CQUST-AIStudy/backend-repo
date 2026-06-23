@@ -56,14 +56,23 @@ public class PtaSyncController {
                 req.ptaGroupName()));
     }
 
-    record TriggerRequest(String ptaUsername, String ptaPassword, String ptaKeyword, String mode, Boolean force) {}
+    record TriggerRequest(
+            String ptaUsername,
+            String ptaPassword,
+            String ptaKeyword,
+            String ptaGroupId,
+            String ptaGroupName,
+            String mode,
+            Boolean force
+    ) {}
 
     record ConnectionTestRequest(
             String ptaUsername,
             String ptaPassword,
             String ptaKeyword,
             String ptaProblemSetId,
-            String ptaGroupId
+            String ptaGroupId,
+            String ptaGroupName
     ) {}
 
     @PostMapping("/trigger")
@@ -79,6 +88,8 @@ public class PtaSyncController {
                 req == null ? null : req.ptaUsername(),
                 req == null ? null : req.ptaPassword(),
                 req == null ? null : req.ptaKeyword(),
+                req == null ? null : req.ptaGroupId(),
+                req == null ? null : req.ptaGroupName(),
                 req == null ? null : req.mode(),
                 req == null ? null : req.force()));
     }
@@ -97,7 +108,8 @@ public class PtaSyncController {
                 req == null ? null : req.ptaPassword(),
                 req == null ? null : req.ptaKeyword(),
                 req == null ? null : req.ptaProblemSetId(),
-                req == null ? null : req.ptaGroupId()));
+                req == null ? null : req.ptaGroupId(),
+                req == null ? null : req.ptaGroupName()));
     }
 
     @GetMapping("/status")

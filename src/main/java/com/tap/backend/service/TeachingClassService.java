@@ -91,6 +91,7 @@ public class TeachingClassService {
             String courseName,
             String description,
             String ptaKeyword,
+            String ptaGroupName,
             Boolean syncEnabled
     ) {
         if (classRepo.existsByClassCode(classCode)) {
@@ -104,7 +105,9 @@ public class TeachingClassService {
         teachingClass.setGrade(grade);
         teachingClass.setCourseName(courseName);
         teachingClass.setDescription(description);
-        teachingClass.setPtaKeyword(resolvePtaKeyword(name, ptaKeyword));
+        String resolvedGroupName = normalizeNullableText(firstNotBlank(ptaGroupName, ptaKeyword));
+        teachingClass.setPtaGroupName(resolvedGroupName);
+        teachingClass.setPtaKeyword(resolvePtaKeyword(name, firstNotBlank(resolvedGroupName, ptaKeyword)));
         if (syncEnabled != null) {
             teachingClass.setSyncEnabled(syncEnabled);
         }
@@ -124,6 +127,7 @@ public class TeachingClassService {
             String courseName,
             String description,
             String ptaKeyword,
+            String ptaGroupName,
             Boolean syncEnabled
     ) {
         TeachingClassEntity teachingClass = requireOwnedClass(classId, teacherId);
@@ -143,7 +147,16 @@ public class TeachingClassService {
             teachingClass.setDescription(description);
         }
         if (ptaKeyword != null) {
-            teachingClass.setPtaKeyword(resolvePtaKeyword(teachingClass.getName(), ptaKeyword));
+            String resolvedKeyword = normalizeNullableText(ptaKeyword);
+            teachingClass.setPtaKeyword(resolvePtaKeyword(teachingClass.getName(), resolvedKeyword));
+            if (teachingClass.getPtaGroupName() == null || teachingClass.getPtaGroupName().isBlank()) {
+                teachingClass.setPtaGroupName(resolvedKeyword);
+            }
+        }
+        if (ptaGroupName != null) {
+            String resolvedGroupName = normalizeNullableText(ptaGroupName);
+            teachingClass.setPtaGroupName(resolvedGroupName);
+            teachingClass.setPtaKeyword(resolvePtaKeyword(teachingClass.getName(), resolvedGroupName));
         }
         if (syncEnabled != null) {
             teachingClass.setSyncEnabled(syncEnabled);
@@ -510,6 +523,7 @@ public class TeachingClassService {
         result.put("classId", teachingClass.getId());
         result.put("className", teachingClass.getName());
         result.put("ptaKeyword", teachingClass.getPtaKeyword());
+        result.put("ptaGroupName", teachingClass.getPtaGroupName());
         result.put("matchedStudentCount", roster.size());
         result.put("createdCount", createdCount);
         result.put("updatedCount", updatedCount);
@@ -531,6 +545,23 @@ public class TeachingClassService {
             return ptaKeyword.trim();
         }
         return className == null ? null : className.trim();
+    }
+
+    private String normalizeNullableText(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        return value.trim();
+    }
+
+    private String firstNotBlank(String first, String second) {
+        if (first != null && !first.isBlank()) {
+            return first.trim();
+        }
+        if (second != null && !second.isBlank()) {
+            return second.trim();
+        }
+        return null;
     }
 
     private Long findActiveStudentUserIdByUsername(String username) {

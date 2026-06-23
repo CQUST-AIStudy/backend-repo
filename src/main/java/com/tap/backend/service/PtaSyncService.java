@@ -82,9 +82,6 @@ public class PtaSyncService {
             String ptaGroupName
     ) {
         TeachingClassEntity teachingClass = requireOwnedClass(classId, teacherId);
-        if (ptaKeyword != null) {
-            teachingClass.setPtaKeyword(resolvePtaKeyword(teachingClass, ptaKeyword));
-        }
         if (syncEnabled != null) {
             teachingClass.setSyncEnabled(syncEnabled);
         }
@@ -98,7 +95,15 @@ public class PtaSyncService {
             teachingClass.setPtaGroupId(normalizeNullableText(ptaGroupId));
         }
         if (ptaGroupName != null) {
-            teachingClass.setPtaGroupName(normalizeNullableText(ptaGroupName));
+            String normalizedGroupName = normalizeNullableText(ptaGroupName);
+            teachingClass.setPtaGroupName(normalizedGroupName);
+            teachingClass.setPtaKeyword(resolvePtaKeyword(teachingClass, normalizedGroupName));
+        } else if (ptaKeyword != null) {
+            String normalizedKeyword = normalizeNullableText(ptaKeyword);
+            teachingClass.setPtaKeyword(resolvePtaKeyword(teachingClass, normalizedKeyword));
+            if (teachingClass.getPtaGroupName() == null || teachingClass.getPtaGroupName().isBlank()) {
+                teachingClass.setPtaGroupName(normalizedKeyword);
+            }
         }
         teachingClass.setPtaBindingVerifyStatus(resolveBindingStatus(teachingClass));
         teachingClass.setPtaBindingVerifyMessage(resolveBindingMessage(teachingClass));
@@ -114,10 +119,12 @@ public class PtaSyncService {
             String ptaUsername,
             String ptaPassword,
             String ptaKeyword,
+            String ptaGroupId,
+            String ptaGroupName,
             String mode,
             Boolean force
     ) {
-        return doTriggerSync(classId, teacherId, true, ptaUsername, ptaPassword, ptaKeyword, mode, force);
+        return doTriggerSync(classId, teacherId, true, ptaUsername, ptaPassword, ptaKeyword, ptaGroupId, ptaGroupName, mode, force);
     }
 
     @Transactional
@@ -127,7 +134,7 @@ public class PtaSyncService {
         String mode = scheduledSyncMode == null || scheduledSyncMode.isBlank()
                 ? "full"
                 : scheduledSyncMode.trim();
-        return doTriggerSync(teachingClass, false, null, null, null, mode, false);
+        return doTriggerSync(teachingClass, false, null, null, null, null, null, mode, false);
     }
 
     public Map<String, Object> getSyncStatus(Long classId, Long teacherId) {
@@ -216,6 +223,7 @@ public class PtaSyncService {
         result.put("ptaKeyword", teachingClass.getPtaKeyword());
         result.put("ptaProblemSetId", teachingClass.getPtaProblemSetId());
         result.put("ptaGroupId", teachingClass.getPtaGroupId());
+        result.put("ptaGroupName", teachingClass.getPtaGroupName());
         result.put("hasSnapshot", hasSnapshot);
         result.put("snapshotComplete", snapshotComplete);
         result.put("latestJob", latestJob.isEmpty() ? null : latestJob);
@@ -240,7 +248,8 @@ public class PtaSyncService {
             String ptaPassword,
             String ptaKeyword,
             String ptaProblemSetId,
-            String ptaGroupId
+            String ptaGroupId,
+            String ptaGroupName
     ) {
         TeachingClassEntity teachingClass = requireOwnedClass(classId, teacherId);
         List<String> warnings = new java.util.ArrayList<>();
@@ -249,9 +258,10 @@ public class PtaSyncService {
         String effectiveKeyword = firstNotBlank(ptaKeyword, teachingClass.getPtaKeyword());
         String effectiveProblemSetId = firstNotBlank(ptaProblemSetId, teachingClass.getPtaProblemSetId());
         String effectiveGroupId = firstNotBlank(ptaGroupId, teachingClass.getPtaGroupId());
+        String effectiveGroupName = firstNotBlank(ptaGroupName, teachingClass.getPtaGroupName());
 
         ResolvedSyncCredential resolvedCredential = resolveCredential(teacherId, ptaUsername, ptaPassword);
-        boolean keywordConfigured = effectiveKeyword != null;
+        boolean groupConfigured = effectiveGroupId != null || effectiveGroupName != null;
         boolean preciseBindingConfigured = effectiveProblemSetId != null && effectiveGroupId != null;
 
         Map<String, Object> spiderHealth = new LinkedHashMap<>();
@@ -268,10 +278,11 @@ public class PtaSyncService {
         }
 
         Map<String, Object> cooldown = new LinkedHashMap<>();
-        if (spiderReachable && keywordConfigured) {
+        if (spiderReachable && groupConfigured) {
             try {
+                String cooldownKey = firstNotBlank(effectiveGroupName, effectiveGroupId);
                 ResponseEntity<Map> response = restTemplate.getForEntity(
-                        spiderUrl + "/cooldown/" + java.net.URLEncoder.encode(effectiveKeyword, java.nio.charset.StandardCharsets.UTF_8),
+                        spiderUrl + "/cooldown/" + java.net.URLEncoder.encode(cooldownKey, java.nio.charset.StandardCharsets.UTF_8),
                         Map.class);
                 if (response.getBody() != null) {
                     cooldown.putAll(response.getBody());
@@ -282,9 +293,9 @@ public class PtaSyncService {
             }
         }
 
-        if (!keywordConfigured) {
-            warnings.add("PTA keyword is not configured");
-            nextSteps.add("Set ptaKeyword or pass it in this test request");
+        if (!groupConfigured) {
+            warnings.add("PTA user group is not configured");
+            nextSteps.add("Set PTA user group name or bind a PTA user group id before syncing");
         }
         if (!preciseBindingConfigured) {
             warnings.add("PTA problem set id and group id are not fully configured");
@@ -300,7 +311,7 @@ public class PtaSyncService {
             nextSteps.add("Configuration is ready for PTA sync trigger");
         }
 
-        boolean readyToSync = spiderReachable && keywordConfigured && preciseBindingConfigured;
+        boolean readyToSync = spiderReachable && groupConfigured;
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("classId", teachingClass.getId());
         result.put("className", teachingClass.getName());
@@ -308,11 +319,13 @@ public class PtaSyncService {
         result.put("spiderReachable", spiderReachable);
         result.put("spiderHealth", spiderHealth);
         result.put("credentialSource", resolvedCredential.source());
-        result.put("keywordConfigured", keywordConfigured);
+        result.put("keywordConfigured", effectiveKeyword != null);
+        result.put("groupConfigured", groupConfigured);
         result.put("preciseBindingConfigured", preciseBindingConfigured);
         result.put("ptaKeyword", effectiveKeyword);
         result.put("ptaProblemSetId", effectiveProblemSetId);
         result.put("ptaGroupId", effectiveGroupId);
+        result.put("ptaGroupName", effectiveGroupName);
         result.put("cooldown", cooldown);
         result.put("readyToSync", readyToSync);
         result.put("warnings", warnings);
@@ -366,8 +379,7 @@ public class PtaSyncService {
     public List<TeachingClassEntity> listSyncEnabledClasses() {
         return classRepo.findAll().stream()
                 .filter(teachingClass -> Boolean.TRUE.equals(teachingClass.getSyncEnabled())
-                        && teachingClass.getPtaKeyword() != null
-                        && !teachingClass.getPtaKeyword().isBlank())
+                        && (firstNotBlank(teachingClass.getPtaGroupId(), teachingClass.getPtaGroupName()) != null))
                 .toList();
     }
 
@@ -378,10 +390,12 @@ public class PtaSyncService {
             String ptaUsername,
             String ptaPassword,
             String ptaKeyword,
+            String ptaGroupId,
+            String ptaGroupName,
             String mode,
             Boolean force
     ) {
-        return doTriggerSync(requireOwnedClass(classId, teacherId), checkCooldown, ptaUsername, ptaPassword, ptaKeyword, mode, force);
+        return doTriggerSync(requireOwnedClass(classId, teacherId), checkCooldown, ptaUsername, ptaPassword, ptaKeyword, ptaGroupId, ptaGroupName, mode, force);
     }
 
     private Map<String, Object> doTriggerSync(
@@ -390,15 +404,34 @@ public class PtaSyncService {
             String ptaUsername,
             String ptaPassword,
             String ptaKeyword,
+            String ptaGroupId,
+            String ptaGroupName,
             String mode,
             Boolean force
     ) {
-        if (ptaKeyword != null) {
-            teachingClass.setPtaKeyword(resolvePtaKeyword(teachingClass, ptaKeyword));
+        if (ptaGroupId != null) {
+            teachingClass.setPtaGroupId(normalizeNullableText(ptaGroupId));
+        }
+        if (ptaGroupName != null) {
+            String normalizedGroupName = normalizeNullableText(ptaGroupName);
+            teachingClass.setPtaGroupName(normalizedGroupName);
+            teachingClass.setPtaKeyword(resolvePtaKeyword(teachingClass, normalizedGroupName));
+        } else if (ptaKeyword != null) {
+            String normalizedKeyword = normalizeNullableText(ptaKeyword);
+            teachingClass.setPtaKeyword(resolvePtaKeyword(teachingClass, normalizedKeyword));
+            if (teachingClass.getPtaGroupName() == null || teachingClass.getPtaGroupName().isBlank()) {
+                teachingClass.setPtaGroupName(normalizedKeyword);
+            }
+        }
+        if (ptaKeyword != null || ptaGroupId != null || ptaGroupName != null) {
+            teachingClass.setPtaBindingVerifyStatus(resolveBindingStatus(teachingClass));
+            teachingClass.setPtaBindingVerifyMessage(resolveBindingMessage(teachingClass));
             classRepo.save(teachingClass);
         }
-        if (teachingClass.getPtaKeyword() == null || teachingClass.getPtaKeyword().isBlank()) {
-            throw new IllegalStateException("pta keyword is required before sync");
+        String crawlGroupName = firstNotBlank(teachingClass.getPtaGroupName());
+        String crawlGroupId = firstNotBlank(teachingClass.getPtaGroupId());
+        if (crawlGroupName == null && crawlGroupId == null) {
+            throw new IllegalStateException("PTA user group is required before sync");
         }
 
         ResolvedSyncCredential resolvedCredential =
@@ -434,20 +467,16 @@ public class PtaSyncService {
 
         try {
             Map<String, Object> body = new LinkedHashMap<>();
-            body.put("keyword", teachingClass.getPtaKeyword());
             body.put("class_id", teachingClass.getId().intValue());
             putIfNotBlank(body, "problem_set_id", teachingClass.getPtaProblemSetId());
             putIfNotBlank(body, "problem_set_name", teachingClass.getPtaProblemSetName());
-            putIfNotBlank(body, "group_id", teachingClass.getPtaGroupId());
-            putIfNotBlank(body, "group_name", teachingClass.getPtaGroupName());
+            putIfNotBlank(body, "group_id", crawlGroupId);
+            putIfNotBlank(body, "group_name", crawlGroupName);
             if (mode != null && !mode.isBlank()) {
                 body.put("mode", mode.trim());
             }
             if (Boolean.TRUE.equals(force)) {
                 body.put("force", true);
-                // In local/dev demos, "force" should visibly exercise the PTA browser login flow.
-                body.put("force_selenium_login", true);
-                body.put("headless", false);
             }
             body.put("credential_source", credentialSource);
             if (credential != null) {
@@ -458,7 +487,8 @@ public class PtaSyncService {
             String triggerType = checkCooldown ? "MANUAL" : "SCHEDULED";
             crawlJobId = createCrawlJob(
                     teachingClass.getId(),
-                    teachingClass.getPtaKeyword(),
+                    crawlGroupId,
+                    crawlGroupName == null ? crawlGroupId : crawlGroupName,
                     resolvedMode,
                     triggerType,
                     credentialSource,
@@ -573,7 +603,8 @@ public class PtaSyncService {
 
     private Long createCrawlJob(
             Long classId,
-            String keyword,
+            String ptaGroupId,
+            String ptaGroupName,
             String mode,
             String triggerType,
             String credentialSource,
@@ -582,16 +613,17 @@ public class PtaSyncService {
         try {
             Object rawId = entityManager.createNativeQuery("""
                             INSERT INTO pta_crawl_job
-                              (class_id, keyword, mode, trigger_type, credential_source, status, status_code, request_json)
+                              (class_id, pta_group_id, pta_group_name, mode, trigger_type, credential_source, status, status_code, request_json)
                             VALUES
-                              (?1, ?2, ?3, ?4, ?5, 'REQUESTING', 'REQUESTING', ?6)
+                              (?1, ?2, ?3, ?4, ?5, ?6, 'REQUESTING', 'REQUESTING', ?7)
                             """)
                     .setParameter(1, classId)
-                    .setParameter(2, keyword)
-                    .setParameter(3, mode)
-                    .setParameter(4, triggerType)
-                    .setParameter(5, credentialSource)
-                    .setParameter(6, toJson(sanitizeSpiderRequest(requestBody)))
+                    .setParameter(2, ptaGroupId)
+                    .setParameter(3, ptaGroupName)
+                    .setParameter(4, mode)
+                    .setParameter(5, triggerType)
+                    .setParameter(6, credentialSource)
+                    .setParameter(7, toJson(sanitizeSpiderRequest(requestBody)))
                     .executeUpdate();
             Object id = entityManager.createNativeQuery("SELECT LAST_INSERT_ID()").getSingleResult();
             return ((Number) id).longValue();
@@ -800,19 +832,21 @@ public class PtaSyncService {
         return value.trim();
     }
 
-    private String firstNotBlank(String first, String second) {
-        if (first != null && !first.isBlank()) {
-            return first.trim();
+    private String firstNotBlank(String... values) {
+        if (values == null) {
+            return null;
         }
-        if (second != null && !second.isBlank()) {
-            return second.trim();
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value.trim();
+            }
         }
         return null;
     }
 
     private String resolveBindingStatus(TeachingClassEntity teachingClass) {
         boolean hasProblemSet = teachingClass.getPtaProblemSetId() != null && !teachingClass.getPtaProblemSetId().isBlank();
-        boolean hasGroup = teachingClass.getPtaGroupId() != null && !teachingClass.getPtaGroupId().isBlank();
+        boolean hasGroup = firstNotBlank(teachingClass.getPtaGroupId(), teachingClass.getPtaGroupName()) != null;
         if (hasProblemSet && hasGroup) {
             return "CONFIGURED";
         }

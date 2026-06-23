@@ -27,8 +27,8 @@ public class PtaSyncScheduler {
         this.syncService = syncService;
     }
 
-    /** Hourly sync with bounded parallelism; the spider applies per-experiment cooldowns. */
-    @Scheduled(cron = "${pta.scheduler.cron:0 0 * * * ?}")
+    /** Daily sync with bounded parallelism; the spider applies per-experiment cooldowns. */
+    @Scheduled(cron = "${pta.scheduler.cron:0 0 2 * * ?}")
     public void scheduledSync() {
         List<TeachingClassEntity> classes = syncService.listSyncEnabledClasses();
         if (classes.isEmpty()) {
