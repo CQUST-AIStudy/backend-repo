@@ -43,7 +43,9 @@ public class ErrorAnalysisService {
 
     private static final Logger logger = LoggerFactory.getLogger(ErrorAnalysisService.class);
     private static final String REDIS_KEY_PREFIX = "ai:analysis:";
+    private static final String REDIS_SYNC_KEY_PREFIX = "ai:sync:";
     private static final long REDIS_TTL_HOURS = 24;
+    private static final long REDIS_SYNC_TTL_HOURS = 1;
     private static final SimpleDateFormat ISO_FORMAT = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
 
     @Autowired
@@ -142,17 +144,49 @@ public class ErrorAnalysisService {
     // ==================== 数据库查询方法 ====================
 
     /**
-     * 同步：从 DB 构建 payload → 调用微服务 → 返回（不存储）
+     * 同步：从 DB 构建 payload → 调微服务 → 缓存 1h → 返回
+     * @param forceRefresh 跳过缓存，强制重新分析
      */
-    public Map<String, Object> analyzeErrorFromDb(String studentNo, String studentName, int experimentId) {
+    public Map<String, Object> analyzeErrorFromDb(String studentNo, String studentName,
+                                                   int experimentId, boolean forceRefresh) {
+        // ── 缓存命中 ──
+        if (!forceRefresh) {
+            Map<String, Object> cached = getSyncCache(studentNo, experimentId, "error");
+            if (cached != null) {
+                logger.info("analyzeErrorFromDb: cache hit for student={}, experiment={}", studentNo, experimentId);
+                return cached;
+            }
+        }
+
         List<StudentSubmissionAttempt> attempts = teacherExperimentQueryDao
                 .findSubmissionAttemptsForErrorAnalysis(studentNo, experimentId);
+        if (attempts == null || attempts.isEmpty()) {
+            logger.info("analyzeErrorFromDb: no submissions for student={}, experiment={}", studentNo, experimentId);
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("aiGenerated", false);
+            result.put("overallAssessment", "暂无提交记录，完成PTA平台实验后可使用AI错误分析功能。");
+            result.put("errorCategories", new ArrayList<>());
+            result.put("learningSuggestions", new ArrayList<>());
+            result.put("latestCode", null);
+            result.put("latestJudgeStatus", null);
+            return result;
+        }
         Experiment experiment = experimentService.findExperimentById(experimentId);
         List<Map<String, Object>> submissions = buildSubmissionList(attempts);
 
         Map<String, Object> payload = buildErrorPayload(studentNo, studentName,
                 experimentId, experiment != null ? experiment.getName() : ("实验" + experimentId), submissions, attempts);
-        return callMicroservice("/analyze/error", payload);
+        Map<String, Object> result = callMicroservice("/analyze/error", payload);
+
+        // ── 缓存 1h ──
+        if (result != null) {
+            cleanOldReports(studentNo, experimentId, "ERROR");
+            putSyncCache(studentNo, experimentId, "error", result);
+            saveReport(studentNo, experimentId,
+                    experiment != null ? experiment.getName() : ("实验" + experimentId),
+                    "ERROR", result);
+        }
+        return result;
     }
 
     public Map<String, Object> learningSuggestFromDb(String studentNo, String studentName, int experimentId) {
@@ -166,14 +200,100 @@ public class ErrorAnalysisService {
         return callMicroservice("/analyze/learning", payload);
     }
 
-    public Map<String, Object> warningAnalyzeFromDb(String studentNo, String studentName, int experimentId) {
+    public Map<String, Object> warningAnalyzeFromDb(String studentNo, String studentName,
+                                                     int experimentId, boolean forceRefresh) {
+        // ── 缓存命中 ──
+        if (!forceRefresh) {
+            Map<String, Object> cached = getSyncCache(studentNo, experimentId, "warning");
+            if (cached != null) {
+                logger.info("warningAnalyzeFromDb: cache hit for student={}, experiment={}", studentNo, experimentId);
+                return cached;
+            }
+        }
+
         List<StudentSubmissionAttempt> attempts = teacherExperimentQueryDao
                 .findSubmissionAttemptsForErrorAnalysis(studentNo, experimentId);
         String experimentName = resolveExperimentName(experimentId);
+        Map<String, Object> result = new LinkedHashMap<>();
+
+        if (attempts == null || attempts.isEmpty()) {
+            result.put("triggered", false);
+            result.put("totalErrors", 0);
+            result.put("message", "暂无提交记录");
+            return result;
+        }
+
         List<ProblemWarningInfo> triggeredProblems = analyzeExperimentProblems(
                 studentNo, studentName, experimentId, experimentName, attempts);
-        // 手动点击只做分析不发邮件；返回 null 表示仅完成分析
-        return triggeredProblems.isEmpty() ? null : null;
+
+        // 筛选真正触发了 AI 预警的题目（suggestedActions != null 表示 ≥3 错误且调了 AI）
+        List<ProblemWarningInfo> aiTriggered = new ArrayList<>();
+        for (ProblemWarningInfo p : triggeredProblems) {
+            if (p.getSuggestedActions() != null && !p.getSuggestedActions().isEmpty()) {
+                aiTriggered.add(p);
+            }
+        }
+
+        if (aiTriggered.isEmpty()) {
+            result.put("triggered", false);
+            int totalErrors = countErrors(attempts);
+            result.put("totalErrors", totalErrors);
+            result.put("problemCount", triggeredProblems.size());
+            if (totalErrors > 0) {
+                result.put("message", "错误次数较少（< 3次/题），暂未触发预警，继续加油！");
+            } else {
+                result.put("message", "未检测到错误，表现优秀！");
+            }
+            return result;
+        }
+
+        // 聚合：取最高等级
+        String highestLevel = "LOW";
+        for (ProblemWarningInfo p : aiTriggered) {
+            String lv = p.getLevel();
+            if ("HIGH".equals(lv)) {
+                highestLevel = "HIGH";
+                break;
+            } else if ("MEDIUM".equals(lv)) {
+                highestLevel = "MEDIUM";
+            }
+        }
+
+        // 合并 warning message
+        StringBuilder msgBuilder = new StringBuilder();
+        StringBuilder noteBuilder = new StringBuilder();
+        java.util.Set<String> actionSet = new java.util.LinkedHashSet<>();
+
+        for (int i = 0; i < aiTriggered.size(); i++) {
+            ProblemWarningInfo p = aiTriggered.get(i);
+            if (i > 0) {
+                msgBuilder.append("；");
+                noteBuilder.append("；");
+            }
+            msgBuilder.append("「").append(p.getProblemTitle()).append("」")
+                    .append("共提交").append(p.getTotalSubmissions()).append("次");
+            noteBuilder.append("「").append(p.getProblemTitle()).append("」")
+                    .append(": ").append(p.getWarningType())
+                    .append(" AC:").append(p.getAcceptedCount())
+                    .append("/").append(p.getTotalSubmissions());
+            if (p.getSuggestedActions() != null) {
+                actionSet.addAll(p.getSuggestedActions());
+            }
+        }
+        msgBuilder.append("，建议查看详细分析。");
+
+        result.put("triggered", true);
+        result.put("level", highestLevel);
+        result.put("warningMessage", msgBuilder.toString());
+        result.put("teacherNote", noteBuilder.toString());
+        result.put("suggestedActions", new ArrayList<>(actionSet));
+        result.put("problemCount", aiTriggered.size());
+
+        // ── 缓存 1h ──
+        cleanOldReports(studentNo, experimentId, "WARNING");
+        putSyncCache(studentNo, experimentId, "warning", result);
+        saveReport(studentNo, experimentId, experimentName, "WARNING", result);
+        return result;
     }
 
     /**
@@ -576,6 +696,46 @@ public class ErrorAnalysisService {
         try {
             redisTemplate.delete(cacheKey(studentNo, experimentId));
         } catch (Exception ignored) {}
+    }
+
+    /** 删掉同学生+实验+类型的旧报告，避免重复堆积 */
+    private void cleanOldReports(String studentNo, int experimentId, String reportType) {
+        try {
+            reportDao.deleteByStudentExperimentAndType(studentNo, experimentId, reportType);
+        } catch (Exception e) {
+            logger.warn("Failed to clean old {} reports: {}", reportType, e.getMessage());
+        }
+    }
+
+    // ==================== 同步端点缓存（1h TTL） ====================
+
+    private String syncCacheKey(String studentNo, int experimentId, String type) {
+        return REDIS_SYNC_KEY_PREFIX + studentNo + ":" + experimentId + ":" + type;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> getSyncCache(String studentNo, int experimentId, String type) {
+        if (redisTemplate == null) return null;
+        try {
+            String json = redisTemplate.opsForValue().get(syncCacheKey(studentNo, experimentId, type));
+            if (json == null || json.isEmpty()) return null;
+            return objectMapper.readValue(json, Map.class);
+        } catch (Exception e) {
+            logger.debug("Sync cache miss: {}/{}/{}", studentNo, experimentId, type);
+            return null;
+        }
+    }
+
+    private void putSyncCache(String studentNo, int experimentId, String type, Map<String, Object> data) {
+        if (redisTemplate == null || data == null || data.isEmpty()) return;
+        try {
+            String json = objectMapper.writeValueAsString(data);
+            redisTemplate.opsForValue().set(syncCacheKey(studentNo, experimentId, type), json,
+                    REDIS_SYNC_TTL_HOURS, TimeUnit.HOURS);
+            logger.debug("Sync cache set: {}/{}/{}", studentNo, experimentId, type);
+        } catch (Exception e) {
+            logger.warn("Sync cache write failed: {}", e.getMessage());
+        }
     }
 
     // ==================== 工具方法 ====================

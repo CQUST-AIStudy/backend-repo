@@ -60,4 +60,10 @@
         WHERE student_no = #{studentNo} AND experiment_id = #{experimentId}
     </delete>
 
+    <delete id="deleteByStudentExperimentAndType">
+        DELETE FROM ai_error_analysis_report
+        WHERE student_no = #{studentNo} AND experiment_id = #{experimentId}
+          AND report_type = #{reportType}
+    </delete>
+
 </mapper>
