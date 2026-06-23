@@ -485,6 +485,7 @@ public class AdminDashboardService {
     if (groupName != null && !groupName.isBlank()) {
       body.put("group_name", groupName.trim());
     }
+    body.put("keyword", firstNonBlank(groupName, groupId));
     body.put("mode", normalizeMode(mode));
     body.put("force", force);
 

@@ -7,6 +7,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -472,9 +473,8 @@ public class PtaSyncService {
             putIfNotBlank(body, "problem_set_name", teachingClass.getPtaProblemSetName());
             putIfNotBlank(body, "group_id", crawlGroupId);
             putIfNotBlank(body, "group_name", crawlGroupName);
-            if (mode != null && !mode.isBlank()) {
-                body.put("mode", mode.trim());
-            }
+            putIfNotBlank(body, "keyword", firstNotBlank(crawlGroupName, crawlGroupId));
+            body.put("mode", normalizeMode(mode));
             if (Boolean.TRUE.equals(force)) {
                 body.put("force", true);
             }
@@ -842,6 +842,18 @@ public class PtaSyncService {
             }
         }
         return null;
+    }
+
+    private String normalizeMode(String mode) {
+        String normalized = firstNotBlank(mode);
+        if (normalized == null) {
+            return "incremental";
+        }
+        normalized = normalized.toLowerCase(Locale.ROOT);
+        return switch (normalized) {
+            case "incremental", "submissions", "refresh", "full" -> normalized;
+            default -> "incremental";
+        };
     }
 
     private String resolveBindingStatus(TeachingClassEntity teachingClass) {
