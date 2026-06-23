@@ -16,6 +16,7 @@ public class StudentSubmissionAttempt {
     private Integer runtimeMs;
     private Integer memoryKb;
     private String code;
+    private Long problemId;
     private String problemTitle;
     private String errorMessage;
 
@@ -44,6 +45,9 @@ public class StudentSubmissionAttempt {
 
     public String getCode() { return code; }
     public void setCode(String code) { this.code = code; }
+
+    public Long getProblemId() { return problemId; }
+    public void setProblemId(Long problemId) { this.problemId = problemId; }
 
     public String getProblemTitle() { return problemTitle; }
     public void setProblemTitle(String problemTitle) { this.problemTitle = problemTitle; }

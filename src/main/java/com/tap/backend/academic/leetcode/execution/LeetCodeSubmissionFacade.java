@@ -1,6 +1,8 @@
 package com.tap.backend.academic.leetcode.execution;
 
+import com.tap.backend.academic.dao.LeetCodeSubmissionRecordDao;
 import com.tap.backend.academic.entity.LeetCodeProblem;
+import com.tap.backend.academic.entity.LeetCodeSubmissionRecord;
 import com.tap.backend.academic.service.LeetCodeExecutionService;
 import com.tap.backend.academic.service.LeetCodeProblemService;
 import com.tap.backend.academic.service.LeetCodeRecommendationService;
@@ -23,16 +25,19 @@ public class LeetCodeSubmissionFacade {
     private final LeetCodeRecommendationService recommendationService;
     private final LeetCodeProblemService problemService;
     private final WrongQuestionService wrongQuestionService;
+    private final LeetCodeSubmissionRecordDao submissionRecordDao;
 
     public LeetCodeSubmissionFacade(
             LeetCodeExecutionService executionService,
             @Qualifier("intelligentRecommendationService") LeetCodeRecommendationService recommendationService,
             LeetCodeProblemService problemService,
-            WrongQuestionService wrongQuestionService) {
+            WrongQuestionService wrongQuestionService,
+            LeetCodeSubmissionRecordDao submissionRecordDao) {
         this.executionService = executionService;
         this.recommendationService = recommendationService;
         this.problemService = problemService;
         this.wrongQuestionService = wrongQuestionService;
+        this.submissionRecordDao = submissionRecordDao;
     }
 
     public Map<String, Object> submitSolution(
@@ -55,6 +60,27 @@ public class LeetCodeSubmissionFacade {
             String recommendationRequestId,
             String recommendationSessionId) {
         Map<String, Object> result = executionService.submitSolution(studentId, problemId, code, language);
+
+        // 持久化到 LeetCodeSubmissionRecord（供学情追踪查询）
+        try {
+            LeetCodeSubmissionRecord record = new LeetCodeSubmissionRecord();
+            record.setStudentId(studentId);
+            record.setProblemId(problemId);
+            record.setCode(code);
+            record.setLanguage(language);
+            record.setAccepted(Boolean.TRUE.equals(result.get("accepted")));
+            record.setScore(result.get("score") instanceof Number ? ((Number) result.get("score")).intValue() : null);
+            record.setAiFeedback(result.get("aiFeedback") instanceof String ? (String) result.get("aiFeedback") : null);
+            record.setConfidence(extractConfidence(result));
+            record.setPassedCases(extractIntFromDetails(result, "passedCases"));
+            record.setTotalCases(extractIntFromDetails(result, "totalCases"));
+            record.setRecommendationRequestId(recommendationRequestId);
+            record.setRecommendationSessionId(recommendationSessionId);
+            submissionRecordDao.insert(record);
+        } catch (Exception e) {
+            log.warn("Failed to persist LeetCode submission record for student={} problem={}", studentId, problemId, e);
+        }
+
         if (Boolean.TRUE.equals(result.get("accepted"))
                 && recommendationRequestId != null
                 && !recommendationRequestId.isBlank()) {
@@ -126,5 +152,31 @@ public class LeetCodeSubmissionFacade {
         if (value == null) return fallback;
         String s = value.toString();
         return s.isBlank() ? fallback : s;
+    }
+
+    @SuppressWarnings("unchecked")
+    private int extractIntFromDetails(Map<String, Object> result, String key) {
+        try {
+            Object details = result.get("details");
+            if (details instanceof Map) {
+                Object val = ((Map<String, Object>) details).get(key);
+                if (val instanceof Number) return ((Number) val).intValue();
+            }
+        } catch (Exception ignored) {}
+        return 0;
+    }
+
+    private Double extractConfidence(Map<String, Object> result) {
+        try {
+            Object details = result.get("details");
+            if (details instanceof Map) {
+                Object confidence = ((Map<String, Object>) details).get("confidence");
+                if (confidence instanceof String) {
+                    String s = ((String) confidence).replace("%", "").trim();
+                    return Double.parseDouble(s) / 100.0;
+                }
+            }
+        } catch (Exception ignored) {}
+        return null;
     }
 }

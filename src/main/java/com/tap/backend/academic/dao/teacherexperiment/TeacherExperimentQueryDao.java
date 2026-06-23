@@ -7,6 +7,7 @@ import com.tap.backend.academic.teacherexperiment.TeacherExperimentSummaryRow;
 import com.tap.backend.academic.teacherexperiment.TeacherStudentAssignmentRow;
 import com.tap.backend.academic.teacherexperiment.TeacherSubmissionProblemRow;
 import java.util.List;
+import java.util.Map;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -17,9 +18,9 @@ public interface TeacherExperimentQueryDao {
     String DATA_STRUCTURE_KEYWORD = "\u6570\u636e\u7ed3\u6784";
     String C_LANGUAGE_KEYWORD = "C\u8bed\u8a00";
     String EXPERIMENT_NAME_EXPR = "COALESCE(NULLIF(TRIM(ao.title_override), ''), at.title)";
+    String COURSE_NAME_EXPR = "COALESCE(NULLIF(TRIM(tc.course_name), ''), '')";
     String LEGACY_EXPERIMENT_ID_EXPR =
             "CAST(SUBSTRING_INDEX(SUBSTRING_INDEX(ao.source_offering_key, ':CLASS:', 1), ':', -1) AS SIGNED)";
-    String COURSE_NAME_EXPR = "COALESCE(NULLIF(TRIM(tc.course_name), ''), '')";
     String COLL = " COLLATE utf8mb4_0900_ai_ci";
     String DATA_STRUCTURE_SQL_LITERAL = "_utf8mb4'" + DATA_STRUCTURE_KEYWORD + "' COLLATE utf8mb4_0900_ai_ci";
     String C_LANGUAGE_SQL_LITERAL = "_utf8mb4'" + C_LANGUAGE_KEYWORD + "' COLLATE utf8mb4_0900_ai_ci";
@@ -28,9 +29,19 @@ public interface TeacherExperimentQueryDao {
     String EXPERIMENT_NAME_EXPR_COLL = EXPERIMENT_NAME_EXPR + COLL;
     String COURSE_NAME_EXPR_COLL = COURSE_NAME_EXPR + COLL;
     String NORMALIZED_PTA_KEYWORD_EXPR =
-            "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(tc.pta_keyword, ''), ' ', ''), '\u3000', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '')";
+            "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(tc.pta_keyword, ''), ' ', ''), '　', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '')";
     String NORMALIZED_CLASS_NAME_EXPR =
-            "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(tc.name, ''), ' ', ''), '\u3000', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '')";
+            "REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(COALESCE(tc.name, ''), ' ', ''), '　', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '')";
+    String DATA_STRUCTURE_SCOPE_PREDICATE =
+            "(" +
+                    EXPERIMENT_NAME_EXPR_COLL + " LIKE " + DATA_STRUCTURE_LIKE_PATTERN + " OR " +
+                    "COALESCE(NULLIF(TRIM(tc.pta_keyword), ''), '')" + COLL + " LIKE " + DATA_STRUCTURE_LIKE_PATTERN + " OR " +
+                    COURSE_NAME_EXPR_COLL + " LIKE " + DATA_STRUCTURE_LIKE_PATTERN +
+                    ") AND NOT (" +
+                    EXPERIMENT_NAME_EXPR_COLL + " LIKE " + C_LANGUAGE_LIKE_PATTERN + " OR " +
+                    "COALESCE(NULLIF(TRIM(tc.pta_keyword), ''), '')" + COLL + " LIKE " + C_LANGUAGE_LIKE_PATTERN + " OR " +
+                    COURSE_NAME_EXPR_COLL + " LIKE " + C_LANGUAGE_LIKE_PATTERN +
+                    ")";
     String SUBMISSION_ACTIVITY_PREDICATE =
             "LOWER(COALESCE(sa.submission_status, '')) IN ('graded', 'submitted') " +
                     "OR COALESCE(sa.completion_evidence, 'NONE') IN ('TRANSCRIPT_SCORE', 'ANSWER_SHEET', 'SCORED_CODE')";
@@ -57,6 +68,7 @@ public interface TeacherExperimentQueryDao {
             "JOIN tap_user tu ON tu.id = #{teacherId}",
             "LEFT JOIN student_assignment sa ON sa.offering_id = ao.id",
             "WHERE ao.teacher_id = tu.id",
+            "  AND " + DATA_STRUCTURE_SCOPE_PREDICATE,
             "  <if test='classId != null'>",
             "    AND ao.class_id = #{classId}",
             "  </if>",
@@ -111,6 +123,7 @@ public interface TeacherExperimentQueryDao {
             " AND ao.source_offering_key LIKE 'LEGACY_EXPERIMENT_OFFERING:%'",
             " AND pct.experiment_id = " + LEGACY_EXPERIMENT_ID_EXPR,
             "WHERE ao.teacher_id = teacher_user.id",
+            "  AND " + DATA_STRUCTURE_SCOPE_PREDICATE,
             "  <if test='classId != null'>",
             "    AND ao.class_id = #{classId}",
             "  </if>",
@@ -198,6 +211,7 @@ public interface TeacherExperimentQueryDao {
             " AND pct.experiment_id = " + LEGACY_EXPERIMENT_ID_EXPR,
             "WHERE ao.id = #{experimentId}",
             "  AND sp.student_no COLLATE utf8mb4_unicode_ci = #{studentId} COLLATE utf8mb4_unicode_ci",
+            "  AND " + DATA_STRUCTURE_SCOPE_PREDICATE,
             "LIMIT 1"
     })
     TeacherStudentAssignmentRow findStudentAssignmentBySubmissionKey(
@@ -411,6 +425,9 @@ public interface TeacherExperimentQueryDao {
             "  AND NULLIF(TRIM(COALESCE(sp.real_name, '')), '') IS NOT NULL",
             "  AND NULLIF(TRIM(COALESCE(tc.name, '')), '') IS NOT NULL",
             "  AND NULLIF(TRIM(COALESCE(" + EXPERIMENT_NAME_EXPR + ", '')), '') IS NOT NULL",
+            "  <if test='scope == null or scope != \"all\"'>",
+            "    AND " + DATA_STRUCTURE_SCOPE_PREDICATE,
+            "  </if>",
             "  <if test='classId != null'>",
             "    AND ao.class_id = #{classId}",
             "  </if>",
@@ -438,6 +455,7 @@ public interface TeacherExperimentQueryDao {
     /**
      * 管理员视角：全量取 assignment_offering 实验列表（不绑定教师）。
      * 可选 classId 过滤与 classKeyword（pta_keyword/name）匹配。
+     * scope='all' 时跳过课程范围过滤（DATA_STRUCTURE_SCOPE_PREDICATE），返回所有实验。
      */
     @Select({
             "<script>",
@@ -450,6 +468,9 @@ public interface TeacherExperimentQueryDao {
             "JOIN assignment_template at ON at.id = ao.template_id",
             "JOIN teaching_class tc ON tc.id = ao.class_id",
             "WHERE 1=1",
+            "  <if test='scope == null or scope != \"all\"'>",
+            "    AND " + DATA_STRUCTURE_SCOPE_PREDICATE,
+            "  </if>",
             "  <if test='classId != null'>",
             "    AND ao.class_id = #{classId}",
             "  </if>",
@@ -485,6 +506,7 @@ public interface TeacherExperimentQueryDao {
             "  spa.runtime_ms AS runtimeMs,",
             "  spa.memory_kb AS memoryKb,",
             "  code_artifact.text_content AS code,",
+            "  spa.problem_id AS problemId,",
             "  ap.title AS problemTitle",
             "FROM student_problem_attempt spa",
             "JOIN student_problem_state sps",
@@ -506,5 +528,33 @@ public interface TeacherExperimentQueryDao {
             @Param("studentNo") String studentNo,
             @Param("experimentId") Integer experimentId
     );
-}
 
+    @Select({
+            "SELECT COALESCE(NULLIF(TRIM(ao.title_override), ''), at.title)",
+            "FROM assignment_offering ao",
+            "JOIN assignment_template at ON at.id = ao.template_id",
+            "WHERE ao.id = #{offeringId}"
+    })
+    String findOfferingName(@Param("offeringId") int offeringId);
+
+    /**
+     * 查询学生所有"进行中"的实验（未截止，发布时间可选）。
+     * 用于登录后自动预警扫描。
+     */
+    @Select({
+            "SELECT DISTINCT CAST(ao.id AS SIGNED) AS experimentId,",
+            "  " + EXPERIMENT_NAME_EXPR + " AS experimentName",
+            "FROM student_profile sp",
+            "JOIN class_student cs ON cs.student_num = sp.student_no COLLATE utf8mb4_unicode_ci",
+            "JOIN teaching_class tc ON tc.id = cs.class_id",
+            "JOIN assignment_offering ao ON ao.class_id = cs.class_id",
+            "JOIN assignment_template at ON at.id = ao.template_id",
+            "WHERE sp.student_no = #{studentNo}",
+            "  AND (tc.status IS NULL OR tc.status = 'ACTIVE')",
+            "  AND ao.status <> 'ARCHIVED'",
+            "  AND (ao.published_at IS NULL OR ao.published_at <= NOW(3))",
+            "  AND (ao.deadline_at IS NULL OR ao.deadline_at > NOW(3))",
+            "ORDER BY experimentId"
+    })
+    List<Map<String, Object>> findActiveExperimentsForStudent(@Param("studentNo") String studentNo);
+}

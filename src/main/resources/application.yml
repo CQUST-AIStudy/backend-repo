@@ -51,6 +51,21 @@ spring:
       # 临时禁用Redis以便测试
       timeout: 1000ms
       connect-timeout: 1000ms
+  mail:
+    host: ${TAP_MAIL_HOST:smtp.163.com}
+    port: ${TAP_MAIL_PORT:465}
+    username: ${TAP_MAIL_USERNAME:}
+    password: ${TAP_MAIL_PASSWORD:}
+    protocol: smtps
+    properties:
+      mail:
+        smtp:
+          auth: true
+          ssl:
+            enable: true
+          starttls:
+            enable: true
+            required: true
   servlet:
     session:
       timeout: 3600
