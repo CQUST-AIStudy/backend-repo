@@ -79,6 +79,7 @@ public class GradingSubmissionService {
     private final ScoreDao scoreDao;
     private final GradingUnifiedLinkService gradingUnifiedLinkService;
     private final GradingPublicationPolicy publicationPolicy;
+    private final GradingErrorDemonstrationService errorDemonstrationService;
     private final HttpClient httpClient;
 
     public GradingSubmissionService(GradingSubmissionRepository submissionRepo,
@@ -100,7 +101,8 @@ public class GradingSubmissionService {
                                     SubmissionDao submissionDao,
                                     ScoreDao scoreDao,
                                     GradingUnifiedLinkService gradingUnifiedLinkService,
-                                    GradingPublicationPolicy publicationPolicy) {
+                                    GradingPublicationPolicy publicationPolicy,
+                                    GradingErrorDemonstrationService errorDemonstrationService) {
         this.submissionRepo = submissionRepo;
         this.taskRepo = taskRepo;
         this.scoreItemRepo = scoreItemRepo;
@@ -121,6 +123,7 @@ public class GradingSubmissionService {
         this.scoreDao = scoreDao;
         this.gradingUnifiedLinkService = gradingUnifiedLinkService;
         this.publicationPolicy = publicationPolicy;
+        this.errorDemonstrationService = errorDemonstrationService;
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(java.time.Duration.ofSeconds(15))
                 .build();
@@ -150,6 +153,7 @@ public class GradingSubmissionService {
         result.put("publishedBy", submission.getPublishedBy());
         result.put("published", submission.getPublishedAt() != null);
         result.put("scores", scores.stream().map(this::scoreDto).toList());
+        result.put("errorDemonstrations", errorDemonstrationService.buildDemonstrations(submission, scores, evidence));
         result.put("evidenceBlocks", evidence.stream().map(this::evidenceDto).toList());
         result.put("traces", traces.stream().map(this::traceDto).toList());
         result.put("reportFiles", reportFileRepo.findAllBySubmissionIdOrderByCreatedAtDesc(submissionId).stream()

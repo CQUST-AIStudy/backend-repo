@@ -1,10 +1,14 @@
 package com.tap.backend.service;
 
+import com.tap.backend.domain.grading.EvidenceBlockEntity;
 import com.tap.backend.domain.grading.GradingSubmissionEntity;
 import com.tap.backend.domain.grading.ReportFileEntity;
+import com.tap.backend.domain.grading.ScoreItemEntity;
 import com.tap.backend.infra.storage.ObjectStorageService;
+import com.tap.backend.repo.EvidenceBlockRepository;
 import com.tap.backend.repo.GradingSubmissionRepository;
 import com.tap.backend.repo.ReportFileRepository;
+import com.tap.backend.repo.ScoreItemRepository;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -19,13 +23,22 @@ public class StudentGradingResultService {
     private final GradingSubmissionRepository submissionRepo;
     private final ReportFileRepository reportFileRepo;
     private final ObjectStorageService storageService;
+    private final ScoreItemRepository scoreItemRepo;
+    private final EvidenceBlockRepository evidenceBlockRepo;
+    private final GradingErrorDemonstrationService errorDemonstrationService;
 
     public StudentGradingResultService(GradingSubmissionRepository submissionRepo,
                                        ReportFileRepository reportFileRepo,
-                                       ObjectStorageService storageService) {
+                                       ObjectStorageService storageService,
+                                       ScoreItemRepository scoreItemRepo,
+                                       EvidenceBlockRepository evidenceBlockRepo,
+                                       GradingErrorDemonstrationService errorDemonstrationService) {
         this.submissionRepo = submissionRepo;
         this.reportFileRepo = reportFileRepo;
         this.storageService = storageService;
+        this.scoreItemRepo = scoreItemRepo;
+        this.evidenceBlockRepo = evidenceBlockRepo;
+        this.errorDemonstrationService = errorDemonstrationService;
     }
 
     @Transactional(readOnly = true)
@@ -45,6 +58,9 @@ public class StudentGradingResultService {
         result.put("publishedAt", submission.getPublishedAt().toString());
         result.put("reportAvailable", report != null);
         result.put("reportFileType", report != null ? report.getFileType() : null);
+        List<ScoreItemEntity> scores = scoreItemRepo.findAllBySubmissionId(submission.getId());
+        List<EvidenceBlockEntity> evidence = evidenceBlockRepo.findAllBySubmissionId(submission.getId());
+        result.put("errorDemonstrations", errorDemonstrationService.buildDemonstrations(submission, scores, evidence));
         return result;
     }
 
