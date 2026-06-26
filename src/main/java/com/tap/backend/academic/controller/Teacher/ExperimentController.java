@@ -96,9 +96,15 @@ public class ExperimentController {
                 return ResponseEntity.ok(response);
             }
 
-            String keyword = resolveClassKeywordForQuery(teacher, classId, normalizeKeyword(classKeyword, classKeywordAlias));
+            ResolvedTeacherClassQuery resolvedQuery = resolveTeacherClassQuery(
+                    teacher,
+                    classId,
+                    normalizeKeyword(classKeyword, classKeywordAlias)
+            );
+            Integer queryTeacherId = resolveUnifiedTeacherId(teacher);
+            String keyword = resolvedQuery.keyword();
             TeacherExperimentListResult result = teacherExperimentQueryService
-                    .getTeacherExperimentList(teacher.getTeacher_id(), classId, keyword);
+                    .getTeacherExperimentList(queryTeacherId, resolvedQuery.classId(), keyword);
 
             // 关键词过滤（教师流）
             java.util.List<Object> teacherExps = new ArrayList<>(result.getExperiments());
@@ -121,7 +127,7 @@ public class ExperimentController {
             response.put("data", teacherExps);
             response.put("total", teacherExps.size());
             response.put("studentCount", result.getStudentCount());
-            response.put("classId", classId);
+            response.put("classId", resolvedQuery.classId());
             response.put("class", keyword);
             response.put("teacherInfo", teacher);
             return ResponseEntity.ok(response);
@@ -236,14 +242,16 @@ public class ExperimentController {
                 return ResponseEntity.ok(response);
             }
 
-            keyword = resolveClassKeywordForQuery(teacher, classId, keyword);
+            ResolvedTeacherClassQuery resolvedQuery = resolveTeacherClassQuery(teacher, classId, keyword);
+            Integer queryTeacherId = resolveUnifiedTeacherId(teacher);
+            keyword = resolvedQuery.keyword();
             TeacherStudentExperimentResult result = teacherExperimentQueryService
-                    .getAllStudentExperiments(teacher.getTeacher_id(), classId, keyword, experimentId);
+                    .getAllStudentExperiments(queryTeacherId, resolvedQuery.classId(), keyword, experimentId);
             if (!result.hasStudents()) {
                 response.put("success", true);
                 response.put("data", new ArrayList<>());
                 response.put("message", "no students found");
-                response.put("classId", classId);
+                response.put("classId", resolvedQuery.classId());
                 response.put("class", keyword);
                 response.put("teacherInfo", teacher);
                 return ResponseEntity.ok(response);
@@ -252,7 +260,7 @@ public class ExperimentController {
             response.put("success", true);
             response.put("data", result.getData());
             response.put("total", result.getData().size());
-            response.put("classId", classId);
+            response.put("classId", resolvedQuery.classId());
             response.put("class", keyword);
             response.put("teacherInfo", teacher);
             return ResponseEntity.ok(response);
@@ -359,33 +367,34 @@ public class ExperimentController {
         return scope != null && "all".equalsIgnoreCase(scope.trim());
     }
 
-    private String resolveClassKeywordForQuery(Teacher teacher, Long classId, String keyword) {
+    private ResolvedTeacherClassQuery resolveTeacherClassQuery(Teacher teacher, Long classId, String keyword) {
         if (teacher == null) {
-            return keyword;
+            return new ResolvedTeacherClassQuery(classId, keyword);
         }
         if (classId != null) {
-            return teachingClassRepository.findById(classId)
+            String resolvedKeyword = teachingClassRepository.findById(classId)
                     .filter(teachingClass -> ownsTeachingClass(teacher, teachingClass))
                     .map(this::resolvePtaKeyword)
                     .orElse(keyword);
+            return new ResolvedTeacherClassQuery(classId, resolvedKeyword);
         }
         if (keyword == null || keyword.isBlank()) {
-            return keyword;
+            return new ResolvedTeacherClassQuery(null, keyword);
         }
         String normalizedKeyword = removeKeywordWhitespace(keyword);
         Long tapTeacherId = resolveTapTeacherId(teacher);
         if (tapTeacherId == null) {
-            return normalizedKeyword;
+            return new ResolvedTeacherClassQuery(null, normalizedKeyword);
         }
         List<TeachingClassEntity> classes = teachingClassRepository.findAllByTeacherId(tapTeacherId);
         for (TeachingClassEntity teachingClass : classes) {
             String className = removeKeywordWhitespace(teachingClass.getName());
             String ptaKeyword = removeKeywordWhitespace(teachingClass.getPtaKeyword());
             if (normalizedKeyword.equals(className) || normalizedKeyword.equals(ptaKeyword)) {
-                return resolvePtaKeyword(teachingClass);
+                return new ResolvedTeacherClassQuery(teachingClass.getId(), resolvePtaKeyword(teachingClass));
             }
         }
-        return normalizedKeyword;
+        return new ResolvedTeacherClassQuery(null, normalizedKeyword);
     }
 
     private String resolveExperimentClassKeyword(Teacher teacher, Map<String, Object> request) {
@@ -478,6 +487,14 @@ public class ExperimentController {
                 .orElseGet(() -> teacher.getTeacher_id() == null ? null : Long.valueOf(teacher.getTeacher_id()));
     }
 
+    private Integer resolveUnifiedTeacherId(Teacher teacher) {
+        Long tapTeacherId = resolveTapTeacherId(teacher);
+        if (tapTeacherId == null) {
+            return teacher == null ? null : teacher.getTeacher_id();
+        }
+        return Math.toIntExact(tapTeacherId);
+    }
+
     private Long parseLong(Object rawValue) {
         if (rawValue == null) {
             return null;
@@ -528,5 +545,8 @@ public class ExperimentController {
         sanitized.setClass_name(student.getClass_name());
         sanitized.setCreatedAt(student.getCreatedAt());
         return sanitized;
+    }
+
+    private record ResolvedTeacherClassQuery(Long classId, String keyword) {
     }
 }
