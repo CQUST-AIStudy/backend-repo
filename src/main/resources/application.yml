@@ -40,6 +40,8 @@ spring:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
+      username: ${REDIS_USERNAME:}
+      password: ${REDIS_PASSWORD:}
       lettuce:
         pool:
           max-active: ${REDIS_POOL_MAX:16}
@@ -49,6 +51,21 @@ spring:
       # 临时禁用Redis以便测试
       timeout: 1000ms
       connect-timeout: 1000ms
+  mail:
+    host: ${TAP_MAIL_HOST:smtp.163.com}
+    port: ${TAP_MAIL_PORT:465}
+    username: ${TAP_MAIL_USERNAME:}
+    password: ${TAP_MAIL_PASSWORD:}
+    protocol: smtps
+    properties:
+      mail:
+        smtp:
+          auth: true
+          ssl:
+            enable: true
+          starttls:
+            enable: true
+            required: true
   servlet:
     session:
       timeout: 3600
@@ -165,6 +182,12 @@ tap:
     translation-chars-per-day: ${QUOTA_TRANSLATION_CHARS_PER_DAY:200000}
     ai-requests-per-day: ${QUOTA_AI_REQUESTS_PER_DAY:200}
     admin-unlimited: ${QUOTA_ADMIN_UNLIMITED:true}
+  recommendation:
+    base-url: ${RECOMMENDATION_SERVICE_BASE_URL:http://127.0.0.1:8003}
+    connect-timeout-ms: ${RECOMMENDATION_SERVICE_CONNECT_TIMEOUT_MS:3000}
+    read-timeout-ms: ${RECOMMENDATION_SERVICE_READ_TIMEOUT_MS:10000}
+  error-analysis:
+    base-url: ${TAP_ERROR_ANALYSIS_BASE_URL:http://127.0.0.1:8002}
   ai:
     provider: ${AI_PROVIDER:mock}
     openai:
@@ -247,6 +270,8 @@ pta:
   connect-timeout-ms: ${PTA_SPIDER_CONNECT_TIMEOUT_MS:5000}
   read-timeout-ms: ${PTA_SPIDER_READ_TIMEOUT_MS:20000}
   scheduler:
+    cron: ${PTA_SYNC_CRON:0 0 2 * * ?}
+    mode: ${PTA_SYNC_MODE:full}
     max-concurrency: ${PTA_SYNC_MAX_CONCURRENCY:3}
     submit-interval-ms: ${PTA_SYNC_SUBMIT_INTERVAL_MS:200}
   auto-start: ${PTA_SPIDER_AUTO_START:false}

@@ -197,10 +197,11 @@ public class ErrorAnalysisController {
                 }
                 responseBody = errorAnalysisService.proxyToMicroservice("/analyze/" + type, payload);
             } else if (experimentId != null) {
+                boolean forceRefresh = Boolean.TRUE.equals(payload.get("forceRefresh"));
                 responseBody = switch (type) {
-                    case "error" -> errorAnalysisService.analyzeErrorFromDb(studentId, studentName, experimentId);
+                    case "error" -> errorAnalysisService.analyzeErrorFromDb(studentId, studentName, experimentId, forceRefresh);
                     case "learning" -> errorAnalysisService.learningSuggestFromDb(studentId, studentName, experimentId);
-                    case "warning" -> errorAnalysisService.warningAnalyzeFromDb(studentId, studentName, experimentId);
+                    case "warning" -> errorAnalysisService.warningAnalyzeFromDb(studentId, studentName, experimentId, forceRefresh);
                     default -> null;
                 };
             } else {

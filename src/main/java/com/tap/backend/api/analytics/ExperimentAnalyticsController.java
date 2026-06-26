@@ -586,7 +586,7 @@ public class ExperimentAnalyticsController {
     private Integer resolveLegacyExperimentId(int offeringId) {
         @SuppressWarnings("unchecked")
         List<Object> rows = em.createNativeQuery(
-                "SELECT CAST(SUBSTRING_INDEX(source_offering_key, ':', -1) AS SIGNED) " +
+                "SELECT CAST(SUBSTRING_INDEX(SUBSTRING_INDEX(source_offering_key, ':CLASS:', 1), ':', -1) AS SIGNED) " +
                         "FROM assignment_offering " +
                         "WHERE id = ?1 " +
                         "  AND source_system = 'LEGACY_TAP' " +

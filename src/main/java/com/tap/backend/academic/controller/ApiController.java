@@ -7,6 +7,7 @@ import com.tap.backend.academic.security.StudentSessionResolver;
 import com.tap.backend.academic.dao.teacherexperiment.TeacherExperimentQueryDao;
 import com.tap.backend.academic.service.*;
 import com.tap.backend.academic.entity.LeetCodeRecommendItem;
+import com.tap.backend.academic.learningtracking.LearningTrackingResponse;
 import com.tap.backend.academic.teacherexperiment.TeacherStudentAssignmentRow;
 import com.tap.backend.academic.teacherexperiment.TeacherSubmissionProblemRow;
 import com.google.gson.Gson;
@@ -68,6 +69,9 @@ public class ApiController {
 
     @Autowired
     private ErrorAnalysisService errorAnalysisService;
+
+    @Autowired
+    private LearningTrackingService learningTrackingService;
 
     @Autowired
     private ApplicationContext applicationContext;
@@ -1767,6 +1771,43 @@ public class ApiController {
         } catch (Exception e) {
             response.put("success", false);
             response.put("message", "获取提交详情失败: " + e.getMessage());
+            return ResponseEntity.status(500).body(response);
+        }
+    }
+
+    @GetMapping("/api/submissions/{submissionId}/learning-tracking")
+    public ResponseEntity<Map<String, Object>> getLearningTracking(
+            @PathVariable String submissionId, HttpServletRequest request) {
+        Map<String, Object> response = new HashMap<>();
+        try {
+            legacySessionAccessResolver.requireTeacherOrAdmin(request);
+            int separatorIndex = submissionId.lastIndexOf('-');
+            if (separatorIndex <= 0 || separatorIndex >= submissionId.length() - 1) {
+                response.put("success", false);
+                response.put("message", "提交ID格式不正确，应为'学号-实验ID'");
+                return ResponseEntity.badRequest().body(response);
+            }
+            String studentNo = submissionId.substring(0, separatorIndex).trim();
+            int experimentId = Integer.parseInt(submissionId.substring(separatorIndex + 1).trim());
+            Integer studentProfileId = null;
+            try {
+                Object idObj = em.createNativeQuery(
+                        "SELECT id FROM student_profile WHERE student_no = ?1 LIMIT 1"
+                ).setParameter(1, studentNo).getSingleResult();
+                if (idObj instanceof Number) studentProfileId = ((Number) idObj).intValue();
+            } catch (Exception ignored) {}
+            LearningTrackingResponse data = learningTrackingService.getLearningTracking(
+                    studentNo, experimentId, studentProfileId);
+            response.put("success", true);
+            response.put("data", data);
+            return ResponseEntity.ok(response);
+        } catch (RuntimeException e) {
+            response.put("success", false);
+            response.put("message", e.getMessage());
+            return ResponseEntity.status(403).body(response);
+        } catch (Exception e) {
+            response.put("success", false);
+            response.put("message", "获取学情追踪失败: " + e.getMessage());
             return ResponseEntity.status(500).body(response);
         }
     }

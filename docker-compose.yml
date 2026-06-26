@@ -1,0 +1,59 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: teaching-assistant-backend:latest
+    container_name: teaching-assistant-backend
+    restart: unless-stopped
+    ports:
+      - "${BACKEND_PORT:-8081}:8081"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      JAVA_OPTS: ${JAVA_OPTS:-}
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
+      SERVER_PORT: 8081
+
+      DB_HOST: ${DB_HOST:-host.docker.internal}
+      DB_PORT: ${DB_PORT:-3306}
+      DB_NAME: ${DB_NAME:-ptadatabase}
+      DB_USERNAME: ${DB_USERNAME:-root}
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      DB_POOL_MAX: ${DB_POOL_MAX:-30}
+      DB_POOL_MIN: ${DB_POOL_MIN:-10}
+
+      REDIS_HOST: ${REDIS_HOST:-host.docker.internal}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_USERNAME: ${REDIS_USERNAME:-}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:-http://host.docker.internal:19000}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
+      MINIO_BUCKET: ${MINIO_BUCKET:-tap-files}
+
+      JWT_ISSUER: ${JWT_ISSUER:-tap}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      JWT_TTL_SECONDS: ${JWT_TTL_SECONDS:-3600}
+      PTA_CREDENTIALS_SECRET: ${PTA_CREDENTIALS_SECRET:-${JWT_SECRET}}
+
+      AI_PROVIDER: ${AI_PROVIDER:-mock}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.deepseek.com/v1}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-deepseek-chat}
+      DASHSCOPE_BASE_URL: ${DASHSCOPE_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      DASHSCOPE_MODEL: ${DASHSCOPE_MODEL:-qwen-vl-max-latest}
+      DEEPL_API_KEY: ${DEEPL_API_KEY:-}
+      VOLCANO_API_KEY: ${VOLCANO_API_KEY:-}
+      ARK_API_KEY: ${ARK_API_KEY:-}
+
+      RAG_SERVICE_BASE_URL: ${RAG_SERVICE_BASE_URL:-http://host.docker.internal:8001}
+      PTA_SPIDER_URL: ${PTA_SPIDER_URL:-http://host.docker.internal:8100}
+      PTA_SPIDER_AUTO_START: ${PTA_SPIDER_AUTO_START:-false}
+      RECOMMENDATION_SERVICE_BASE_URL: ${RECOMMENDATION_SERVICE_BASE_URL:-http://host.docker.internal:8003}
+      TAP_ERROR_ANALYSIS_BASE_URL: ${TAP_ERROR_ANALYSIS_BASE_URL:-http://host.docker.internal:8002}
+
+      CORS_ALLOWED_ORIGIN_PATTERNS: ${CORS_ALLOWED_ORIGIN_PATTERNS:-http://localhost:*,http://127.0.0.1:*,http://host.docker.internal:*}

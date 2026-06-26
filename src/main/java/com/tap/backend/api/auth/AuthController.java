@@ -1,6 +1,7 @@
 package com.tap.backend.api.auth;
 
 import com.tap.backend.academic.security.LegacySessionAccessResolver;
+import com.tap.backend.academic.service.ErrorAnalysisService;
 import com.tap.backend.domain.user.UserEntity;
 import com.tap.backend.domain.user.UserRole;
 import com.tap.backend.repo.UserRepository;
@@ -30,19 +31,22 @@ public class AuthController {
   private final JwtService jwtService;
   private final LegacySessionAccessResolver legacySessionAccessResolver;
   private final TeachingClassService teachingClassService;
+  private final ErrorAnalysisService errorAnalysisService;
 
   public AuthController(
       UserRepository userRepository,
       PasswordEncoder passwordEncoder,
       JwtService jwtService,
       LegacySessionAccessResolver legacySessionAccessResolver,
-      TeachingClassService teachingClassService
+      TeachingClassService teachingClassService,
+      ErrorAnalysisService errorAnalysisService
   ) {
     this.userRepository = userRepository;
     this.passwordEncoder = passwordEncoder;
     this.jwtService = jwtService;
     this.legacySessionAccessResolver = legacySessionAccessResolver;
     this.teachingClassService = teachingClassService;
+    this.errorAnalysisService = errorAnalysisService;
   }
 
   public record LoginRequest(
@@ -63,6 +67,15 @@ public class AuthController {
     }
     requireRequestedRole(user.getRole(), req.role());
     bindStudentRosterIfNeeded(user, user.getUsername());
+    // 学生登录后异步扫描进行中的实验，检测预警
+    if (user.getRole() == UserRole.STUDENT) {
+      String studentNo = (user.getUsernum() != null && !user.getUsernum().isBlank())
+              ? user.getUsernum().trim() : user.getUsername();
+      errorAnalysisService.scanActiveExperimentsAndWarn(
+          studentNo,
+          user.getDisplayName() != null && !user.getDisplayName().isBlank()
+              ? user.getDisplayName() : user.getUsername());
+    }
     String token = jwtService.issue(user);
     return ApiResponse.of(Maps.of(
         "accessToken", token,

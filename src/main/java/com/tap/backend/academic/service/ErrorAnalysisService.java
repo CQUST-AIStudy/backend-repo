@@ -7,6 +7,9 @@ import com.tap.backend.academic.dao.teacherexperiment.TeacherExperimentQueryDao;
 import com.tap.backend.academic.entity.AiErrorAnalysisReport;
 import com.tap.backend.academic.entity.Experiment;
 import com.tap.backend.academic.entity.StudentSubmissionAttempt;
+import com.tap.backend.email.EmailService;
+import com.tap.backend.email.ExperimentWarningSummary;
+import com.tap.backend.email.ProblemWarningInfo;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -14,6 +17,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -39,7 +43,9 @@ public class ErrorAnalysisService {
 
     private static final Logger logger = LoggerFactory.getLogger(ErrorAnalysisService.class);
     private static final String REDIS_KEY_PREFIX = "ai:analysis:";
+    private static final String REDIS_SYNC_KEY_PREFIX = "ai:sync:";
     private static final long REDIS_TTL_HOURS = 24;
+    private static final long REDIS_SYNC_TTL_HOURS = 1;
     private static final SimpleDateFormat ISO_FORMAT = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
 
     @Autowired
@@ -53,6 +59,9 @@ public class ErrorAnalysisService {
 
     @Autowired(required = false)
     private StringRedisTemplate redisTemplate;
+
+    @Autowired
+    private EmailService emailService;
 
     @Value("${tap.error-analysis.base-url:http://127.0.0.1:8002}")
     private String errorAnalysisBaseUrl;
@@ -135,17 +144,49 @@ public class ErrorAnalysisService {
     // ==================== 数据库查询方法 ====================
 
     /**
-     * 同步：从 DB 构建 payload → 调用微服务 → 返回（不存储）
+     * 同步：从 DB 构建 payload → 调微服务 → 缓存 1h → 返回
+     * @param forceRefresh 跳过缓存，强制重新分析
      */
-    public Map<String, Object> analyzeErrorFromDb(String studentNo, String studentName, int experimentId) {
+    public Map<String, Object> analyzeErrorFromDb(String studentNo, String studentName,
+                                                   int experimentId, boolean forceRefresh) {
+        // ── 缓存命中 ──
+        if (!forceRefresh) {
+            Map<String, Object> cached = getSyncCache(studentNo, experimentId, "error");
+            if (cached != null) {
+                logger.info("analyzeErrorFromDb: cache hit for student={}, experiment={}", studentNo, experimentId);
+                return cached;
+            }
+        }
+
         List<StudentSubmissionAttempt> attempts = teacherExperimentQueryDao
                 .findSubmissionAttemptsForErrorAnalysis(studentNo, experimentId);
+        if (attempts == null || attempts.isEmpty()) {
+            logger.info("analyzeErrorFromDb: no submissions for student={}, experiment={}", studentNo, experimentId);
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("aiGenerated", false);
+            result.put("overallAssessment", "暂无提交记录，完成PTA平台实验后可使用AI错误分析功能。");
+            result.put("errorCategories", new ArrayList<>());
+            result.put("learningSuggestions", new ArrayList<>());
+            result.put("latestCode", null);
+            result.put("latestJudgeStatus", null);
+            return result;
+        }
         Experiment experiment = experimentService.findExperimentById(experimentId);
         List<Map<String, Object>> submissions = buildSubmissionList(attempts);
 
         Map<String, Object> payload = buildErrorPayload(studentNo, studentName,
                 experimentId, experiment != null ? experiment.getName() : ("实验" + experimentId), submissions, attempts);
-        return callMicroservice("/analyze/error", payload);
+        Map<String, Object> result = callMicroservice("/analyze/error", payload);
+
+        // ── 缓存 1h ──
+        if (result != null) {
+            cleanOldReports(studentNo, experimentId, "ERROR");
+            putSyncCache(studentNo, experimentId, "error", result);
+            saveReport(studentNo, experimentId,
+                    experiment != null ? experiment.getName() : ("实验" + experimentId),
+                    "ERROR", result);
+        }
+        return result;
     }
 
     public Map<String, Object> learningSuggestFromDb(String studentNo, String studentName, int experimentId) {
@@ -159,14 +200,221 @@ public class ErrorAnalysisService {
         return callMicroservice("/analyze/learning", payload);
     }
 
-    public Map<String, Object> warningAnalyzeFromDb(String studentNo, String studentName, int experimentId) {
+    public Map<String, Object> warningAnalyzeFromDb(String studentNo, String studentName,
+                                                     int experimentId, boolean forceRefresh) {
+        // ── 缓存命中 ──
+        if (!forceRefresh) {
+            Map<String, Object> cached = getSyncCache(studentNo, experimentId, "warning");
+            if (cached != null) {
+                logger.info("warningAnalyzeFromDb: cache hit for student={}, experiment={}", studentNo, experimentId);
+                return cached;
+            }
+        }
+
         List<StudentSubmissionAttempt> attempts = teacherExperimentQueryDao
                 .findSubmissionAttemptsForErrorAnalysis(studentNo, experimentId);
-        return callMicroservice("/analyze/warning",
-                buildWarningPayload(studentNo, studentName, experimentId,
-                        experimentService.findExperimentById(experimentId) != null
-                                ? experimentService.findExperimentById(experimentId).getName() : "",
-                        attempts));
+        String experimentName = resolveExperimentName(experimentId);
+        Map<String, Object> result = new LinkedHashMap<>();
+
+        if (attempts == null || attempts.isEmpty()) {
+            result.put("triggered", false);
+            result.put("totalErrors", 0);
+            result.put("message", "暂无提交记录");
+            return result;
+        }
+
+        List<ProblemWarningInfo> triggeredProblems = analyzeExperimentProblems(
+                studentNo, studentName, experimentId, experimentName, attempts);
+
+        // 筛选真正触发了 AI 预警的题目（suggestedActions != null 表示 ≥3 错误且调了 AI）
+        List<ProblemWarningInfo> aiTriggered = new ArrayList<>();
+        for (ProblemWarningInfo p : triggeredProblems) {
+            if (p.getSuggestedActions() != null && !p.getSuggestedActions().isEmpty()) {
+                aiTriggered.add(p);
+            }
+        }
+
+        if (aiTriggered.isEmpty()) {
+            result.put("triggered", false);
+            int totalErrors = countErrors(attempts);
+            result.put("totalErrors", totalErrors);
+            result.put("problemCount", triggeredProblems.size());
+            if (totalErrors > 0) {
+                result.put("message", "错误次数较少（< 3次/题），暂未触发预警，继续加油！");
+            } else {
+                result.put("message", "未检测到错误，表现优秀！");
+            }
+            return result;
+        }
+
+        // 聚合：取最高等级
+        String highestLevel = "LOW";
+        for (ProblemWarningInfo p : aiTriggered) {
+            String lv = p.getLevel();
+            if ("HIGH".equals(lv)) {
+                highestLevel = "HIGH";
+                break;
+            } else if ("MEDIUM".equals(lv)) {
+                highestLevel = "MEDIUM";
+            }
+        }
+
+        // 合并 warning message
+        StringBuilder msgBuilder = new StringBuilder();
+        StringBuilder noteBuilder = new StringBuilder();
+        java.util.Set<String> actionSet = new java.util.LinkedHashSet<>();
+
+        for (int i = 0; i < aiTriggered.size(); i++) {
+            ProblemWarningInfo p = aiTriggered.get(i);
+            if (i > 0) {
+                msgBuilder.append("；");
+                noteBuilder.append("；");
+            }
+            msgBuilder.append("「").append(p.getProblemTitle()).append("」")
+                    .append("共提交").append(p.getTotalSubmissions()).append("次");
+            noteBuilder.append("「").append(p.getProblemTitle()).append("」")
+                    .append(": ").append(p.getWarningType())
+                    .append(" AC:").append(p.getAcceptedCount())
+                    .append("/").append(p.getTotalSubmissions());
+            if (p.getSuggestedActions() != null) {
+                actionSet.addAll(p.getSuggestedActions());
+            }
+        }
+        msgBuilder.append("，建议查看详细分析。");
+
+        result.put("triggered", true);
+        result.put("level", highestLevel);
+        result.put("warningMessage", msgBuilder.toString());
+        result.put("teacherNote", noteBuilder.toString());
+        result.put("suggestedActions", new ArrayList<>(actionSet));
+        result.put("problemCount", aiTriggered.size());
+
+        // ── 缓存 1h ──
+        cleanOldReports(studentNo, experimentId, "WARNING");
+        putSyncCache(studentNo, experimentId, "warning", result);
+        saveReport(studentNo, experimentId, experimentName, "WARNING", result);
+        return result;
+    }
+
+    /**
+     * 登录后自动扫描所有"进行中"的实验，对 ≥3 次错误的实验做预警分析，
+     * 将多个实验的预警结果打包成一封邮件发送。
+     */
+    @Async("aiExecutor")
+    public void scanActiveExperimentsAndWarn(String studentNo, String studentName) {
+        logger.info("[预警扫描] 开始全盘预警分析 student={}", studentNo);
+
+        // 限频：同一学生 2h 内不重复扫描（Redis key 与 EmailService 共用）
+        if (redisTemplate != null) {
+            try {
+                String key = "tap:login_warning_scan:" + studentNo;
+                Boolean acquired = redisTemplate.opsForValue()
+                        .setIfAbsent(key, "1", 2, TimeUnit.HOURS);
+                if (!Boolean.TRUE.equals(acquired)) {
+                    logger.info("[预警扫描] ⏱ 2h内已扫描过 student={}，跳过", studentNo);
+                    return;
+                }
+            } catch (Exception e) {
+                logger.warn("[预警扫描] 限频检查异常，继续执行: {}", e.getMessage());
+            }
+        }
+
+        try {
+            List<Map<String, Object>> activeExperiments =
+                    teacherExperimentQueryDao.findActiveExperimentsForStudent(studentNo);
+            if (activeExperiments == null || activeExperiments.isEmpty()) {
+                logger.info("[预警扫描] 无进行中实验 student={}", studentNo);
+                return;
+            }
+
+            logger.info("[预警扫描] 找到 {} 个进行中实验 student={}", activeExperiments.size(), studentNo);
+
+            List<ExperimentWarningSummary> triggered = new ArrayList<>();
+            for (Map<String, Object> exp : activeExperiments) {
+                Object idObj = exp.get("experimentId");
+                int expId = idObj instanceof Number ? ((Number) idObj).intValue() : Integer.parseInt(String.valueOf(idObj));
+                String expName = exp.get("experimentName") instanceof String
+                        ? (String) exp.get("experimentName") : ("实验" + expId);
+
+                List<StudentSubmissionAttempt> attempts =
+                        teacherExperimentQueryDao.findSubmissionAttemptsForErrorAnalysis(studentNo, expId);
+                if (attempts == null || attempts.isEmpty()) continue;
+
+                List<ProblemWarningInfo> problems = analyzeExperimentProblems(
+                        studentNo, studentName, expId, expName, attempts);
+                if (!problems.isEmpty()) {
+                    triggered.add(new ExperimentWarningSummary(expId, expName, problems));
+                }
+            }
+
+            if (!triggered.isEmpty()) {
+                logger.info("[预警扫描] {} 个实验触发预警，发送邮件...", triggered.size());
+                emailService.sendMultiExperimentWarningEmail(studentNo, studentName, triggered);
+            } else {
+                logger.info("[预警扫描] 无实验触发预警 student={}", studentNo);
+            }
+        } catch (Exception e) {
+            logger.error("[预警扫描] 失败 student={}: {}", studentNo, e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 分析单个实验的所有提交，按题目分组，对 ≥3 次错误的题目调 AI 微服务获取建议。
+     * @return 触发预警的题目列表（仅 errorCount ≥ 1 的题目，空列表表示无预警）
+     */
+    private List<ProblemWarningInfo> analyzeExperimentProblems(
+            String studentNo, String studentName, int experimentId, String experimentName,
+            List<StudentSubmissionAttempt> attempts) {
+        List<ProblemWarningInfo> triggeredProblems = new ArrayList<>();
+
+        // 按题目分组
+        Map<Long, List<StudentSubmissionAttempt>> byProblem = attempts.stream()
+                .collect(Collectors.groupingBy(
+                        a -> a.getProblemId() != null ? a.getProblemId() : 0L));
+
+        for (Map.Entry<Long, List<StudentSubmissionAttempt>> entry : byProblem.entrySet()) {
+            List<StudentSubmissionAttempt> problemAttempts = entry.getValue();
+            int errorCount = countErrors(problemAttempts);
+            if (errorCount < 1) continue;
+
+            String problemTitle = resolveProblemTitle(problemAttempts);
+            int accepted = (int) problemAttempts.stream()
+                    .filter(a -> "ACCEPTED".equalsIgnoreCase(a.getJudgeStatus())).count();
+            Map<String, Integer> statusCounts = buildStatusCounts(problemAttempts);
+            List<String> suggestedActions = null;
+            String level = "LOW";
+            String warningType = "OK";
+
+            // 仅 >=3 错误时调微服务获取 AI 建议
+            if (errorCount >= 3) {
+                Map<String, Object> payload = buildWarningPayload(studentNo, studentName,
+                        experimentId, experimentName, problemAttempts);
+                payload.put("problemTitle", problemTitle);
+
+                Map<String, Object> responseBody = callMicroservice("/analyze/warning", payload);
+
+                @SuppressWarnings("unchecked")
+                Map<String, Object> data = (Map<String, Object>) responseBody.getOrDefault("data", responseBody);
+                @SuppressWarnings("unchecked")
+                Map<String, Object> warning = (Map<String, Object>) data.get("warning");
+                if (warning == null) warning = data;
+
+                if (Boolean.TRUE.equals(warning.get("autoNotify"))) {
+                    @SuppressWarnings("unchecked")
+                    List<String> actions = (List<String>) warning.get("suggestedActions");
+                    suggestedActions = actions;
+                    level = safeString(warning.get("level"), "MEDIUM");
+                    warningType = safeString(warning.get("warningType"), "FREQUENT_FAILURE");
+                }
+            }
+
+            triggeredProblems.add(new ProblemWarningInfo(
+                    entry.getKey(), problemTitle,
+                    problemAttempts.size(), accepted,
+                    statusCounts, level, warningType, suggestedActions));
+        }
+
+        return triggeredProblems;
     }
 
     // ==================== 查询已存储的报告 ====================
@@ -381,6 +629,37 @@ public class ErrorAnalysisService {
         evictCache(studentNo, experimentId);
     }
 
+    // ==================== 预警邮件 ====================
+
+    private String resolveExperimentName(int experimentId) {
+        try {
+            String name = teacherExperimentQueryDao.findOfferingName(experimentId);
+            if (name != null && !name.isBlank()) return name.trim();
+        } catch (Exception e) {
+            logger.warn("Failed to resolve experiment name for id={}: {}", experimentId, e.getMessage());
+        }
+        return "实验" + experimentId;
+    }
+
+    private Map<String, Integer> buildStatusCounts(List<StudentSubmissionAttempt> attempts) {
+        Map<String, Integer> counts = new LinkedHashMap<>();
+        for (StudentSubmissionAttempt a : attempts) {
+            String status = a.getJudgeStatus();
+            if (status == null || "ACCEPTED".equalsIgnoreCase(status)) continue;
+            counts.merge(status.toUpperCase(), 1, Integer::sum);
+        }
+        return counts;
+    }
+
+    private String resolveProblemTitle(List<StudentSubmissionAttempt> problemAttempts) {
+        for (StudentSubmissionAttempt a : problemAttempts) {
+            if (a.getProblemTitle() != null && !a.getProblemTitle().isBlank()) {
+                return a.getProblemTitle().trim();
+            }
+        }
+        return "未知题目";
+    }
+
     // ==================== Redis 缓存 ====================
 
     private String cacheKey(String studentNo, int experimentId) {
@@ -417,6 +696,46 @@ public class ErrorAnalysisService {
         try {
             redisTemplate.delete(cacheKey(studentNo, experimentId));
         } catch (Exception ignored) {}
+    }
+
+    /** 删掉同学生+实验+类型的旧报告，避免重复堆积 */
+    private void cleanOldReports(String studentNo, int experimentId, String reportType) {
+        try {
+            reportDao.deleteByStudentExperimentAndType(studentNo, experimentId, reportType);
+        } catch (Exception e) {
+            logger.warn("Failed to clean old {} reports: {}", reportType, e.getMessage());
+        }
+    }
+
+    // ==================== 同步端点缓存（1h TTL） ====================
+
+    private String syncCacheKey(String studentNo, int experimentId, String type) {
+        return REDIS_SYNC_KEY_PREFIX + studentNo + ":" + experimentId + ":" + type;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> getSyncCache(String studentNo, int experimentId, String type) {
+        if (redisTemplate == null) return null;
+        try {
+            String json = redisTemplate.opsForValue().get(syncCacheKey(studentNo, experimentId, type));
+            if (json == null || json.isEmpty()) return null;
+            return objectMapper.readValue(json, Map.class);
+        } catch (Exception e) {
+            logger.debug("Sync cache miss: {}/{}/{}", studentNo, experimentId, type);
+            return null;
+        }
+    }
+
+    private void putSyncCache(String studentNo, int experimentId, String type, Map<String, Object> data) {
+        if (redisTemplate == null || data == null || data.isEmpty()) return;
+        try {
+            String json = objectMapper.writeValueAsString(data);
+            redisTemplate.opsForValue().set(syncCacheKey(studentNo, experimentId, type), json,
+                    REDIS_SYNC_TTL_HOURS, TimeUnit.HOURS);
+            logger.debug("Sync cache set: {}/{}/{}", studentNo, experimentId, type);
+        } catch (Exception e) {
+            logger.warn("Sync cache write failed: {}", e.getMessage());
+        }
     }
 
     // ==================== 工具方法 ====================

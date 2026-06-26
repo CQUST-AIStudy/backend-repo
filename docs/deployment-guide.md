@@ -1,107 +1,167 @@
-# AI_Ds Deployment Guide
+# 后端 Docker 部署指南
 
-## Runtime Components
+## 部署形态
 
-- `AI_Ds`: Spring Boot backend for auth, business APIs, documents, grading, PTA integration, and `/rag` proxying.
-- `rag-service`: independent FastAPI RAG service. All knowledge-base indexing, retrieval, chat, annotations, and RAG analytics live here.
-- `AI_Ds-vue`: Vue frontend.
-- MySQL 8: main business database.
-- Redis: cache, quota, and async queues.
-- MinIO: uploaded files, generated ZIPs, reports, and extracted text.
+当前仓库只打包并运行 Spring Boot 后端容器，不在本仓库内启动 MySQL、Redis、MinIO、RAG、PTA spider、推荐服务或错误分析服务。
 
-Optional services:
+后端容器通过环境变量访问这些外部服务：
 
-- `grading_worker`: async grading and document AI tasks.
-- `pta-spider`: PTA sync.
-- `recommendation-service`: recommendation APIs.
+- 同一台服务器宿主机上的服务：使用 `host.docker.internal`。
+- 同一 Docker Compose 网络里的服务：使用 compose 服务名，例如 `http://rag-service:8001`。
+- 其他服务器上的服务：使用对应内网 IP 或域名。
 
-Milvus and Java in-process RAG are no longer part of the active deployment.
+`docker-compose.yml` 已配置：
 
-## Required Backend Environment
+```yaml
+extra_hosts:
+  - "host.docker.internal:host-gateway"
+```
+
+这让 Linux 服务器上的容器也可以通过 `host.docker.internal` 访问宿主机。
+
+## 首次部署
+
+在服务器项目目录中复制环境变量模板：
+
+```bash
+cp .env.example .env
+```
+
+然后编辑 `.env`，至少替换这些值：
 
 ```env
-DB_HOST=127.0.0.1
+DB_PASSWORD=replace-me
+MINIO_ACCESS_KEY=replace-me
+MINIO_SECRET_KEY=replace-me
+JWT_SECRET=replace-with-a-random-string-at-least-32-chars
+```
+
+如果 MySQL、Redis、MinIO 在服务器宿主机上，默认地址可以保持：
+
+```env
+DB_HOST=host.docker.internal
+REDIS_HOST=host.docker.internal
+MINIO_ENDPOINT=http://host.docker.internal:19000
+```
+
+如果某个服务也在同一个 compose 网络中，把地址改成服务名：
+
+```env
+RAG_SERVICE_BASE_URL=http://rag-service:8001
+RECOMMENDATION_SERVICE_BASE_URL=http://recommendation-service:8003
+PTA_SPIDER_URL=http://pta-spider:8100
+TAP_ERROR_ANALYSIS_BASE_URL=http://error-analysis-service:8002
+```
+
+## 启动
+
+构建并启动后端：
+
+```bash
+docker compose --env-file .env up -d --build
+```
+
+查看容器状态：
+
+```bash
+docker compose ps
+```
+
+查看日志：
+
+```bash
+docker compose logs -f backend
+```
+
+停止服务：
+
+```bash
+docker compose down
+```
+
+## 健康检查
+
+后端默认映射到服务器 `8081` 端口：
+
+```text
+http://服务器IP:8081/actuator/health
+```
+
+如果 `.env` 中修改了 `BACKEND_PORT`，访问对应端口。
+
+## 关键环境变量
+
+```env
+BACKEND_PORT=8081
+SPRING_PROFILES_ACTIVE=prod
+
+DB_HOST=host.docker.internal
 DB_PORT=3306
 DB_NAME=ptadatabase
 DB_USERNAME=root
 DB_PASSWORD=replace-me
-REDIS_HOST=127.0.0.1
+
+REDIS_HOST=host.docker.internal
 REDIS_PORT=6379
-MINIO_ENDPOINT=http://127.0.0.1:19000
+
+MINIO_ENDPOINT=http://host.docker.internal:19000
 MINIO_ACCESS_KEY=replace-me
 MINIO_SECRET_KEY=replace-me
 MINIO_BUCKET=tap-files
+
 JWT_SECRET=replace-with-a-random-string-at-least-32-chars
-AI_PROVIDER=openai
-OPENAI_BASE_URL=https://api.deepseek.com/v1
-OPENAI_API_KEY=replace-me
-OPENAI_MODEL=deepseek-chat
-RAG_SERVICE_BASE_URL=http://127.0.0.1:8001
-SPRING_PROFILES_ACTIVE=prod
+
+RAG_SERVICE_BASE_URL=http://host.docker.internal:8001
+PTA_SPIDER_URL=http://host.docker.internal:8100
+PTA_SPIDER_AUTO_START=false
+RECOMMENDATION_SERVICE_BASE_URL=http://host.docker.internal:8003
+TAP_ERROR_ANALYSIS_BASE_URL=http://host.docker.internal:8002
 ```
 
-## Required RAG Service Environment
+生产环境不要提交 `.env`，仓库只保留 `.env.example`。
 
-```env
-RAG_HOST=0.0.0.0
-RAG_PORT=8001
-RAG_DATA_DIR=./data
-RAG_JWT_SECRET=replace-with-same-value-as-JWT_SECRET
-RAG_JWT_ISSUER=tap
-DASHSCOPE_API_KEY=replace-me
+## 常见问题
+
+### 容器无法访问宿主机服务
+
+确认 `docker-compose.yml` 中存在：
+
+```yaml
+extra_hosts:
+  - "host.docker.internal:host-gateway"
 ```
 
-`RAG_JWT_SECRET` must match the Java backend `JWT_SECRET`, because the backend proxy issues bearer tokens for `rag-service`.
+并确认宿主机上的服务监听地址不是仅允许容器外不可达的地址。MySQL、Redis、MinIO 等服务需要允许来自 Docker 网桥网段的连接。
 
-## Local Docker Compose
+### 启动后健康检查失败
 
-The root `docker-compose.yml` includes `rag-service` and configures the Java backend with:
+优先查看日志：
+
+```bash
+docker compose logs -f backend
+```
+
+常见原因：
+
+- MySQL 未启动或账号密码错误。
+- Redis 未启动或密码错误。
+- MinIO 地址、Access Key、Secret Key 或 bucket 错误。
+- `JWT_SECRET` 为空或过短。
+- Flyway 迁移失败。
+
+### 需要连接同一 compose 网络里的其他服务
+
+把后端加入对应外部网络，并将 URL 改为服务名。示例：
+
+```yaml
+networks:
+  default:
+    external: true
+    name: tap-services
+```
+
+然后在 `.env` 中配置：
 
 ```env
 RAG_SERVICE_BASE_URL=http://rag-service:8001
-```
-
-Start the local stack with:
-
-```bash
-docker compose up --build
-```
-
-Frontend calls same-origin `/rag/...`; Nginx can proxy that directly to `rag-service`, while Java keeps a `/rag` proxy for legacy-session based local access.
-
-## Backend Packaging
-
-```bash
-cd backend-repo/AI_Ds
-mvn -q -DskipTests clean package
-java -jar target/teaching-assistant-backend-0.0.1-SNAPSHOT.jar
-```
-
-Health check:
-
-- `http://127.0.0.1:8081/actuator/health`
-
-## RAG Service Startup
-
-```bash
-cd rag-service
-uv sync
-uv run uvicorn app.main:app --host 0.0.0.0 --port 8001
-```
-
-Health check:
-
-- `http://127.0.0.1:8001/health`
-
-## Nginx Sketch
-
-```nginx
-location /api/ {
-    proxy_pass http://127.0.0.1:8081/api/;
-}
-
-location /rag/ {
-    proxy_pass http://127.0.0.1:8001/rag/;
-    proxy_read_timeout 300s;
-}
 ```

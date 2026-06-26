@@ -7,8 +7,11 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -21,6 +24,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.client.HttpStatusCodeException;
 
 @Service
 public class PtaSyncService {
@@ -36,15 +40,22 @@ public class PtaSyncService {
     private final TeacherPtaCredentialService teacherPtaCredentialService;
     private final EntityManager entityManager;
     private final RestTemplate restTemplate;
+    private final ObjectMapper objectMapper;
+    private final com.tap.backend.service.practice.impl.WrongQuestionPtaIngestionService wrongQuestionPtaIngestionService;
 
     @Value("${pta.spider-url:http://127.0.0.1:8100}")
     private String spiderUrl;
+
+    @Value("${pta.scheduler.mode:full}")
+    private String scheduledSyncMode;
 
     public PtaSyncService(
             TeachingClassRepository classRepo,
             TeachingClassService teachingClassService,
             TeacherPtaCredentialService teacherPtaCredentialService,
             EntityManager entityManager,
+            ObjectMapper objectMapper,
+            com.tap.backend.service.practice.impl.WrongQuestionPtaIngestionService wrongQuestionPtaIngestionService,
             @Value("${pta.connect-timeout-ms:5000}") int connectTimeoutMs,
             @Value("${pta.read-timeout-ms:20000}") int readTimeoutMs
     ) {
@@ -52,6 +63,8 @@ public class PtaSyncService {
         this.teachingClassService = teachingClassService;
         this.teacherPtaCredentialService = teacherPtaCredentialService;
         this.entityManager = entityManager;
+        this.objectMapper = objectMapper;
+        this.wrongQuestionPtaIngestionService = wrongQuestionPtaIngestionService;
         SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
         requestFactory.setConnectTimeout(Math.max(1000, connectTimeoutMs));
         requestFactory.setReadTimeout(Math.max(1000, readTimeoutMs));
@@ -70,9 +83,6 @@ public class PtaSyncService {
             String ptaGroupName
     ) {
         TeachingClassEntity teachingClass = requireOwnedClass(classId, teacherId);
-        if (ptaKeyword != null) {
-            teachingClass.setPtaKeyword(resolvePtaKeyword(teachingClass, ptaKeyword));
-        }
         if (syncEnabled != null) {
             teachingClass.setSyncEnabled(syncEnabled);
         }
@@ -86,7 +96,15 @@ public class PtaSyncService {
             teachingClass.setPtaGroupId(normalizeNullableText(ptaGroupId));
         }
         if (ptaGroupName != null) {
-            teachingClass.setPtaGroupName(normalizeNullableText(ptaGroupName));
+            String normalizedGroupName = normalizeNullableText(ptaGroupName);
+            teachingClass.setPtaGroupName(normalizedGroupName);
+            teachingClass.setPtaKeyword(resolvePtaKeyword(teachingClass, normalizedGroupName));
+        } else if (ptaKeyword != null) {
+            String normalizedKeyword = normalizeNullableText(ptaKeyword);
+            teachingClass.setPtaKeyword(resolvePtaKeyword(teachingClass, normalizedKeyword));
+            if (teachingClass.getPtaGroupName() == null || teachingClass.getPtaGroupName().isBlank()) {
+                teachingClass.setPtaGroupName(normalizedKeyword);
+            }
         }
         teachingClass.setPtaBindingVerifyStatus(resolveBindingStatus(teachingClass));
         teachingClass.setPtaBindingVerifyMessage(resolveBindingMessage(teachingClass));
@@ -102,17 +120,22 @@ public class PtaSyncService {
             String ptaUsername,
             String ptaPassword,
             String ptaKeyword,
+            String ptaGroupId,
+            String ptaGroupName,
             String mode,
             Boolean force
     ) {
-        return doTriggerSync(classId, teacherId, true, ptaUsername, ptaPassword, ptaKeyword, mode, force);
+        return doTriggerSync(classId, teacherId, true, ptaUsername, ptaPassword, ptaKeyword, ptaGroupId, ptaGroupName, mode, force);
     }
 
     @Transactional
     public Map<String, Object> triggerSyncScheduled(Long classId) {
         TeachingClassEntity teachingClass = classRepo.findById(classId)
                 .orElseThrow(() -> new NoSuchElementException("class not found"));
-        return doTriggerSync(teachingClass, false, null, null, null, null, false);
+        String mode = scheduledSyncMode == null || scheduledSyncMode.isBlank()
+                ? "full"
+                : scheduledSyncMode.trim();
+        return doTriggerSync(teachingClass, false, null, null, null, null, null, mode, false);
     }
 
     public Map<String, Object> getSyncStatus(Long classId, Long teacherId) {
@@ -201,6 +224,7 @@ public class PtaSyncService {
         result.put("ptaKeyword", teachingClass.getPtaKeyword());
         result.put("ptaProblemSetId", teachingClass.getPtaProblemSetId());
         result.put("ptaGroupId", teachingClass.getPtaGroupId());
+        result.put("ptaGroupName", teachingClass.getPtaGroupName());
         result.put("hasSnapshot", hasSnapshot);
         result.put("snapshotComplete", snapshotComplete);
         result.put("latestJob", latestJob.isEmpty() ? null : latestJob);
@@ -225,7 +249,8 @@ public class PtaSyncService {
             String ptaPassword,
             String ptaKeyword,
             String ptaProblemSetId,
-            String ptaGroupId
+            String ptaGroupId,
+            String ptaGroupName
     ) {
         TeachingClassEntity teachingClass = requireOwnedClass(classId, teacherId);
         List<String> warnings = new java.util.ArrayList<>();
@@ -234,9 +259,10 @@ public class PtaSyncService {
         String effectiveKeyword = firstNotBlank(ptaKeyword, teachingClass.getPtaKeyword());
         String effectiveProblemSetId = firstNotBlank(ptaProblemSetId, teachingClass.getPtaProblemSetId());
         String effectiveGroupId = firstNotBlank(ptaGroupId, teachingClass.getPtaGroupId());
+        String effectiveGroupName = firstNotBlank(ptaGroupName, teachingClass.getPtaGroupName());
 
         ResolvedSyncCredential resolvedCredential = resolveCredential(teacherId, ptaUsername, ptaPassword);
-        boolean keywordConfigured = effectiveKeyword != null;
+        boolean groupConfigured = effectiveGroupId != null || effectiveGroupName != null;
         boolean preciseBindingConfigured = effectiveProblemSetId != null && effectiveGroupId != null;
 
         Map<String, Object> spiderHealth = new LinkedHashMap<>();
@@ -253,10 +279,11 @@ public class PtaSyncService {
         }
 
         Map<String, Object> cooldown = new LinkedHashMap<>();
-        if (spiderReachable && keywordConfigured) {
+        if (spiderReachable && groupConfigured) {
             try {
+                String cooldownKey = firstNotBlank(effectiveGroupName, effectiveGroupId);
                 ResponseEntity<Map> response = restTemplate.getForEntity(
-                        spiderUrl + "/cooldown/" + java.net.URLEncoder.encode(effectiveKeyword, java.nio.charset.StandardCharsets.UTF_8),
+                        spiderUrl + "/cooldown/" + java.net.URLEncoder.encode(cooldownKey, java.nio.charset.StandardCharsets.UTF_8),
                         Map.class);
                 if (response.getBody() != null) {
                     cooldown.putAll(response.getBody());
@@ -267,9 +294,9 @@ public class PtaSyncService {
             }
         }
 
-        if (!keywordConfigured) {
-            warnings.add("PTA keyword is not configured");
-            nextSteps.add("Set ptaKeyword or pass it in this test request");
+        if (!groupConfigured) {
+            warnings.add("PTA user group is not configured");
+            nextSteps.add("Set PTA user group name or bind a PTA user group id before syncing");
         }
         if (!preciseBindingConfigured) {
             warnings.add("PTA problem set id and group id are not fully configured");
@@ -285,7 +312,7 @@ public class PtaSyncService {
             nextSteps.add("Configuration is ready for PTA sync trigger");
         }
 
-        boolean readyToSync = spiderReachable && keywordConfigured && preciseBindingConfigured;
+        boolean readyToSync = spiderReachable && groupConfigured;
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("classId", teachingClass.getId());
         result.put("className", teachingClass.getName());
@@ -293,11 +320,13 @@ public class PtaSyncService {
         result.put("spiderReachable", spiderReachable);
         result.put("spiderHealth", spiderHealth);
         result.put("credentialSource", resolvedCredential.source());
-        result.put("keywordConfigured", keywordConfigured);
+        result.put("keywordConfigured", effectiveKeyword != null);
+        result.put("groupConfigured", groupConfigured);
         result.put("preciseBindingConfigured", preciseBindingConfigured);
         result.put("ptaKeyword", effectiveKeyword);
         result.put("ptaProblemSetId", effectiveProblemSetId);
         result.put("ptaGroupId", effectiveGroupId);
+        result.put("ptaGroupName", effectiveGroupName);
         result.put("cooldown", cooldown);
         result.put("readyToSync", readyToSync);
         result.put("warnings", warnings);
@@ -315,6 +344,11 @@ public class PtaSyncService {
 
     @Transactional
     public void updateSyncResult(Long classId, String status) {
+        updateSyncResult(classId, status, null);
+    }
+
+    @Transactional
+    public void updateSyncResult(Long classId, String status, String spiderTaskId) {
         classRepo.findById(classId).ifPresent(teachingClass -> {
             String effectiveStatus = status;
             if ("SUCCESS".equals(status)) {
@@ -331,14 +365,22 @@ public class PtaSyncService {
                 teachingClass.setLastSyncAt(Instant.now());
             }
             classRepo.save(teachingClass);
+            markCrawlJobFromCallback(classId, spiderTaskId, effectiveStatus);
+
+            if ("SUCCESS".equals(effectiveStatus)) {
+                try {
+                    wrongQuestionPtaIngestionService.ingestRecentPtaWrongAttempts(classId);
+                } catch (Exception ex) {
+                    log.error("PTA wrong-question ingest failed for class {}: {}", classId, ex.getMessage());
+                }
+            }
         });
     }
 
     public List<TeachingClassEntity> listSyncEnabledClasses() {
         return classRepo.findAll().stream()
                 .filter(teachingClass -> Boolean.TRUE.equals(teachingClass.getSyncEnabled())
-                        && teachingClass.getPtaKeyword() != null
-                        && !teachingClass.getPtaKeyword().isBlank())
+                        && (firstNotBlank(teachingClass.getPtaGroupId(), teachingClass.getPtaGroupName()) != null))
                 .toList();
     }
 
@@ -349,10 +391,12 @@ public class PtaSyncService {
             String ptaUsername,
             String ptaPassword,
             String ptaKeyword,
+            String ptaGroupId,
+            String ptaGroupName,
             String mode,
             Boolean force
     ) {
-        return doTriggerSync(requireOwnedClass(classId, teacherId), checkCooldown, ptaUsername, ptaPassword, ptaKeyword, mode, force);
+        return doTriggerSync(requireOwnedClass(classId, teacherId), checkCooldown, ptaUsername, ptaPassword, ptaKeyword, ptaGroupId, ptaGroupName, mode, force);
     }
 
     private Map<String, Object> doTriggerSync(
@@ -361,15 +405,34 @@ public class PtaSyncService {
             String ptaUsername,
             String ptaPassword,
             String ptaKeyword,
+            String ptaGroupId,
+            String ptaGroupName,
             String mode,
             Boolean force
     ) {
-        if (ptaKeyword != null) {
-            teachingClass.setPtaKeyword(resolvePtaKeyword(teachingClass, ptaKeyword));
+        if (ptaGroupId != null) {
+            teachingClass.setPtaGroupId(normalizeNullableText(ptaGroupId));
+        }
+        if (ptaGroupName != null) {
+            String normalizedGroupName = normalizeNullableText(ptaGroupName);
+            teachingClass.setPtaGroupName(normalizedGroupName);
+            teachingClass.setPtaKeyword(resolvePtaKeyword(teachingClass, normalizedGroupName));
+        } else if (ptaKeyword != null) {
+            String normalizedKeyword = normalizeNullableText(ptaKeyword);
+            teachingClass.setPtaKeyword(resolvePtaKeyword(teachingClass, normalizedKeyword));
+            if (teachingClass.getPtaGroupName() == null || teachingClass.getPtaGroupName().isBlank()) {
+                teachingClass.setPtaGroupName(normalizedKeyword);
+            }
+        }
+        if (ptaKeyword != null || ptaGroupId != null || ptaGroupName != null) {
+            teachingClass.setPtaBindingVerifyStatus(resolveBindingStatus(teachingClass));
+            teachingClass.setPtaBindingVerifyMessage(resolveBindingMessage(teachingClass));
             classRepo.save(teachingClass);
         }
-        if (teachingClass.getPtaKeyword() == null || teachingClass.getPtaKeyword().isBlank()) {
-            throw new IllegalStateException("pta keyword is required before sync");
+        String crawlGroupName = firstNotBlank(teachingClass.getPtaGroupName());
+        String crawlGroupId = firstNotBlank(teachingClass.getPtaGroupId());
+        if (crawlGroupName == null && crawlGroupId == null) {
+            throw new IllegalStateException("PTA user group is required before sync");
         }
 
         ResolvedSyncCredential resolvedCredential =
@@ -401,29 +464,36 @@ public class PtaSyncService {
         String previousStatus = teachingClass.getSyncStatus();
         teachingClass.setSyncStatus("RUNNING");
         classRepo.save(teachingClass);
+        Long crawlJobId = null;
 
         try {
             Map<String, Object> body = new LinkedHashMap<>();
-            body.put("keyword", teachingClass.getPtaKeyword());
             body.put("class_id", teachingClass.getId().intValue());
             putIfNotBlank(body, "problem_set_id", teachingClass.getPtaProblemSetId());
             putIfNotBlank(body, "problem_set_name", teachingClass.getPtaProblemSetName());
-            putIfNotBlank(body, "group_id", teachingClass.getPtaGroupId());
-            putIfNotBlank(body, "group_name", teachingClass.getPtaGroupName());
-            if (mode != null && !mode.isBlank()) {
-                body.put("mode", mode.trim());
-            }
+            putIfNotBlank(body, "group_id", crawlGroupId);
+            putIfNotBlank(body, "group_name", crawlGroupName);
+            putIfNotBlank(body, "keyword", firstNotBlank(crawlGroupName, crawlGroupId));
+            body.put("mode", normalizeMode(mode));
             if (Boolean.TRUE.equals(force)) {
                 body.put("force", true);
-                // In local/dev demos, "force" should visibly exercise the PTA browser login flow.
-                body.put("force_selenium_login", true);
-                body.put("headless", false);
             }
             body.put("credential_source", credentialSource);
             if (credential != null) {
                 body.put("username", credential.username());
                 body.put("password", credential.password());
             }
+            String resolvedMode = String.valueOf(body.getOrDefault("mode", "incremental"));
+            String triggerType = checkCooldown ? "MANUAL" : "SCHEDULED";
+            crawlJobId = createCrawlJob(
+                    teachingClass.getId(),
+                    crawlGroupId,
+                    crawlGroupName == null ? crawlGroupId : crawlGroupName,
+                    resolvedMode,
+                    triggerType,
+                    credentialSource,
+                    body
+            );
 
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
@@ -438,6 +508,7 @@ public class PtaSyncService {
             if (blocked) {
                 teachingClass.setSyncStatus(previousStatus == null || previousStatus.isBlank() ? "IDLE" : previousStatus);
                 classRepo.save(teachingClass);
+                updateCrawlJob(crawlJobId, "BLOCKED", "SPIDER_BLOCKED", null, responseBody, responseBody.get("message"), null, true);
                 result.put("syncStatus", teachingClass.getSyncStatus());
                 result.put("blocked", true);
                 result.put("message", responseBody.get("message"));
@@ -448,24 +519,65 @@ public class PtaSyncService {
             if (!accepted) {
                 teachingClass.setSyncStatus(previousStatus == null || previousStatus.isBlank() ? "IDLE" : previousStatus);
                 classRepo.save(teachingClass);
+                updateCrawlJob(crawlJobId, "FAILED", "SPIDER_REJECTED", null, responseBody,
+                        responseBody == null ? "pta spider returned empty response" : responseBody.get("message"),
+                        null, true);
                 result.put("syncStatus", teachingClass.getSyncStatus());
                 result.put("credentialSource", credentialSource);
                 result.put("message", responseBody == null ? "pta spider returned empty response" : responseBody.get("message"));
                 return result;
             }
 
+            String responseMessage = String.valueOf(responseBody.get("message"));
+            if (responseMessage.contains("same task already queued")) {
+                teachingClass.setSyncStatus(previousStatus == null || previousStatus.isBlank() ? "IDLE" : previousStatus);
+                classRepo.save(teachingClass);
+                updateCrawlJob(crawlJobId, "DEDUPED", "SAME_TASK_ALREADY_QUEUED",
+                        String.valueOf(responseBody.get("task_id")), responseBody, responseMessage, null, true);
+                result.put("syncStatus", teachingClass.getSyncStatus());
+                result.put("taskId", responseBody.get("task_id"));
+                result.put("credentialSource", responseBody.get("credential_source") != null
+                        ? responseBody.get("credential_source")
+                        : credentialSource);
+                result.put("message", responseMessage);
+                return result;
+            }
+
             result.put("syncStatus", "RUNNING");
             result.put("taskId", responseBody.get("task_id"));
+            updateCrawlJob(crawlJobId, "QUEUED", "SPIDER_ACCEPTED",
+                    String.valueOf(responseBody.get("task_id")), responseBody, responseMessage, null, false);
             result.put("credentialSource", responseBody != null && responseBody.get("credential_source") != null
                     ? responseBody.get("credential_source")
                     : credentialSource);
-            result.put("message", responseBody.get("message"));
+            result.put("message", responseMessage);
+            return result;
+        } catch (HttpStatusCodeException e) {
+            log.warn("PTA spider rejected sync request: status={}, body={}", e.getStatusCode(), e.getResponseBodyAsString());
+            String restoredStatus = previousStatus == null || previousStatus.isBlank() ? "IDLE" : previousStatus;
+            teachingClass.setSyncStatus(restoredStatus);
+            classRepo.save(teachingClass);
+            String message = e.getResponseBodyAsString();
+            if (message == null || message.isBlank()) {
+                message = "PTA spider rejected request with HTTP " + e.getStatusCode().value();
+            }
+            updateCrawlJob(crawlJobId, "BLOCKED", "SPIDER_HTTP_" + e.getStatusCode().value(), null, null,
+                    message, null, true);
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("syncStatus", restoredStatus);
+            result.put("blocked", true);
+            result.put("credentialSource", credentialSource);
+            result.put("spiderUrl", spiderUrl);
+            result.put("message", message);
             return result;
         } catch (RestClientException e) {
             log.error("Failed to trigger PTA sync: {}", e.getMessage());
             String restoredStatus = previousStatus == null || previousStatus.isBlank() ? "IDLE" : previousStatus;
             teachingClass.setSyncStatus(restoredStatus);
             classRepo.save(teachingClass);
+            updateCrawlJob(crawlJobId, "UNREACHABLE", "SPIDER_UNREACHABLE", null, null,
+                    "PTA spider 服务不可达，请先启动或检查 " + spiderUrl, e.getMessage(), true);
 
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("syncStatus", restoredStatus);
@@ -478,7 +590,151 @@ public class PtaSyncService {
             log.error("Failed to trigger PTA sync: {}", e.getMessage());
             teachingClass.setSyncStatus("FAILED");
             classRepo.save(teachingClass);
-            throw new RuntimeException("pta spider call failed: " + e.getMessage());
+            updateCrawlJob(crawlJobId, "FAILED", "TRIGGER_FAILED", null, null, null, e.getMessage(), true);
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("syncStatus", "FAILED");
+            result.put("blocked", true);
+            result.put("credentialSource", credentialSource);
+            result.put("message", "pta spider call failed: " + e.getMessage());
+            return result;
+        }
+    }
+
+    private Long createCrawlJob(
+            Long classId,
+            String ptaGroupId,
+            String ptaGroupName,
+            String mode,
+            String triggerType,
+            String credentialSource,
+            Map<String, Object> requestBody
+    ) {
+        try {
+            Object rawId = entityManager.createNativeQuery("""
+                            INSERT INTO pta_crawl_job
+                              (class_id, pta_group_id, pta_group_name, mode, trigger_type, credential_source, status, status_code, request_json)
+                            VALUES
+                              (?1, ?2, ?3, ?4, ?5, ?6, 'REQUESTING', 'REQUESTING', ?7)
+                            """)
+                    .setParameter(1, classId)
+                    .setParameter(2, ptaGroupId)
+                    .setParameter(3, ptaGroupName)
+                    .setParameter(4, mode)
+                    .setParameter(5, triggerType)
+                    .setParameter(6, credentialSource)
+                    .setParameter(7, toJson(sanitizeSpiderRequest(requestBody)))
+                    .executeUpdate();
+            Object id = entityManager.createNativeQuery("SELECT LAST_INSERT_ID()").getSingleResult();
+            return ((Number) id).longValue();
+        } catch (Exception ex) {
+            log.warn("Failed to create PTA crawl job record: {}", ex.getMessage());
+            return null;
+        }
+    }
+
+    private void updateCrawlJob(
+            Long crawlJobId,
+            String status,
+            String statusCode,
+            String spiderTaskId,
+            Map<?, ?> responseBody,
+            Object message,
+            String errorMessage,
+            boolean finished
+    ) {
+        if (crawlJobId == null) {
+            return;
+        }
+        try {
+            entityManager.createNativeQuery("""
+                            UPDATE pta_crawl_job
+                            SET status = ?2,
+                                status_code = ?3,
+                                spider_task_id = COALESCE(?4, spider_task_id),
+                                response_json = COALESCE(?5, response_json),
+                                message = ?6,
+                                error_message = ?7,
+                                accepted_at = CASE
+                                    WHEN ?2 IN ('QUEUED', 'RUNNING', 'DEDUPED') AND accepted_at IS NULL THEN CURRENT_TIMESTAMP(3)
+                                    ELSE accepted_at
+                                END,
+                                finished_at = CASE WHEN ?8 = TRUE THEN CURRENT_TIMESTAMP(3) ELSE finished_at END
+                            WHERE id = ?1
+                            """)
+                    .setParameter(1, crawlJobId)
+                    .setParameter(2, status)
+                    .setParameter(3, statusCode)
+                    .setParameter(4, spiderTaskId)
+                    .setParameter(5, responseBody == null ? null : toJson(responseBody))
+                    .setParameter(6, message == null ? null : String.valueOf(message))
+                    .setParameter(7, errorMessage)
+                    .setParameter(8, finished)
+                    .executeUpdate();
+        } catch (Exception ex) {
+            log.warn("Failed to update PTA crawl job {}: {}", crawlJobId, ex.getMessage());
+        }
+    }
+
+    private void markCrawlJobFromCallback(Long classId, String spiderTaskId, String effectiveStatus) {
+        String status = "SUCCESS".equals(effectiveStatus) ? "SUCCEEDED" : "FAILED";
+        String statusCode = "SUCCESS".equals(effectiveStatus) ? "CALLBACK_SUCCESS" : "CALLBACK_FAILED";
+        try {
+            if (spiderTaskId != null && !spiderTaskId.isBlank()) {
+                int updated = entityManager.createNativeQuery("""
+                                UPDATE pta_crawl_job
+                                SET status = ?2,
+                                    status_code = ?3,
+                                    message = ?4,
+                                    finished_at = CURRENT_TIMESTAMP(3)
+                                WHERE spider_task_id = ?1
+                                  AND class_id = ?5
+                                  AND status IN ('REQUESTING', 'QUEUED', 'RUNNING')
+                                """)
+                        .setParameter(1, spiderTaskId.trim())
+                        .setParameter(2, status)
+                        .setParameter(3, statusCode)
+                        .setParameter(4, "PTA spider callback: " + effectiveStatus)
+                        .setParameter(5, classId)
+                        .executeUpdate();
+                if (updated > 0) {
+                    return;
+                }
+            }
+            entityManager.createNativeQuery("""
+                            UPDATE pta_crawl_job
+                            SET status = ?2,
+                                status_code = ?3,
+                                message = ?4,
+                                finished_at = CURRENT_TIMESTAMP(3)
+                            WHERE class_id = ?1
+                              AND status IN ('REQUESTING', 'QUEUED', 'RUNNING')
+                            ORDER BY requested_at DESC
+                            LIMIT 1
+                            """)
+                    .setParameter(1, classId)
+                    .setParameter(2, status)
+                    .setParameter(3, statusCode)
+                    .setParameter(4, "PTA spider callback: " + effectiveStatus)
+                    .executeUpdate();
+        } catch (Exception ex) {
+            log.warn("Failed to mark PTA crawl job callback for class {}: {}", classId, ex.getMessage());
+        }
+    }
+
+    private Map<String, Object> sanitizeSpiderRequest(Map<String, Object> body) {
+        Map<String, Object> sanitized = new LinkedHashMap<>(body);
+        if (sanitized.containsKey("password")) {
+            sanitized.put("password", "***");
+        }
+        return sanitized;
+    }
+
+    private String toJson(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (JsonProcessingException e) {
+            return "{}";
         }
     }
 
@@ -576,19 +832,33 @@ public class PtaSyncService {
         return value.trim();
     }
 
-    private String firstNotBlank(String first, String second) {
-        if (first != null && !first.isBlank()) {
-            return first.trim();
+    private String firstNotBlank(String... values) {
+        if (values == null) {
+            return null;
         }
-        if (second != null && !second.isBlank()) {
-            return second.trim();
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value.trim();
+            }
         }
         return null;
     }
 
+    private String normalizeMode(String mode) {
+        String normalized = firstNotBlank(mode);
+        if (normalized == null) {
+            return "incremental";
+        }
+        normalized = normalized.toLowerCase(Locale.ROOT);
+        return switch (normalized) {
+            case "incremental", "submissions", "refresh", "full" -> normalized;
+            default -> "incremental";
+        };
+    }
+
     private String resolveBindingStatus(TeachingClassEntity teachingClass) {
         boolean hasProblemSet = teachingClass.getPtaProblemSetId() != null && !teachingClass.getPtaProblemSetId().isBlank();
-        boolean hasGroup = teachingClass.getPtaGroupId() != null && !teachingClass.getPtaGroupId().isBlank();
+        boolean hasGroup = firstNotBlank(teachingClass.getPtaGroupId(), teachingClass.getPtaGroupName()) != null;
         if (hasProblemSet && hasGroup) {
             return "CONFIGURED";
         }

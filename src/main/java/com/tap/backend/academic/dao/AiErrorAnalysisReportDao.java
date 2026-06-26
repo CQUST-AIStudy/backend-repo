@@ -33,4 +33,12 @@ public interface AiErrorAnalysisReportDao {
     int deleteByStudentAndExperiment(
             @Param("studentNo") String studentNo,
             @Param("experimentId") int experimentId);
+
+    /**
+     * 删除学生在指定实验的某个类型报告（ERROR / WARNING / LEARNING）
+     */
+    int deleteByStudentExperimentAndType(
+            @Param("studentNo") String studentNo,
+            @Param("experimentId") int experimentId,
+            @Param("reportType") String reportType);
 }

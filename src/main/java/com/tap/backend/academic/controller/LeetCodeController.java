@@ -109,7 +109,8 @@ public class LeetCodeController {
             HttpServletRequest httpRequest) {
         Map<String, Object> response = new HashMap<>();
         try {
-            Integer studentId = getCurrentStudentId(httpRequest);
+            String studentNo = resolveStudentNo(httpRequest);
+            Integer studentId = parseInteger(studentNo);
             if (studentId == null) {
                 response.put("success", false);
                 response.put("message", "authentication required");
@@ -124,6 +125,7 @@ public class LeetCodeController {
 
             Map<String, Object> result = submissionFacade.submitSolution(
                     studentId,
+                    studentNo,
                     problemId,
                     code,
                     language,
@@ -164,6 +166,19 @@ public class LeetCodeController {
     private Integer getCurrentStudentId(HttpServletRequest request) {
         try {
             return parseInteger(studentSessionResolver.requireStudentId(request));
+        } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Returns the canonical student_no string for the current session.
+     * Used both as the integer studentId (parsed) and as the wrong-question
+     * notebook studentNo (raw string).
+     */
+    private String resolveStudentNo(HttpServletRequest request) {
+        try {
+            return studentSessionResolver.requireStudentId(request);
         } catch (RuntimeException e) {
             return null;
         }

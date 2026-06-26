@@ -84,6 +84,7 @@ public class ClassroomController {
             String courseName,
             String description,
             String ptaKeyword,
+            String ptaGroupName,
             Boolean syncEnabled
     ) {}
 
@@ -102,6 +103,7 @@ public class ClassroomController {
                 req.courseName(),
                 req.description(),
                 req.ptaKeyword(),
+                req.ptaGroupName(),
                 req.syncEnabled()
         );
         return ApiResponse.of(toMap(teachingClass));
@@ -114,6 +116,7 @@ public class ClassroomController {
             String courseName,
             String description,
             String ptaKeyword,
+            String ptaGroupName,
             Boolean syncEnabled
     ) {}
 
@@ -133,6 +136,7 @@ public class ClassroomController {
                 req.courseName(),
                 req.description(),
                 req.ptaKeyword(),
+                req.ptaGroupName(),
                 req.syncEnabled()
         );
         return ApiResponse.of(toMap(teachingClass));
