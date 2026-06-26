@@ -4,6 +4,7 @@ import com.tap.backend.academic.dao.SubmissionDao;
 import com.tap.backend.academic.entity.*;
 import com.tap.backend.academic.security.LegacySessionAccessResolver;
 import com.tap.backend.academic.security.StudentSessionResolver;
+import com.tap.backend.academic.security.TeacherSessionResolver;
 import com.tap.backend.academic.dao.teacherexperiment.TeacherExperimentQueryDao;
 import com.tap.backend.academic.service.*;
 import com.tap.backend.academic.entity.LeetCodeRecommendItem;
@@ -87,6 +88,9 @@ public class ApiController {
 
     @Autowired
     private LegacySessionAccessResolver legacySessionAccessResolver;
+
+    @Autowired
+    private TeacherSessionResolver teacherSessionResolver;
 
     @PersistenceContext
     private EntityManager em;
@@ -1560,10 +1564,23 @@ public class ApiController {
             System.out.println("提交id信息"+studentId+"---"+experimentId);
 
             // 获取学生信息
-            TeacherStudentAssignmentRow assignment = teacherExperimentQueryDao.findStudentAssignmentBySubmissionKey(
-                    studentIdKey,
-                    experimentId
-            );
+            TeacherStudentAssignmentRow assignment;
+            if (teacherSessionResolver.isCurrentAdmin(request)) {
+                assignment = teacherExperimentQueryDao.findStudentAssignmentDetailBySubmissionKey(
+                        studentIdKey,
+                        experimentId
+                );
+            } else {
+                com.tap.backend.academic.entity.teacher.Teacher currentTeacher =
+                        teacherSessionResolver.requireCurrentTeacherOrAdminNull(request);
+                assignment = currentTeacher == null
+                        ? null
+                        : teacherExperimentQueryDao.findStudentAssignmentDetailForTeacher(
+                                currentTeacher.getTeacher_id(),
+                                studentIdKey,
+                                experimentId
+                        );
+            }
             if (assignment == null) {
                 response.put("success", false);
                 response.put("message", "未找到对应的学生作业信息");

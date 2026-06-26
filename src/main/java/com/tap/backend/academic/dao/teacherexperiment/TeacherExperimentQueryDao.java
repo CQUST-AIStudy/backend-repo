@@ -324,6 +324,83 @@ public interface TeacherExperimentQueryDao {
 
     @Select({
             "SELECT",
+            "  sp.student_no AS studentId,",
+            "  sp.real_name AS studentName,",
+            "  COALESCE(NULLIF(TRIM(student_user.username), ''), sp.student_no) AS studentUsername,",
+            "  tc.name AS className,",
+            "  CAST(ao.id AS SIGNED) AS experimentId,",
+            "  " + EXPERIMENT_NAME_EXPR + " AS experimentName,",
+            "  ao.deadline_at AS deadline,",
+            "  COALESCE(sa.last_submit_at, sa.first_submit_at) AS submitTime,",
+            "  COALESCE(sa.best_total_score, sa.latest_total_score) AS score,",
+            "  sa.submission_status AS submissionStatus,",
+            "  sa.transcript_row_present AS transcriptRowPresent,",
+            "  sa.answer_sheet_count AS answerSheetCount,",
+            "  sa.scored_code_count AS scoredCodeCount,",
+            "  sa.submission_attempt_count AS submissionAttemptCount,",
+            "  sa.completion_evidence AS completionEvidence,",
+            "  pct.Plagiarism_Rate AS plagiarismRate",
+            "FROM student_assignment sa",
+            "JOIN assignment_offering ao ON ao.id = sa.offering_id",
+            "JOIN assignment_template at ON at.id = ao.template_id",
+            "JOIN teaching_class tc ON tc.id = ao.class_id",
+            "JOIN student_profile sp ON sp.id = sa.student_id",
+            "LEFT JOIN tap_user student_user ON student_user.id = sp.user_id",
+            "LEFT JOIN Plagiarism_Check_Table pct",
+            "  ON pct.student_id COLLATE utf8mb4_unicode_ci = sp.student_no COLLATE utf8mb4_unicode_ci",
+            " AND ao.source_offering_key LIKE 'LEGACY_EXPERIMENT_OFFERING:%'",
+            " AND pct.experiment_id = " + LEGACY_EXPERIMENT_ID_EXPR,
+            "WHERE ao.id = #{experimentId}",
+            "  AND sp.student_no COLLATE utf8mb4_unicode_ci = #{studentId} COLLATE utf8mb4_unicode_ci",
+            "LIMIT 1"
+    })
+    TeacherStudentAssignmentRow findStudentAssignmentDetailBySubmissionKey(
+            @Param("studentId") String studentId,
+            @Param("experimentId") Integer experimentId
+    );
+
+    @Select({
+            "SELECT",
+            "  sp.student_no AS studentId,",
+            "  sp.real_name AS studentName,",
+            "  COALESCE(NULLIF(TRIM(student_user.username), ''), sp.student_no) AS studentUsername,",
+            "  tc.name AS className,",
+            "  CAST(ao.id AS SIGNED) AS experimentId,",
+            "  " + EXPERIMENT_NAME_EXPR + " AS experimentName,",
+            "  ao.deadline_at AS deadline,",
+            "  COALESCE(sa.last_submit_at, sa.first_submit_at) AS submitTime,",
+            "  COALESCE(sa.best_total_score, sa.latest_total_score) AS score,",
+            "  sa.submission_status AS submissionStatus,",
+            "  sa.transcript_row_present AS transcriptRowPresent,",
+            "  sa.answer_sheet_count AS answerSheetCount,",
+            "  sa.scored_code_count AS scoredCodeCount,",
+            "  sa.submission_attempt_count AS submissionAttemptCount,",
+            "  sa.completion_evidence AS completionEvidence,",
+            "  pct.Plagiarism_Rate AS plagiarismRate",
+            "FROM assignment_offering ao",
+            "JOIN assignment_template at ON at.id = ao.template_id",
+            "JOIN tap_user teacher_user ON teacher_user.id = #{teacherId}",
+            "JOIN teaching_class tc ON tc.id = ao.class_id",
+            "JOIN student_assignment sa ON sa.offering_id = ao.id",
+            "JOIN student_profile sp ON sp.id = sa.student_id",
+            "LEFT JOIN tap_user student_user ON student_user.id = sp.user_id",
+            "LEFT JOIN Plagiarism_Check_Table pct",
+            "  ON pct.student_id COLLATE utf8mb4_unicode_ci = sp.student_no COLLATE utf8mb4_unicode_ci",
+            " AND ao.source_offering_key LIKE 'LEGACY_EXPERIMENT_OFFERING:%'",
+            " AND pct.experiment_id = " + LEGACY_EXPERIMENT_ID_EXPR,
+            "WHERE ao.teacher_id = teacher_user.id",
+            "  AND ao.id = #{experimentId}",
+            "  AND sp.student_no COLLATE utf8mb4_unicode_ci = #{studentId} COLLATE utf8mb4_unicode_ci",
+            "LIMIT 1"
+    })
+    TeacherStudentAssignmentRow findStudentAssignmentDetailForTeacher(
+            @Param("teacherId") Integer teacherId,
+            @Param("studentId") String studentId,
+            @Param("experimentId") Integer experimentId
+    );
+
+    @Select({
+            "SELECT",
             "  CAST(ap.sort_order AS SIGNED) AS sortOrder,",
             "  ap.problem_no AS problemNo,",
             "  ap.title AS problemTitle,",
