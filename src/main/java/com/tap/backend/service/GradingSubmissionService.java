@@ -50,9 +50,13 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.text.PDFTextStripper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -514,7 +518,13 @@ public class GradingSubmissionService {
         byte[] originalBytes = storageService.getBytes(submission.getPdfObjectKey());
         Map<Long, String> dimensionNames = buildDimensionNameMap(submission);
         List<String> dimensionComments = buildAnnotationHighlights(scores, dimensionNames);
-        List<AnnotatedStudentReportService.AnnotationEntry> annotations = collectAnnotations(scores);
+        List<AnnotatedStudentReportService.AnnotationEntry> scoreAnnotations = collectAnnotations(scores);
+        List<AnnotatedStudentReportService.AnnotationEntry> aiPageAnnotations = generatePageLevelAiAnnotations(submission);
+
+        List<AnnotatedStudentReportService.AnnotationEntry> annotations = new ArrayList<>(scoreAnnotations);
+        annotations.addAll(aiPageAnnotations);
+
+        List<AnnotatedStudentReportService.DimensionScore> dimensionScores = buildDimensionScores(scores);
 
         AnnotatedStudentReportService.RenderedReport rendered = annotatedStudentReportService.render(
                 submission.getOriginalFilename(),
@@ -524,7 +534,8 @@ public class GradingSubmissionService {
                 teacherComment,
                 dimensionComments,
                 resolveTeacherSignature(submission.getTask()),
-                annotations
+                annotations,
+                dimensionScores
         );
 
         String objectKey = "grading/" + submission.getId() + "/annotated/"
@@ -574,6 +585,178 @@ public class GradingSubmissionService {
             }
         }
         return result;
+    }
+
+    /**
+     * For short reports (<=10 pages), ask the AI to read the report page by page and
+     * return inline annotations.  Each page's prompt includes the text of the pages
+     * already read, so the model can relate later conclusions to earlier methods.
+     */
+    List<AnnotatedStudentReportService.AnnotationEntry> generatePageLevelAiAnnotations(
+            GradingSubmissionEntity submission) {
+        List<AnnotatedStudentReportService.AnnotationEntry> result = new ArrayList<>();
+        if (submission == null || submission.getPdfObjectKey() == null
+                || submission.getPdfObjectKey().isBlank() || !isAiProviderAvailable()) {
+            return result;
+        }
+
+        byte[] pdfBytes = storageService.getBytes(submission.getPdfObjectKey());
+        if (pdfBytes == null || pdfBytes.length == 0) {
+            return result;
+        }
+
+        try (PDDocument document = PDDocument.load(new ByteArrayInputStream(pdfBytes))) {
+            int totalPages = document.getNumberOfPages();
+            if (totalPages == 0 || totalPages > 10) {
+                return result;
+            }
+
+            PDFTextStripper stripper = new PDFTextStripper();
+            List<String> pageTexts = new ArrayList<>();
+            for (int i = 1; i <= totalPages; i++) {
+                stripper.setStartPage(i);
+                stripper.setEndPage(i);
+                pageTexts.add(normalizeAnnotationText(stripper.getText(document)));
+            }
+
+            List<String> previousTexts = new ArrayList<>();
+            for (int i = 0; i < pageTexts.size(); i++) {
+                String currentText = pageTexts.get(i);
+                if (currentText.isBlank()) {
+                    previousTexts.add("[第" + (i + 1) + "页无文本]");
+                    continue;
+                }
+
+                String prompt = buildPageAnnotationPrompt(previousTexts, currentText, i + 1, totalPages);
+                String response;
+                try {
+                    response = aiProvider.chat(prompt, null);
+                } catch (Exception e) {
+                    // Do not fail the whole report because one page's AI call failed.
+                    previousTexts.add("[第" + (i + 1) + "页]" + currentText.substring(0, Math.min(currentText.length(), 300)));
+                    continue;
+                }
+
+                List<AnnotatedStudentReportService.AnnotationEntry> pageAnnotations = parsePageAnnotationJson(response);
+                result.addAll(pageAnnotations);
+
+                // Add a concise summary of this page to the running context for the next page.
+                previousTexts.add("[第" + (i + 1) + "页]" + currentText.substring(0, Math.min(currentText.length(), 500)));
+            }
+        } catch (IOException e) {
+            // Fail silently: the report can still be rendered without AI page annotations.
+        }
+
+        // Cap the total number of AI annotations to avoid cluttering the report.
+        if (result.size() > 30) {
+            return result.subList(0, 30);
+        }
+        return result;
+    }
+
+    private boolean isAiProviderAvailable() {
+        if ("mock".equalsIgnoreCase(aiProvider.name())) {
+            return false;
+        }
+        String provider = aiProperties.provider() == null ? "" : aiProperties.provider().trim().toLowerCase();
+        return !provider.isBlank() && !"mock".equals(provider);
+    }
+
+    private String buildPageAnnotationPrompt(List<String> previousTexts,
+                                             String currentText,
+                                             int currentPage,
+                                             int totalPages) {
+        StringBuilder previousContext = new StringBuilder();
+        if (!previousTexts.isEmpty()) {
+            previousContext.append("## 已读页面上下文\n");
+            for (String text : previousTexts) {
+                previousContext.append(text).append("\n\n");
+            }
+        }
+
+        String currentPageText = currentText.length() > 3000
+                ? currentText.substring(0, 3000) + "…"
+                : currentText;
+
+        return """
+                你是一位正在批改学生实验报告的任课教师。请基于以下上下文和当前页内容，给出当前页需要标注的位置。
+
+                %s
+                ## 当前页（第 %d / %d 页）
+                %s
+
+                ## 要求
+                1. 只返回 JSON 数组，不要任何额外说明文字。
+                2. 每个元素必须包含：
+                   - anchor_text：当前页文本中真实存在的连续短片段（最多 30 个字符），代码会用它在 PDF 中定位。
+                   - note：简短评语，最多 50 个汉字，像老师写在旁边的批注。
+                   - type：CHECK（正确/优点）、CROSS（错误/缺失）、WAVE（警告/建议）三者之一。
+                   - wavy：布尔值，表示是否在该 anchor_text 行下方画波浪线。
+                3. 如果当前页没有值得标注的地方，返回空数组 []。
+                4. 评语要具体、自然，尽量引用学生实际写到的内容，避免套话。
+                5. 标注应优先关注实验原理、方法步骤、结果分析、结论依据等实质性内容，不要因排版、字体、环境版本等细节给出大量标注。
+
+                输出示例：
+                [{"anchor_text":"系统采用 MQTT 协议上传数据","note":"协议选型合理，说明清晰","type":"CHECK","wavy":false}]
+                """.formatted(
+                previousContext.toString(),
+                currentPage,
+                totalPages,
+                currentPageText
+        );
+    }
+
+    List<AnnotatedStudentReportService.AnnotationEntry> parsePageAnnotationJson(String response) {
+        List<AnnotatedStudentReportService.AnnotationEntry> result = new ArrayList<>();
+        if (response == null || response.isBlank()) {
+            return result;
+        }
+        String cleaned = response.strip();
+        if (cleaned.startsWith("```")) {
+            cleaned = cleaned.replaceAll("^```(?:json)?\\s*", "").replaceAll("\\s*```$", "").strip();
+        }
+        if (!cleaned.startsWith("[")) {
+            int start = cleaned.indexOf('[');
+            int end = cleaned.lastIndexOf(']');
+            if (start >= 0 && end > start) {
+                cleaned = cleaned.substring(start, end + 1);
+            } else {
+                return result;
+            }
+        }
+        try {
+            JsonNode array = objectMapper.readTree(cleaned);
+            if (!array.isArray()) {
+                return result;
+            }
+            for (JsonNode node : array) {
+                if (!node.isObject()) {
+                    continue;
+                }
+                String anchorText = node.has("anchor_text") ? node.get("anchor_text").asText("").strip() : "";
+                if (anchorText.isBlank()) {
+                    continue;
+                }
+                String type = node.has("type") ? node.get("type").asText("CHECK").toUpperCase(Locale.ROOT) : "CHECK";
+                if (!type.equals("CHECK") && !type.equals("CROSS") && !type.equals("WAVE")) {
+                    type = "CHECK";
+                }
+                String note = node.has("note") ? node.get("note").asText("").strip() : "";
+                boolean wavy = node.has("wavy") && node.get("wavy").asBoolean(false);
+                result.add(new AnnotatedStudentReportService.AnnotationEntry(
+                        "ai-page-" + System.nanoTime(), type, note, anchorText, wavy));
+            }
+        } catch (Exception ignored) {
+            // Ignore malformed response
+        }
+        return result;
+    }
+
+    private String normalizeAnnotationText(String text) {
+        if (text == null) {
+            return "";
+        }
+        return text.replaceAll("\\s+", " ").strip();
     }
 
     private void refreshAnnotatedReportIfPresent(GradingSubmissionEntity submission) {
@@ -666,7 +849,8 @@ public class GradingSubmissionService {
                 .filter(insight -> insight.ratio() < 0.9d)
                 .limit(2)
                 .toList();
-        String aiReview = tryGenerateAiTeacherReview(submission, scores, experimentContext, strengths, weaknesses);
+        String reportText = extractReportText(submission, 6000);
+        String aiReview = tryGenerateAiTeacherReview(submission, scores, experimentContext, strengths, weaknesses, reportText);
         return aiReview != null ? aiReview : composeConciseTeacherReview(submission, experimentContext, strengths, weaknesses);
     }
     private String generateSimpleReview(GradingSubmissionEntity submission,
@@ -683,7 +867,8 @@ public class GradingSubmissionService {
                 .filter(insight -> !insight.formatOnly())
                 .limit(2)
                 .toList();
-        String aiReview = tryGenerateAiTeacherReview(submission, scores, experimentContext, strengths, weaknesses);
+        String reportText = extractReportText(submission, 6000);
+        String aiReview = tryGenerateAiTeacherReview(submission, scores, experimentContext, strengths, weaknesses, reportText);
         return aiReview != null ? aiReview : composeConciseTeacherReview(submission, experimentContext, strengths, weaknesses);
     }
     private Map<String, Object> scoreDto(ScoreItemEntity scoreItem) {
@@ -961,7 +1146,8 @@ public class GradingSubmissionService {
                                               List<ScoreItemEntity> scoreItems,
                                               ExperimentContext experimentContext,
                                               List<DimensionInsight> strengths,
-                                              List<DimensionInsight> weaknesses) {
+                                              List<DimensionInsight> weaknesses,
+                                              String reportText) {
         if (submission == null || "mock".equalsIgnoreCase(aiProvider.name())) {
             return null;
         }
@@ -971,7 +1157,7 @@ public class GradingSubmissionService {
         }
 
         try {
-            String prompt = buildTeacherReviewPrompt(submission, scoreItems, experimentContext, strengths, weaknesses);
+            String prompt = buildTeacherReviewPrompt(submission, scoreItems, experimentContext, strengths, weaknesses, reportText);
             ObjectNode body = objectMapper.createObjectNode();
             body.put("model", endpoint.model());
             body.set("messages", objectMapper.valueToTree(List.of(
@@ -1038,71 +1224,6 @@ public class GradingSubmissionService {
         return compressTeacherReview(review);
     }
 
-    private String buildTeacherReviewPrompt(GradingSubmissionEntity submission,
-                                            List<ScoreItemEntity> scoreItems,
-                                            ExperimentContext experimentContext,
-                                            List<DimensionInsight> strengths,
-                                            List<DimensionInsight> weaknesses) {
-        String studentName = submission.getStudentName() == null || submission.getStudentName().isBlank()
-                ? "该同学"
-                : submission.getStudentName();
-        String scoreReference = submission.getTotalScore() == null
-                ? "待评"
-                : submission.getTotalScore().setScale(1, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString();
-        String rubricHint = submission.getTask() != null
-                && submission.getTask().getRubric() != null
-                && submission.getTask().getRubric().getCustomPrompt() != null
-                ? submission.getTask().getRubric().getCustomPrompt().trim()
-                : "";
-        String targetedAdvice = buildConcreteStudyDirections(experimentContext, weaknesses);
-
-        return """
-                请根据以下实验批改信息，为学生生成一段可直接写入实验报告末尾的"教师总评"。
-        
-                硬性要求：
-                1. 只输出 JSON，格式固定为 {"teacherReview":"..."}。
-                2. teacherReview 使用中文，控制在 260 到 360 字之间。
-                3. 只写总结性教师评语，不要写分项得分、数字成绩、百分制、评分细节、AI、模型、系统、维度、续页等词。
-                4. 必须覆盖：实验任务完成度、知识掌握情况、报告撰写主要问题、学生优点、改进建议、课外延伸建议。
-                5. 重点关注学生是否真正完成实验要求、是否理解核心知识和结果分析，不要过分关注格式、实验环境、软件版本、排版。
-                6. 语言要像任课教师当面跟学生说话一样，真实、自然、有温度，避免套话和机械重复，不能照抄"实验目的/上机要求"原文。
-                7. 可以用 2 到 3 个自然段来组织，比如第一段说完成情况和优点，第二段说不足和建议。段落之间用换行符 \\n 分隔。
-                8. 改进建议和课外延伸必须具体，至少给出 1 到 2 个明确方向，优先写"下一次应补做什么分析/应补看什么方法/应对比什么模型或处理步骤"，不要写空泛的"继续加强""继续拓展"。
-                9. 如果实验主题较明确，可以直接点名相关方法、算法、特征工程、评价指标或分析角度，例如 TF-IDF、词袋、停用词、n-gram、逻辑回归、SVM、决策树、混淆矩阵、误分类样本分析，但必须与本次实验内容相关。
-                10. 报告问题要指出主要缺口是什么，例如"缺少对 ROC/PR 曲线差异的解释""没有分析误分类原因""没有说明预处理对结果的影响"，不要只说"分析不够深入"。
-                11. 每份评语的开头、句式、表达方式都应该不同，禁止使用固定模板。不要总是用"XX同学本次实验…"开头。
-
-                学生信息：
-                - 学生姓名：%s
-                - 总分参考：%s（仅供你把握整体水平，严禁写入总评）
-
-                实验目标摘要：
-                - 实验目的：%s
-                - 上机要求：%s
-                - 实验内容：%s
-
-                批改观察：
-                - 完成情况：%s
-                - 掌握较好：%s
-                - 主要薄弱点：%s
-                - 评分批注摘要：%s
-                - 更具体的建议方向：%s
-                - 教师评分标准补充：%s
-                """.formatted(
-                studentName,
-                scoreReference,
-                sanitizeExperimentSnippet(experimentContext.objective()),
-                sanitizeExperimentSnippet(experimentContext.requirements()),
-                sanitizeExperimentSnippet(experimentContext.contents()),
-                buildTaskCompletionSummary(submission.getTotalScore(), weaknesses, experimentContext),
-                summarizeInsightList(strengths, "实验流程执行、基础知识理解较稳定"),
-                summarizeInsightList(weaknesses, "关键原理解释、结果分析和结论收束仍需加强"),
-                buildScoreObservationDigest(scoreItems, submission),
-                targetedAdvice,
-                rubricHint.isBlank() ? "无" : sanitizeExperimentSnippet(rubricHint)
-        );
-    }
-
     private String compressTeacherReview(String reviewBody) {
         // Preserve paragraph breaks (\n\n or \n) but clean up extra whitespace within lines
         String text = safeText(reviewBody)
@@ -1132,6 +1253,102 @@ public class GradingSubmissionService {
             text = text + "。";
         }
         return text;
+    }
+
+    private String buildTeacherReviewPrompt(GradingSubmissionEntity submission,
+                                            List<ScoreItemEntity> scoreItems,
+                                            ExperimentContext experimentContext,
+                                            List<DimensionInsight> strengths,
+                                            List<DimensionInsight> weaknesses,
+                                            String reportText) {
+        String studentName = submission.getStudentName() == null || submission.getStudentName().isBlank()
+                ? "该同学"
+                : submission.getStudentName();
+        String scoreReference = submission.getTotalScore() == null
+                ? "待评"
+                : submission.getTotalScore().setScale(1, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString();
+        String rubricHint = submission.getTask() != null
+                && submission.getTask().getRubric() != null
+                && submission.getTask().getRubric().getCustomPrompt() != null
+                ? submission.getTask().getRubric().getCustomPrompt().trim()
+                : "";
+        String targetedAdvice = buildConcreteStudyDirections(experimentContext, weaknesses);
+        String reportSnippet = safeText(reportText).replaceAll("\\s+", " ").trim();
+
+        return """
+                请根据以下信息，为学生生成一段可直接写入实验报告末尾的"教师总评"。
+
+                硬性要求：
+                1. 只输出 JSON，格式固定为 {"teacherReview":"..."}。
+                2. teacherReview 使用中文，控制在 260 到 360 字之间。
+                3. 只写总结性教师评语，不要写分项得分、数字成绩、百分制、评分细节、AI、模型、系统、维度、续页等词。
+                4. 必须覆盖：实验任务完成度、知识掌握情况、报告撰写主要问题、学生优点、改进建议、课外延伸建议。
+                5. 必须结合下方“学生报告内容摘要”进行评价，指出报告中实际写了什么、缺了什么、哪些分析站得住脚、哪些结论还缺少支撑，不要脱离报告内容泛泛而谈。
+                6. 重点关注学生是否真正完成实验要求、是否理解核心知识和结果分析，不要过分关注格式、实验环境、软件版本、排版。
+                7. 语言要像任课教师当面跟学生说话一样，真实、自然、有温度，避免套话和机械重复，不能照抄"实验目的/上机要求"原文。
+                8. 可以用 2 到 3 个自然段来组织，比如第一段说完成情况和优点，第二段说不足和建议。段落之间用换行符 \\n 分隔。
+                9. 改进建议和课外延伸必须具体，至少给出 1 到 2 个明确方向，优先写"下一次应补做什么分析/应补看什么方法/应对比什么模型或处理步骤"，不要写空泛的"继续加强""继续拓展"。
+                10. 如果实验主题较明确，可以直接点名相关方法、算法、特征工程、评价指标或分析角度，但必须与本次实验内容相关。
+                11. 报告问题要指出主要缺口是什么，例如"缺少对 ROC/PR 曲线差异的解释""没有分析误分类原因""没有说明预处理对结果的影响"，不要只说"分析不够深入"。
+                12. 每份评语的开头、句式、表达方式都应该不同，禁止使用固定模板。不要总是用"XX同学本次实验…"开头。
+
+                学生信息：
+                - 学生姓名：%s
+                - 总分参考：%s（仅供你把握整体水平，严禁写入总评）
+
+                实验目标摘要：
+                - 实验目的：%s
+                - 上机要求：%s
+                - 实验内容：%s
+
+                学生报告内容摘要（请重点参考）：
+                %s
+
+                批改观察：
+                - 完成情况：%s
+                - 掌握较好：%s
+                - 主要薄弱点：%s
+                - 评分批注摘要：%s
+                - 更具体的建议方向：%s
+                - 教师评分标准补充：%s
+                """.formatted(
+                studentName,
+                scoreReference,
+                sanitizeExperimentSnippet(experimentContext.objective()),
+                sanitizeExperimentSnippet(experimentContext.requirements()),
+                sanitizeExperimentSnippet(experimentContext.contents()),
+                reportSnippet.isBlank() ? "（未能提取到报告文本）" : reportSnippet,
+                buildTaskCompletionSummary(submission.getTotalScore(), weaknesses, experimentContext),
+                summarizeInsightList(strengths, "实验流程执行、基础知识理解较稳定"),
+                summarizeInsightList(weaknesses, "关键原理解释、结果分析和结论收束仍需加强"),
+                buildScoreObservationDigest(scoreItems, submission),
+                targetedAdvice,
+                rubricHint.isBlank() ? "无" : sanitizeExperimentSnippet(rubricHint)
+        );
+    }
+
+    private String extractReportText(GradingSubmissionEntity submission, int maxChars) {
+        if (submission == null || submission.getPdfObjectKey() == null || submission.getPdfObjectKey().isBlank()) {
+            return "";
+        }
+        try {
+            byte[] pdfBytes = storageService.getBytes(submission.getPdfObjectKey());
+            if (pdfBytes == null || pdfBytes.length == 0) {
+                return "";
+            }
+            try (PDDocument document = PDDocument.load(new ByteArrayInputStream(pdfBytes))) {
+                PDFTextStripper stripper = new PDFTextStripper();
+                stripper.setSortByPosition(true);
+                String text = stripper.getText(document);
+                if (text == null) {
+                    return "";
+                }
+                text = text.replaceAll("\\s+", " ").trim();
+                return text.length() > maxChars ? text.substring(0, maxChars) + "…" : text;
+            }
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     private String buildScoreObservationDigest(List<ScoreItemEntity> scoreItems, GradingSubmissionEntity submission) {
@@ -1348,6 +1565,22 @@ public class GradingSubmissionService {
             result.put(dimension.getId(), dimension.getName());
         }
         return result;
+    }
+
+    private List<AnnotatedStudentReportService.DimensionScore> buildDimensionScores(List<ScoreItemEntity> scores) {
+        if (scores == null) {
+            return List.of();
+        }
+        return scores.stream()
+                .filter(score -> score.getScore() != null && score.getDimension() != null)
+                .sorted(Comparator.comparingInt(score -> {
+                    Integer order = score.getDimension().getSortOrder();
+                    return order == null ? Integer.MAX_VALUE : order;
+                }))
+                .map(score -> new AnnotatedStudentReportService.DimensionScore(
+                        "\u76ee\u6807" + score.getDimension().getSortOrder(),
+                        score.getScore()))
+                .toList();
     }
 
     private List<DimensionInsight> buildRankedInsights(List<ScoreItemEntity> scores, Map<Long, String> dimensionNames) {

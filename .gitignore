@@ -35,3 +35,7 @@ build/
 ### Local environment ###
 local.env.ps1
 data/lucene-index/
+.deploy-venv/
+.deploy-pass
+.deploy-key*
+sftp_batch.txt

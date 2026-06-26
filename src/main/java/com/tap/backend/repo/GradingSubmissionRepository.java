@@ -29,6 +29,14 @@ public interface GradingSubmissionRepository extends JpaRepository<GradingSubmis
             @Param("studentNo") String studentNo,
             @Param("experimentId") Long experimentId);
 
+    @Query("""
+            SELECT s FROM GradingSubmissionEntity s
+            WHERE s.studentNo = :studentNo
+              AND s.publishedAt IS NOT NULL
+            ORDER BY s.publishedAt DESC, s.id DESC
+            """)
+    List<GradingSubmissionEntity> findLatestPublishedForStudent(@Param("studentNo") String studentNo);
+
     Optional<GradingSubmissionEntity> findByIdAndStudentNoAndPublishedAtIsNotNull(
             Long id, String studentNo);
 }

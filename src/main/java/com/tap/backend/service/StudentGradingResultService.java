@@ -46,6 +46,9 @@ public class StudentGradingResultService {
         List<GradingSubmissionEntity> matches =
                 submissionRepo.findPublishedForStudentExperiment(studentNo, experimentId);
         if (matches.isEmpty()) {
+            matches = submissionRepo.findLatestPublishedForStudent(studentNo);
+        }
+        if (matches.isEmpty()) {
             return Map.of("published", false);
         }
         GradingSubmissionEntity submission = matches.get(0);

@@ -1,11 +1,11 @@
 package com.tap.backend.service.grading.animation;
 
+import com.tap.backend.service.grading.animation.ErrorPatternDetector.ErrorType;
+import java.util.Locale;
 import org.springframework.stereotype.Component;
 
-import java.util.Locale;
-
 /**
- * 根据错误类型选择对应的动画工作流。
+ * 根据错误类型和证据特征选择动画工作流。
  */
 @Component
 public class AnimationWorkflowRouter {
@@ -16,20 +16,22 @@ public class AnimationWorkflowRouter {
             "malloc", "free", "printf", "scanf", "arr[", "*", "&", "->"
     };
 
-    private static final String[] RESULT_KEYWORDS = {
-            "结果", "输出", "图表", "数据", "对比", "差异", "预期", "实际",
-            "不正确", "不匹配", "不符", "错误结果"
-    };
-
-    private static final String[] CONCEPT_KEYWORDS = {
-            "原理", "概念", "理解", "思想", "本质", "机制", "模型",
-            "复杂度", "时间复杂度", "空间复杂度", "递归", "指针"
-    };
-
-    /**
-     * 根据候选对象判断应使用哪种工作流。
-     */
     public AnimationWorkflow route(AnimationCandidate candidate) {
+        ErrorType errorType = candidate.detectedErrorType();
+        if (errorType == null) {
+            return defaultRoute(candidate);
+        }
+
+        return switch (errorType) {
+            case ARRAY_BOUNDS, INVALID_POINTER, INFINITE_LOOP, MEMORY_LEAK,
+                 RECURSION, RUNTIME_ERROR, TYPE_ERROR, LOGIC_ERROR -> AnimationWorkflow.PYTHON_TUTOR;
+            case RESULT_MISMATCH -> AnimationWorkflow.RESULT_COMPARE;
+            case CONCEPT -> AnimationWorkflow.HTML_ANIMATION;
+            default -> defaultRoute(candidate);
+        };
+    }
+
+    private AnimationWorkflow defaultRoute(AnimationCandidate candidate) {
         String anchor = candidate.anchor();
         String note = candidate.note();
         String evidenceKind = candidate.evidenceBlock().getKind() == null
@@ -37,22 +39,15 @@ public class AnimationWorkflowRouter {
                 : candidate.evidenceBlock().getKind().name();
         String combined = (anchor + " " + note).toLowerCase(Locale.ROOT);
 
-        // 1. 代码类错误：anchor 包含代码关键字，或证据块是代码截图/OCR
-        if (looksLikeCode(anchor) || isCodeEvidence(evidenceKind)) {
+        if (looksLikeCode(anchor) || ("ocr".equalsIgnoreCase(evidenceKind) && looksLikeCode(anchor))) {
             return AnimationWorkflow.PYTHON_TUTOR;
         }
-
-        // 2. 结果分析类错误
-        if (containsAny(combined, RESULT_KEYWORDS)) {
+        if (containsAny(combined, new String[]{"结果", "输出", "图表", "数据", "对比", "差异", "不匹配", "不符"})) {
             return AnimationWorkflow.RESULT_COMPARE;
         }
-
-        // 3. 概念/原理类错误
-        if (containsAny(combined, CONCEPT_KEYWORDS) || "text".equals(evidenceKind) || "vlm".equals(evidenceKind)) {
+        if ("text".equalsIgnoreCase(evidenceKind) || "vlm".equalsIgnoreCase(evidenceKind)) {
             return AnimationWorkflow.HTML_ANIMATION;
         }
-
-        // 4. 兜底
         return AnimationWorkflow.GENERIC_HIGHLIGHT;
     }
 
@@ -66,12 +61,6 @@ public class AnimationWorkflowRouter {
             }
         }
         return false;
-    }
-
-    private boolean isCodeEvidence(String evidenceKind) {
-        return "ocr".equalsIgnoreCase(evidenceKind)
-                || "vlm".equalsIgnoreCase(evidenceKind)
-                || "image".equalsIgnoreCase(evidenceKind);
     }
 
     private boolean containsAny(String text, String[] keywords) {

@@ -17,4 +17,8 @@ public record ProblemContext(
     public ProblemContext {
         testCases = testCases == null ? List.of() : List.copyOf(testCases);
     }
+
+    public static ProblemContext empty() {
+        return new ProblemContext(null, "", "", List.of(), null, null);
+    }
 }

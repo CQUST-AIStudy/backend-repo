@@ -1,0 +1,150 @@
+flowchart TD
+    subgraph Frontend ["前端 Vue"]
+        A[教师创建/选择批改任务<br/>并配置 Rubric / 评分维度]
+        B[上传学生实验报告 PDF]
+        C[查看批改结果 / 下载批注报告]
+    end
+
+    subgraph Backend ["后端 Spring Boot"]
+        D[GradingTaskController<br/>接收文件]
+        E[存储 PDF 到 MinIO<br/>生成 pdfObjectKey]
+        F[创建 GradingSubmission<br/>状态 PENDING]
+        G[GradingTaskService.publishTaskToQueue<br/>将任务消息推入 Redis 队列]
+        H[RedisGradingListener<br/>订阅批改结果频道]
+        I[GradingTaskService.onSubmissionComplete<br/>更新 submission 状态/总分]
+        J{任务全部完成?}
+        K[自动生成 batch review]
+        L[GradingSubmissionService.ensureReviewAndAnnotatedReport]
+        M{已有教师评语?}
+        N{已有批注报告?}
+        O[buildTeacherComment<br/>提取 PDF 文本 + AI 生成评语]
+        P{AI 配置可用且调用成功?}
+        Q[使用 fallback 通用评语]
+        R[createAnnotatedReport]
+        S[保存新批注报告到 MinIO]
+    end
+
+    subgraph Worker ["Python 批改 Worker"]
+        T[Celery queue_consumer<br/>从 Redis 拉取任务]
+        U[process_submission<br/>从 MinIO 下载 PDF]
+        V[parse_document<br/>PDF 解析为页面 + 图片]
+        W1[提取页面文本]
+        W2[图片 OCR / VLM 提取内容]
+        W3[生成 EvidenceBlock 列表]
+        W4[从 DB 加载 Rubric dimensions]
+        W5[build_evidence_packs<br/>对每个维度用 BM25 检索最相关证据]
+        X{该维度证据包非空?}
+        Y[score_dimension / score_dimensions_batch<br/>Prompt = 维度定义 + 证据包 → AI 打分]
+        Z[状态 NEED_MORE_EVIDENCE]
+        AA[calculate_weighted_total<br/>按权重计算总分]
+        AB[保存 ScoreItem + EvidenceBlock]
+        AC[发布结果到 Redis RESULT_CHANNEL]
+    end
+
+    subgraph Render ["AnnotatedStudentReportService.render"]
+        R1[drawPdfScoreInReport]
+        R2{有课程目标表格?}
+        R3[回填目标1/目标2/成绩]
+        R4{有实验成绩单元格?}
+        R5[回填成绩单元格]
+        R6[封面右上角回填总分]
+        R7{页数 > 10?}
+        R8[drawPdfSimulatedMarksForLongDocument<br/>每页正文右侧打勾]
+        R9[drawPdfAnnotationMarks<br/>按锚点文本画批注]
+        R10{命中锚点数 < 2?}
+        R11[derivePdfAnnotationsFromComments<br/>从评语推导锚点]
+        R12{命中锚点数 == 0?}
+        R13[drawPdfContentMarks<br/>legacy 兜底标记]
+        R14{PDF 已含生成评语页?}
+        R15[跳过添加评语页]
+        R16[drawPdfReviewOnLastPage<br/>末页写教师评语]
+    end
+
+    subgraph Storage ["基础设施"]
+        DB[(MySQL ptadatabase)]
+        MIN[(MinIO 对象存储)]
+        RED[(Redis 队列/频道)]
+        AI[AI Provider<br/>OpenAI / DeepSeek / VLM]
+    end
+
+    A --> D
+    A -.->|保存 Rubric| DB
+    B --> D
+    D --> E
+    E --> MIN
+    E --> F
+    F --> DB
+    F --> G
+    G --> RED
+    RED --> T
+    T --> U
+    U --> MIN
+    U --> V
+    V --> W1
+    V --> W2
+    W1 --> W3
+    W2 --> AI
+    W2 --> W3
+    W3 --> W5
+    W4 --> DB
+    W4 --> W5
+    W5 --> X
+    X -->|有| Y
+    X -->|无| Z
+    Y --> AI
+    Y --> AA
+    Z --> AB
+    AA --> AB
+    AB --> DB
+    AB --> AC
+    AC --> RED
+    RED --> H
+    H --> I
+    I --> DB
+    I --> J
+    J -->|是| K
+    J -->|否| L
+    K --> DB
+    C --> L
+    L --> M
+    M -->|无| O
+    M -->|有| N
+    O --> P
+    P -->|是| R
+    P -->|否| Q
+    Q --> R
+    N -->|无| R
+    N -->|有| S
+    R --> Render
+    Render --> S
+    S --> MIN
+    S --> C
+
+    R1 --> R2
+    R2 -->|是| R3
+    R2 -->|否| R4
+    R4 -->|是| R5
+    R4 -->|否| R6
+    R3 --> R7
+    R5 --> R7
+    R6 --> R7
+    R7 -->|是| R8
+    R7 -->|否| R9
+    R9 --> R10
+    R10 -->|是| R11
+    R10 -->|否| R12
+    R11 --> R12
+    R12 -->|是| R13
+    R12 -->|否| R14
+    R13 --> R14
+    R8 --> R14
+    R14 -->|是| R15
+    R14 -->|否| R16
+    R15 --> S
+    R16 --> S
+
+    style Frontend fill:#e1f5fe
+    style Backend fill:#e8f5e9
+    style Worker fill:#fff3e0
+    style Render fill:#ffebee
+    style Storage fill:#f3e5f5

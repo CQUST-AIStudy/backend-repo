@@ -5,6 +5,7 @@ import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.List;
+import java.util.Objects;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import org.springframework.web.server.ResponseStatusException;
@@ -26,19 +27,20 @@ public class StudentSessionResolver {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "student role required");
         }
 
-        String studentId = normalizeStudentId(user.getUsernum());
+        String studentId = resolveStudentNoForUser(user);
         if (studentId == null) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "student id missing");
         }
+        user.setUsernum(studentId);
         return user;
     }
 
     public String requireStudentId(HttpServletRequest request) {
-        return resolveCanonicalStudentNo(normalizeStudentId(requireStudent(request).getUsernum()));
+        return resolveCanonicalStudentNo(resolveStudentNoForUser(requireStudent(request)));
     }
 
     public String requireAuthorizedStudentId(String requestedStudentId, HttpServletRequest request) {
-        String sessionValue = normalizeStudentId(requireStudent(request).getUsernum());
+        String sessionValue = resolveStudentNoForUser(requireStudent(request));
         String sessionStudentId = resolveCanonicalStudentNo(sessionValue);
         String requestedValue = normalizeStudentId(requestedStudentId);
         if (!sessionStudentId.equals(requestedValue) && !sessionValue.equals(requestedValue)) {
@@ -55,6 +57,39 @@ public class StudentSessionResolver {
                 String.class
         ).setParameter(1, studentId).getResultList();
         return matchedStudentNumbers.isEmpty() ? studentId : matchedStudentNumbers.get(0);
+    }
+
+    private String resolveStudentNoForUser(UserEntity user) {
+        String usernum = normalizeStudentId(user.getUsernum());
+        if (usernum != null) {
+            return usernum;
+        }
+        String byProfileUserId = findStudentProfileNoByUserId(user.getId());
+        if (byProfileUserId != null) {
+            return byProfileUserId;
+        }
+        return normalizeStudentId(user.getUsername());
+    }
+
+    private String findStudentProfileNoByUserId(Integer userId) {
+        if (userId == null || userId <= 0) {
+            return null;
+        }
+        try {
+            @SuppressWarnings("unchecked")
+            List<String> studentNumbers = em.createNativeQuery(
+                    "SELECT student_no FROM student_profile WHERE user_id = ?1 " +
+                            "AND student_no IS NOT NULL AND TRIM(student_no) <> '' ORDER BY id ASC LIMIT 1",
+                    String.class
+            ).setParameter(1, userId).getResultList();
+            return studentNumbers.stream()
+                    .map(this::normalizeStudentId)
+                    .filter(Objects::nonNull)
+                    .findFirst()
+                    .orElse(null);
+        } catch (RuntimeException ignored) {
+            return null;
+        }
     }
 
     private String normalizeStudentId(String value) {
