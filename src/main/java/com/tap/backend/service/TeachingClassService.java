@@ -7,10 +7,12 @@ import com.tap.backend.domain.user.UserRole;
 import com.tap.backend.repo.ClassStudentRepository;
 import com.tap.backend.repo.TeachingClassRepository;
 import com.tap.backend.repo.UserRepository;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
 import java.util.NoSuchElementException;
 import java.util.Optional;
 import java.util.Set;
@@ -73,12 +75,17 @@ public class TeachingClassService {
 
     @Transactional(readOnly = true)
     public List<TeachingClassEntity> listByTeacher(Long teacherId) {
-        return classRepo.findAllByTeacherId(teacherId);
+        return classRepo.findAllByTeacherIdAndStatus(teacherId, "ACTIVE");
     }
 
     @Transactional(readOnly = true)
     public List<TeachingClassEntity> listAll() {
         return classRepo.findAll();
+    }
+
+    @Transactional(readOnly = true)
+    public List<TeachingClassEntity> listActiveClasses() {
+        return classRepo.findAllByStatus("ACTIVE");
     }
 
     @Transactional
@@ -94,14 +101,16 @@ public class TeachingClassService {
             String ptaGroupName,
             Boolean syncEnabled
     ) {
-        if (classRepo.existsByClassCode(classCode)) {
-            throw new IllegalArgumentException("class code already exists: " + classCode);
+        String normalizedName = normalizeRequiredText(name, "name");
+        String resolvedClassCode = resolveCreateClassCode(classCode, normalizedName);
+        if (classRepo.existsByClassCode(resolvedClassCode)) {
+            throw new IllegalArgumentException("class code already exists: " + resolvedClassCode);
         }
         TeachingClassEntity teachingClass = new TeachingClassEntity();
         teachingClass.setTeacher(teacher);
-        teachingClass.setName(name);
-        teachingClass.setClassCode(classCode);
-        teachingClass.setJoinPassword(joinPassword);
+        teachingClass.setName(normalizedName);
+        teachingClass.setClassCode(resolvedClassCode);
+        teachingClass.setJoinPassword(resolveCreateJoinPassword(joinPassword));
         teachingClass.setGrade(grade);
         teachingClass.setCourseName(courseName);
         teachingClass.setDescription(description);
@@ -112,7 +121,7 @@ public class TeachingClassService {
             teachingClass.setSyncEnabled(syncEnabled);
         }
         teachingClass = classRepo.save(teachingClass);
-        // 在事务内触发 teacher 懒加载代理初始化，避免 Controller 端 LazyInitializationException
+        // Initialize lazy teacher proxy before leaving the transaction.
         teachingClass.getTeacher().getDisplayName();
         return teachingClass;
     }
@@ -131,45 +140,47 @@ public class TeachingClassService {
             Boolean syncEnabled
     ) {
         TeachingClassEntity teachingClass = requireOwnedClass(classId, teacherId);
-        if (name != null) {
-            teachingClass.setName(name);
-        }
-        if (joinPassword != null) {
-            teachingClass.setJoinPassword(joinPassword);
-        }
-        if (grade != null) {
-            teachingClass.setGrade(grade);
-        }
-        if (courseName != null) {
-            teachingClass.setCourseName(courseName);
-        }
-        if (description != null) {
-            teachingClass.setDescription(description);
-        }
-        if (ptaKeyword != null) {
-            String resolvedKeyword = normalizeNullableText(ptaKeyword);
-            teachingClass.setPtaKeyword(resolvePtaKeyword(teachingClass.getName(), resolvedKeyword));
-            if (teachingClass.getPtaGroupName() == null || teachingClass.getPtaGroupName().isBlank()) {
-                teachingClass.setPtaGroupName(resolvedKeyword);
-            }
-        }
-        if (ptaGroupName != null) {
-            String resolvedGroupName = normalizeNullableText(ptaGroupName);
-            teachingClass.setPtaGroupName(resolvedGroupName);
-            teachingClass.setPtaKeyword(resolvePtaKeyword(teachingClass.getName(), resolvedGroupName));
-        }
-        if (syncEnabled != null) {
-            teachingClass.setSyncEnabled(syncEnabled);
-        }
+        applyClassUpdates(teachingClass, name, joinPassword, grade, courseName, description, ptaKeyword, ptaGroupName, syncEnabled);
         teachingClass = classRepo.save(teachingClass);
-        // 在事务内触发 teacher 懒加载代理初始化，避免 Controller 端 LazyInitializationException
+        // Initialize lazy teacher proxy before leaving the transaction.
         teachingClass.getTeacher().getDisplayName();
         return teachingClass;
     }
 
     @Transactional
     public void deleteClass(Long classId, Long teacherId) {
-        classRepo.delete(requireOwnedClass(classId, teacherId));
+        archiveClass(requireOwnedClass(classId, teacherId));
+    }
+
+    @Transactional
+    public TeachingClassEntity updateClassAsAdmin(
+            Long classId,
+            Long teacherId,
+            String name,
+            String joinPassword,
+            String grade,
+            String courseName,
+            String description,
+            String ptaKeyword,
+            String ptaGroupName,
+            Boolean syncEnabled
+    ) {
+        TeachingClassEntity teachingClass = classRepo.findById(classId)
+                .orElseThrow(() -> new NoSuchElementException("class not found"));
+        if (teacherId != null) {
+            teachingClass.setTeacher(requireTeacherUser(teacherId));
+        }
+        applyClassUpdates(teachingClass, name, joinPassword, grade, courseName, description, ptaKeyword, ptaGroupName, syncEnabled);
+        teachingClass = classRepo.save(teachingClass);
+        teachingClass.getTeacher().getDisplayName();
+        return teachingClass;
+    }
+
+    @Transactional
+    public void deleteClassAsAdmin(Long classId) {
+        TeachingClassEntity teachingClass = classRepo.findById(classId)
+                .orElseThrow(() -> new NoSuchElementException("class not found"));
+        archiveClass(teachingClass);
     }
 
     @Transactional(readOnly = true)
@@ -425,7 +436,7 @@ public class TeachingClassService {
         if (classIds.isEmpty()) {
             return List.of();
         }
-        return classRepo.findAllById(classIds);
+        return classRepo.findAllByIdInAndStatus(classIds, "ACTIVE");
     }
 
     @Transactional
@@ -446,7 +457,7 @@ public class TeachingClassService {
         if (classIds.isEmpty()) {
             return List.of();
         }
-        return classRepo.findAllById(classIds);
+        return classRepo.findAllByIdInAndStatus(classIds, "ACTIVE");
     }
 
     @Transactional
@@ -531,6 +542,71 @@ public class TeachingClassService {
         return result;
     }
 
+    private void archiveClass(TeachingClassEntity teachingClass) {
+        teachingClass.setStatus("ARCHIVED");
+        teachingClass.setArchivedAt(Instant.now());
+        teachingClass.setSyncEnabled(false);
+        if ("RUNNING".equals(teachingClass.getSyncStatus())) {
+            teachingClass.setSyncStatus("IDLE");
+        }
+        classRepo.save(teachingClass);
+    }
+
+    private UserEntity requireTeacherUser(Long teacherId) {
+        UserEntity teacher = userRepo.findById(teacherId)
+                .orElseThrow(() -> new NoSuchElementException("teacher not found"));
+        if (teacher.getRole() != UserRole.TEACHER && teacher.getRole() != UserRole.ADMIN) {
+            throw new IllegalArgumentException("selected user is not a teacher");
+        }
+        if (!Boolean.TRUE.equals(teacher.getEnabled())) {
+            throw new IllegalArgumentException("selected teacher is disabled");
+        }
+        return teacher;
+    }
+
+    private void applyClassUpdates(
+            TeachingClassEntity teachingClass,
+            String name,
+            String joinPassword,
+            String grade,
+            String courseName,
+            String description,
+            String ptaKeyword,
+            String ptaGroupName,
+            Boolean syncEnabled
+    ) {
+        if (name != null) {
+            teachingClass.setName(normalizeRequiredText(name, "name"));
+        }
+        if (joinPassword != null) {
+            teachingClass.setJoinPassword(resolveCreateJoinPassword(joinPassword));
+        }
+        if (grade != null) {
+            teachingClass.setGrade(grade);
+        }
+        if (courseName != null) {
+            teachingClass.setCourseName(courseName);
+        }
+        if (description != null) {
+            teachingClass.setDescription(description);
+        }
+        if (ptaKeyword != null) {
+            String resolvedKeyword = normalizeNullableText(ptaKeyword);
+            teachingClass.setPtaKeyword(resolvePtaKeyword(teachingClass.getName(), resolvedKeyword));
+            if (teachingClass.getPtaGroupName() == null || teachingClass.getPtaGroupName().isBlank()) {
+                teachingClass.setPtaGroupName(resolvedKeyword);
+            }
+        }
+        if (ptaGroupName != null) {
+            String resolvedGroupName = normalizeNullableText(ptaGroupName);
+            teachingClass.setPtaGroupName(resolvedGroupName);
+            teachingClass.setPtaKeyword(resolvePtaKeyword(teachingClass.getName(), resolvedGroupName));
+        }
+        if (syncEnabled != null) {
+            teachingClass.setSyncEnabled(syncEnabled);
+        }
+    }
+
     private TeachingClassEntity requireOwnedClass(Long classId, Long teacherId) {
         TeachingClassEntity teachingClass = classRepo.findById(classId)
                 .orElseThrow(() -> new NoSuchElementException("class not found"));
@@ -538,6 +614,37 @@ public class TeachingClassService {
             throw new SecurityException("forbidden");
         }
         return teachingClass;
+    }
+
+    private String resolveCreateClassCode(String classCode, String name) {
+        String normalized = blankToNull(classCode);
+        if (normalized != null) {
+            return normalized;
+        }
+        String prefix = String.valueOf(name == null ? "CLASS" : name)
+                .replaceAll("[^A-Za-z0-9]", "")
+                .toUpperCase(Locale.ROOT);
+        if (prefix.length() > 8) {
+            prefix = prefix.substring(0, 8);
+        }
+        if (prefix.isBlank()) {
+            prefix = "CLASS";
+        }
+        for (int i = 0; i < 20; i++) {
+            String candidate = prefix + Long.toString(System.currentTimeMillis() + i, 36).toUpperCase(Locale.ROOT);
+            if (candidate.length() > 32) {
+                candidate = candidate.substring(0, 32);
+            }
+            if (!classRepo.existsByClassCode(candidate)) {
+                return candidate;
+            }
+        }
+        throw new IllegalStateException("failed to generate class code");
+    }
+
+    private String resolveCreateJoinPassword(String joinPassword) {
+        String normalized = blankToNull(joinPassword);
+        return normalized == null ? "123456" : normalized;
     }
 
     private String resolvePtaKeyword(String className, String ptaKeyword) {
@@ -583,7 +690,7 @@ public class TeachingClassService {
         }
         UserEntity user = userRepo.findByUsername(normalizedUsername).orElse(null);
         if (user == null) {
-            throw new IllegalArgumentException("学生账号不存在，不需要添加");
+            throw new IllegalArgumentException("student account does not exist: " + normalizedUsername);
         }
         if (user.getRole() != UserRole.STUDENT) {
             throw new IllegalArgumentException("matched account is not a STUDENT role: " + normalizedUsername);

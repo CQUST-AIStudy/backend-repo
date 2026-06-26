@@ -3,6 +3,7 @@ package com.tap.backend.api.classroom;
 import com.tap.backend.domain.classroom.ClassStudentEntity;
 import com.tap.backend.domain.classroom.TeachingClassEntity;
 import com.tap.backend.domain.user.UserEntity;
+import com.tap.backend.domain.user.UserRole;
 import com.tap.backend.repo.UserRepository;
 import com.tap.backend.security.TeacherPrincipalResolver;
 import com.tap.backend.security.UserPrincipal;
@@ -56,6 +57,22 @@ public class ClassroomController {
                 .orElseThrow(() -> new NoSuchElementException("user not found"));
     }
 
+    private UserEntity resolveClassTeacher(UserEntity currentUser, Long requestedTeacherId) {
+        if (currentUser.getRole() != UserRole.ADMIN) {
+            return currentUser;
+        }
+        Long teacherId = requestedTeacherId == null ? currentUser.getId() : requestedTeacherId;
+        UserEntity teacher = userRepo.findById(teacherId)
+                .orElseThrow(() -> new NoSuchElementException("teacher not found"));
+        if (teacher.getRole() != UserRole.TEACHER && teacher.getRole() != UserRole.ADMIN) {
+            throw new IllegalArgumentException("selected user is not a teacher");
+        }
+        if (!Boolean.TRUE.equals(teacher.getEnabled())) {
+            throw new IllegalArgumentException("selected teacher is disabled");
+        }
+        return teacher;
+    }
+
     private Long optionalUserId(UserPrincipal principal) {
         if (principal == null) {
             return null;
@@ -68,7 +85,7 @@ public class ClassroomController {
     @GetMapping
     public ApiResponse<List<Map<String, Object>>> listClasses(@AuthenticationPrincipal UserPrincipal principal) {
         UserEntity user = requireUser(principal);
-        List<TeachingClassEntity> classes = classService.listByTeacher(user.getId());
+        List<TeachingClassEntity> classes = user.getRole() == UserRole.ADMIN ? classService.listActiveClasses() : classService.listByTeacher(user.getId());
         List<Map<String, Object>> result = new ArrayList<>();
         for (TeachingClassEntity teachingClass : classes) {
             result.add(toMap(teachingClass));
@@ -85,7 +102,8 @@ public class ClassroomController {
             String description,
             String ptaKeyword,
             String ptaGroupName,
-            Boolean syncEnabled
+            Boolean syncEnabled,
+            Long teacherId
     ) {}
 
     @PostMapping
@@ -94,8 +112,9 @@ public class ClassroomController {
             @RequestBody CreateClassRequest req
     ) {
         UserEntity user = requireUser(principal);
+        UserEntity classTeacher = resolveClassTeacher(user, req.teacherId());
         TeachingClassEntity teachingClass = classService.createClass(
-                user,
+                classTeacher,
                 req.name(),
                 req.classCode(),
                 req.joinPassword(),
@@ -117,7 +136,8 @@ public class ClassroomController {
             String description,
             String ptaKeyword,
             String ptaGroupName,
-            Boolean syncEnabled
+            Boolean syncEnabled,
+            Long teacherId
     ) {}
 
     @PutMapping("/{id}")
@@ -127,18 +147,29 @@ public class ClassroomController {
             @RequestBody UpdateClassRequest req
     ) {
         UserEntity user = requireUser(principal);
-        TeachingClassEntity teachingClass = classService.updateClass(
-                id,
-                user.getId(),
-                req.name(),
-                req.joinPassword(),
-                req.grade(),
-                req.courseName(),
-                req.description(),
-                req.ptaKeyword(),
-                req.ptaGroupName(),
-                req.syncEnabled()
-        );
+        TeachingClassEntity teachingClass = user.getRole() == UserRole.ADMIN
+                ? classService.updateClassAsAdmin(
+                        id,
+                        req.teacherId(),
+                        req.name(),
+                        req.joinPassword(),
+                        req.grade(),
+                        req.courseName(),
+                        req.description(),
+                        req.ptaKeyword(),
+                        req.ptaGroupName(),
+                        req.syncEnabled())
+                : classService.updateClass(
+                        id,
+                        user.getId(),
+                        req.name(),
+                        req.joinPassword(),
+                        req.grade(),
+                        req.courseName(),
+                        req.description(),
+                        req.ptaKeyword(),
+                        req.ptaGroupName(),
+                        req.syncEnabled());
         return ApiResponse.of(toMap(teachingClass));
     }
 
@@ -148,7 +179,11 @@ public class ClassroomController {
             @PathVariable Long id
     ) {
         UserEntity user = requireUser(principal);
-        classService.deleteClass(id, user.getId());
+        if (user.getRole() == UserRole.ADMIN) {
+            classService.deleteClassAsAdmin(id);
+        } else {
+            classService.deleteClass(id, user.getId());
+        }
         return ApiResponse.of(null);
     }
 
@@ -353,8 +388,10 @@ public class ClassroomController {
     private Map<String, Object> toMap(TeachingClassEntity teachingClass) {
         long studentCount = classService.countStudents(teachingClass.getId());
         String teacherName = "";
+        Long teacherId = teachingClass.getTeacherId();
         if (teachingClass.getTeacher() != null) {
             UserEntity t = teachingClass.getTeacher();
+            teacherId = t.getId();
             teacherName = t.getDisplayName() != null && !t.getDisplayName().isBlank()
                 ? t.getDisplayName().trim()
                 : (t.getUsername() != null ? t.getUsername().trim() : "");
@@ -368,6 +405,7 @@ public class ClassroomController {
         result.put("courseName", teachingClass.getCourseName());
         result.put("description", teachingClass.getDescription());
         result.put("teacherName", teacherName);
+        result.put("teacherId", teacherId);
         result.put("studentCount", studentCount);
         result.put("ptaKeyword", teachingClass.getPtaKeyword());
         result.put("ptaProblemSetId", teachingClass.getPtaProblemSetId());
