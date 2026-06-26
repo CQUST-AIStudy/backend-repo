@@ -6,6 +6,7 @@ import com.tap.backend.repo.UserRepository;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import java.util.List;
+import java.util.Objects;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -31,7 +32,7 @@ public class StudentPrincipalResolver {
     if (user.getRole() != UserRole.STUDENT) {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN, "student role required");
     }
-    String studentNum = resolveStudentNum(user.getUsername());
+    String studentNum = resolveStudentNum(user.getUsername(), user.getId());
     if (studentNum == null) {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN, "student id missing");
     }
@@ -53,7 +54,7 @@ public class StudentPrincipalResolver {
     }
     String studentNum = normalize(legacyUser.getUsernum());
     if (studentNum == null) {
-      studentNum = resolveStudentNum(username);
+      studentNum = resolveStudentNum(username, (long) legacyUser.getId());
     }
     if (studentNum == null) {
       throw new ResponseStatusException(HttpStatus.FORBIDDEN, "student id missing");
@@ -103,10 +104,14 @@ public class StudentPrincipalResolver {
     return matchedStudentNumbers.isEmpty() ? studentId : matchedStudentNumbers.get(0);
   }
 
-  private String resolveStudentNum(String username) {
+  private String resolveStudentNum(String username, Long userId) {
     String legacyUsernum = findLegacyUsernum(username);
     if (legacyUsernum != null) {
       return legacyUsernum;
+    }
+    String profileStudentNo = findStudentProfileNoByUserId(userId);
+    if (profileStudentNo != null) {
+      return profileStudentNo;
     }
     return normalizeStudentId(username);
   }
@@ -126,6 +131,28 @@ public class StudentPrincipalResolver {
       return usernums.stream()
           .map(this::normalizeStudentId)
           .filter(value -> value != null)
+          .findFirst()
+          .orElse(null);
+    } catch (RuntimeException ignored) {
+      return null;
+    }
+  }
+
+  private String findStudentProfileNoByUserId(Long userId) {
+    if (userId == null) {
+      return null;
+    }
+    try {
+      @SuppressWarnings("unchecked")
+      List<String> studentNumbers = em.createNativeQuery(
+              "SELECT student_no FROM student_profile WHERE user_id = ?1 " +
+                  "AND student_no IS NOT NULL AND TRIM(student_no) <> '' ORDER BY id ASC LIMIT 1",
+              String.class
+          ).setParameter(1, userId)
+          .getResultList();
+      return studentNumbers.stream()
+          .map(this::normalizeStudentId)
+          .filter(Objects::nonNull)
           .findFirst()
           .orElse(null);
     } catch (RuntimeException ignored) {

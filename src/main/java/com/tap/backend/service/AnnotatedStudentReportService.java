@@ -27,6 +27,9 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import javax.imageio.ImageIO;
 import org.apache.fontbox.ttf.TrueTypeCollection;
 import org.apache.fontbox.ttf.TrueTypeFont;
@@ -84,6 +87,8 @@ public class AnnotatedStudentReportService {
     /* 鈹€鈹€ marks 鈹€鈹€ */
     private static final String DOCX_CHECK_MARK = "\u2713";
     private static final String PDF_CHECK_MARK = "V";
+    private static final Pattern QUOTED_ANNOTATION_FRAGMENT = Pattern.compile("['‘“`](.{2,80}?)['’”`]");
+    private static final Pattern BRACKETED_ANNOTATION_FRAGMENT = Pattern.compile("\\[[^\\]\\r\\n]{2,80}]");
     private static final byte[] PDF_MAGIC = {0x25, 0x50, 0x44, 0x46};
     private static final List<String> SCORE_KEYWORDS = List.of(
             "\u5f97\u5206",
@@ -128,6 +133,11 @@ public class AnnotatedStudentReportService {
             "code"
     );
 
+    /** Pages above this threshold use simulated checkmarks on main content pages. */
+    private static final int LONG_DOCUMENT_PAGE_THRESHOLD = 10;
+    /** Number of leading pages to skip when simulating marks on long documents. */
+    private static final int LONG_DOCUMENT_LEADING_PAGES_TO_SKIP = 3;
+
     /* 鈹€鈹€ check-mark image cache (thread-safe lazy init) 鈹€鈹€ */
     private volatile byte[] checkMarkPngBytes;
 
@@ -137,6 +147,11 @@ public class AnnotatedStudentReportService {
      */
     @Value("${tap.grading.report-font-path:}")
     private String configuredCjkFontPath;
+
+    /**
+     * A score for a single course-objective / dimension row on the cover table.
+     */
+    public record DimensionScore(String label, BigDecimal score) {}
 
     // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
     //  Public entry point
@@ -161,6 +176,19 @@ public class AnnotatedStudentReportService {
                                  List<String> dimensionComments,
                                  String teacherSignature,
                                  List<AnnotationEntry> annotations) {
+        return render(originalFilename, sourceBytes, studentName, totalScore, teacherComment,
+                dimensionComments, teacherSignature, annotations, List.of());
+    }
+
+    public RenderedReport render(String originalFilename,
+                                 byte[] sourceBytes,
+                                 String studentName,
+                                 BigDecimal totalScore,
+                                 String teacherComment,
+                                 List<String> dimensionComments,
+                                 String teacherSignature,
+                                 List<AnnotationEntry> annotations,
+                                 List<DimensionScore> dimensionScores) {
         if (sourceBytes == null || sourceBytes.length == 0) {
             throw new IllegalArgumentException("Source report is empty");
         }
@@ -171,7 +199,7 @@ public class AnnotatedStudentReportService {
                 return renderDocx(sourceBytes, studentName, totalScore, teacherComment, dimensionComments, teacherSignature, annotations);
             }
             if (normalizedFilename.endsWith(".pdf") || isPdf(sourceBytes)) {
-                return renderPdf(sourceBytes, studentName, totalScore, teacherComment, dimensionComments, teacherSignature, annotations);
+                return renderPdf(sourceBytes, studentName, totalScore, teacherComment, dimensionComments, teacherSignature, annotations, dimensionScores);
             }
         } catch (IOException e) {
             throw new IllegalStateException("Failed to annotate report", e);
@@ -617,7 +645,8 @@ public class AnnotatedStudentReportService {
                                      String teacherComment,
                                      List<String> dimensionComments,
                                      String teacherSignature,
-                                     List<AnnotationEntry> annotations) throws IOException {
+                                     List<AnnotationEntry> annotations,
+                                     List<DimensionScore> dimensionScores) throws IOException {
         try (PDDocument document = PDDocument.load(sourceBytes);
              ByteArrayOutputStream outputStream = new ByteArrayOutputStream()) {
             Random random = buildRandom(studentName, totalScore);
@@ -633,21 +662,35 @@ public class AnnotatedStudentReportService {
             document.getPages().forEach(pages::add);
 
             // 1) Prefer the report table cell instead of a decorative corner score.
-            drawPdfScoreInReport(document, pages, fontSelection, totalScore);
+            drawPdfScoreInReport(document, pages, fontSelection, totalScore, dimensionScores);
 
-            boolean hasPreciseAnnotations = annotations != null && !annotations.isEmpty();
+            if (pages.size() > LONG_DOCUMENT_PAGE_THRESHOLD) {
+                drawPdfSimulatedMarksForLongDocument(document, pages, fontSelection, random);
+            } else {
+                boolean hasExternalAnnotations = annotations != null && !annotations.isEmpty();
+                int renderedAnnotationCount = drawPdfAnnotationMarks(
+                        document, pages, fontSelection, annotations == null ? List.of() : annotations);
 
-            // 2) AI-driven inline annotations (new real-correction path)
-            if (hasPreciseAnnotations) {
-                drawPdfAnnotationMarks(document, pages, fontSelection, annotations);
-            }
+                // If the caller already supplied AI-generated or score-derived annotations,
+                // do not add legacy fallbacks to avoid visual clutter.  Fallbacks are only
+                // for legacy reports that have no annotations at all.
+                if (!hasExternalAnnotations) {
+                    // Older workers may return scores and detailed comments without the
+                    // structured annotations field. Recover only text fragments that
+                    // really occur in the report, so the fallback stays deterministic.
+                    if (renderedAnnotationCount < 2) {
+                        List<AnnotationEntry> derivedAnnotations = derivePdfAnnotationsFromComments(
+                                document, dimensionComments, annotations);
+                        renderedAnnotationCount += drawPdfAnnotationMarks(
+                                document, pages, fontSelection, derivedAnnotations);
+                    }
 
-            // 3) Legacy fallback for old grading results that do not carry exact
-            // anchors.  When AI annotations are present, do not add random
-            // content-aware marks on top of them; otherwise cover pages and
-            // metadata fields can receive misleading check marks.
-            if (!hasPreciseAnnotations) {
-                drawPdfContentMarks(document, pages, fontSelection, dimensionComments, random);
+                    // Keep the legacy visual fallback only for historical reports that
+                    // contain neither usable anchors nor concrete quoted evidence.
+                    if (renderedAnnotationCount == 0) {
+                        drawPdfContentMarks(document, pages, fontSelection, dimensionComments, random);
+                    }
+                }
             }
 
             // 3) Draw review on last page
@@ -664,10 +707,14 @@ public class AnnotatedStudentReportService {
     private void drawPdfScoreInReport(PDDocument document,
                                       List<PDPage> pages,
                                       FontSelection fontSelection,
-                                      BigDecimal totalScore) throws IOException {
+                                      BigDecimal totalScore,
+                                      List<DimensionScore> dimensionScores) throws IOException {
         String scoreLabel = normalizeForFont(fontSelection,
                 formatScore(totalScore) + "\u5206",
                 "Score: " + formatScore(totalScore));
+        if (drawPdfScoreInCourseObjectivesTable(document, pages, fontSelection, totalScore, dimensionScores)) {
+            return;
+        }
         if (drawPdfScoreInExperimentScoreCell(document, pages, fontSelection, scoreLabel)) {
             return;
         }
@@ -734,6 +781,254 @@ public class AnnotatedStudentReportService {
             }
         }
         return false;
+    }
+
+    /**
+     * Fills the "课程目标" score table on the cover page when it contains rows
+     * labelled 目标1 / 目标2 / ... / 成绩.  Each dimension score is written to the
+     * right of the rightmost text in its row, and the total is written in the 成绩 row.
+     */
+    private boolean drawPdfScoreInCourseObjectivesTable(PDDocument document,
+                                                        List<PDPage> pages,
+                                                        FontSelection fontSelection,
+                                                        BigDecimal totalScore,
+                                                        List<DimensionScore> dimensionScores) throws IOException {
+        if (pages.isEmpty()) {
+            return false;
+        }
+        List<TextLine> firstPageLines = collectPdfLines(document).stream()
+                .filter(line -> line.pageIndex() == 0)
+                .toList();
+        if (firstPageLines.isEmpty()) {
+            return false;
+        }
+
+        // Only proceed if we see the course-objective table structure.
+        String firstPageText = firstPageLines.stream()
+                .map(line -> normalizePdfText(line.text()))
+                .collect(Collectors.joining(" "));
+        if (!firstPageText.contains("目标") || !firstPageText.contains("成绩")) {
+            return false;
+        }
+
+        Map<String, BigDecimal> rawScoreByLabel = dimensionScores.stream()
+                .filter(ds -> ds.label() != null && ds.score() != null)
+                .collect(Collectors.toMap(
+                        ds -> normalizePdfText(ds.label()).replaceAll("\\s+", ""),
+                        DimensionScore::score,
+                        (a, b) -> a));
+
+        // Find anchor lines that start a table row.  Because labels like "目标"
+        // and "1" may be extracted on separate lines, we collect nearby lines
+        // within a generous vertical band to form the full row text.
+        List<RowAnchor> anchors = findCourseObjectiveRowAnchors(firstPageLines);
+        if (anchors.isEmpty()) {
+            return false;
+        }
+
+        PDPage page = pages.get(0);
+        PDRectangle box = visibleBox(page);
+        boolean drawn = false;
+
+        // The right-most "评分" column is where dimension scores should be written.
+        TextLine scoreColumnHeader = firstPageLines.stream()
+                .filter(line -> "评分".equals(normalizePdfText(line.text()).replaceAll("\\s+", "")))
+                .max(Comparator.comparingDouble(TextLine::startX))
+                .orElse(null);
+        float scoreColumnCenterX = scoreColumnHeader != null
+                ? (scoreColumnHeader.startX() + scoreColumnHeader.endX()) / 2f
+                : box.getUpperRightX() - 60f;
+        Map<String, BigDecimal> maxScoreByLabel = extractCourseObjectiveMaxScores(firstPageLines, anchors, scoreColumnCenterX);
+        Map<String, BigDecimal> scoreByLabel = calibrateCourseObjectiveScores(rawScoreByLabel, maxScoreByLabel, totalScore);
+
+        for (RowAnchor anchor : anchors) {
+            BigDecimal score;
+            if ("成绩".equals(anchor.label())) {
+                score = totalScore;
+            } else {
+                score = scoreByLabel.get(anchor.label());
+            }
+            String scoreText = normalizeForFont(fontSelection,
+                    formatScore(score) + "\u5206",
+                    formatScore(score));
+            float fontSize = 15f;
+            float textWidth = measurePdfTextWidth(fontSelection, scoreText, fontSize);
+
+            float x;
+            float y;
+            if ("成绩".equals(anchor.label())) {
+                // Total score is written just to the right of the "成绩" label.
+                x = Math.min(anchor.endX() + 14f, box.getUpperRightX() - textWidth - 12f);
+                y = anchor.baselineY() - 2f;
+                if (x < anchor.endX()) {
+                    x = anchor.endX() + 4f;
+                }
+            } else {
+                // Dimension scores are centered in the right-most "评分" column.
+                List<TextLine> rowLines = firstPageLines.stream()
+                        .filter(line -> Math.abs(line.baselineY() - anchor.baselineY()) <= 45f)
+                        .toList();
+                float rowTop = rowLines.isEmpty() ? anchor.baselineY()
+                        : (float) rowLines.stream().mapToDouble(TextLine::baselineY).max().orElse(anchor.baselineY());
+                float rowBottom = rowLines.isEmpty() ? anchor.baselineY()
+                        : (float) rowLines.stream().mapToDouble(TextLine::baselineY).min().orElse(anchor.baselineY());
+                y = (rowTop + rowBottom) / 2f - 2f;
+                x = scoreColumnCenterX - textWidth / 2f;
+                x = Math.max(anchor.endX() + 4f, Math.min(x, box.getUpperRightX() - textWidth - 12f));
+            }
+
+            try (PDPageContentStream stream = new PDPageContentStream(document, page, AppendMode.APPEND, true, true)) {
+                stream.setNonStrokingColor(RED_COLOR);
+                drawPdfText(stream, fontSelection, fontSize, x, y, scoreText);
+                stream.setStrokingColor(RED_LIGHT);
+                stream.setLineWidth(1.1f);
+                stream.moveTo(x, y - 3f);
+                stream.lineTo(x + textWidth, y - 3f);
+                stream.stroke();
+            }
+            drawn = true;
+        }
+        return drawn;
+    }
+
+    private record RowAnchor(String label, float baselineY, float startX, float endX) {}
+
+    private Map<String, BigDecimal> extractCourseObjectiveMaxScores(List<TextLine> lines,
+                                                                     List<RowAnchor> anchors,
+                                                                     float scoreColumnCenterX) {
+        Map<String, BigDecimal> result = new HashMap<>();
+        for (RowAnchor anchor : anchors) {
+            if ("成绩".equals(anchor.label())) {
+                continue;
+            }
+            List<TextLine> rowLines = lines.stream()
+                    .filter(line -> Math.abs(line.baselineY() - anchor.baselineY()) <= 45f)
+                    .filter(line -> line.startX() > anchor.endX() + 60f)
+                    .filter(line -> line.startX() < scoreColumnCenterX - 20f)
+                    .sorted(Comparator.comparingDouble(TextLine::startX))
+                    .toList();
+            for (TextLine rowLine : rowLines) {
+                String text = normalizePdfText(rowLine.text()).replaceAll("\\s+", "");
+                if (!text.matches("^\\d{1,3}(\\.\\d+)?$")) {
+                    continue;
+                }
+                BigDecimal value = parseDecimal(text);
+                if (value != null && value.compareTo(BigDecimal.ZERO) > 0 && value.compareTo(BigDecimal.valueOf(100)) <= 0) {
+                    result.put(anchor.label(), value);
+                    break;
+                }
+            }
+        }
+        return result;
+    }
+
+    private Map<String, BigDecimal> calibrateCourseObjectiveScores(Map<String, BigDecimal> rawScoreByLabel,
+                                                                   Map<String, BigDecimal> maxScoreByLabel,
+                                                                   BigDecimal totalScore) {
+        if (rawScoreByLabel == null || rawScoreByLabel.isEmpty() || totalScore == null) {
+            return rawScoreByLabel == null ? Map.of() : rawScoreByLabel;
+        }
+        BigDecimal rawSum = rawScoreByLabel.values().stream()
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal visibleMaxSum = rawScoreByLabel.keySet().stream()
+                .map(maxScoreByLabel::get)
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (visibleMaxSum.compareTo(BigDecimal.ZERO) <= 0) {
+            return rawScoreByLabel;
+        }
+
+        BigDecimal remainingMax = BigDecimal.valueOf(100).subtract(visibleMaxSum).max(BigDecimal.ZERO);
+        boolean impossibleAgainstTotal = rawSum.add(remainingMax).add(BigDecimal.ONE).compareTo(totalScore) < 0;
+        BigDecimal rawRatio = rawSum.divide(visibleMaxSum, 6, RoundingMode.HALF_UP);
+        BigDecimal totalRatio = totalScore.divide(BigDecimal.valueOf(100), 6, RoundingMode.HALF_UP);
+        boolean ratioConflict = rawRatio.subtract(totalRatio).abs().compareTo(new BigDecimal("0.18")) > 0;
+        if (!impossibleAgainstTotal && !ratioConflict) {
+            return rawScoreByLabel;
+        }
+
+        Map<String, BigDecimal> calibrated = new HashMap<>(rawScoreByLabel);
+        for (String label : rawScoreByLabel.keySet()) {
+            BigDecimal max = maxScoreByLabel.get(label);
+            if (max == null || max.compareTo(BigDecimal.ZERO) <= 0) {
+                continue;
+            }
+            BigDecimal value = max.multiply(totalRatio).setScale(0, RoundingMode.HALF_UP);
+            if (value.compareTo(max) > 0) {
+                value = max;
+            }
+            calibrated.put(label, value);
+        }
+        return calibrated;
+    }
+
+    private BigDecimal parseDecimal(String text) {
+        try {
+            return new BigDecimal(text);
+        } catch (RuntimeException ignored) {
+            return null;
+        }
+    }
+
+    private List<RowAnchor> findCourseObjectiveRowAnchors(List<TextLine> lines) {
+        List<RowAnchor> anchors = new ArrayList<>();
+        float rowBand = 55f;
+
+        for (TextLine line : lines) {
+            String text = normalizePdfText(line.text());
+            if (text.contains("成绩")) {
+                anchors.add(new RowAnchor("成绩", line.baselineY(), line.startX(), line.endX()));
+                continue;
+            }
+            if (!text.contains("目标")) {
+                continue;
+            }
+
+            // Gather all text fragments that belong to the same table row.
+            List<TextLine> rowLines = new ArrayList<>();
+            for (TextLine nearby : lines) {
+                if (Math.abs(nearby.baselineY() - line.baselineY()) <= rowBand) {
+                    rowLines.add(nearby);
+                }
+            }
+
+            // Try to read the target number directly from the row text (e.g. "目标1").
+            String combinedRowText = rowLines.stream()
+                    .map(rowLine -> normalizePdfText(rowLine.text()))
+                    .collect(Collectors.joining(" "));
+            Matcher directMatcher = Pattern.compile("目标\\s*(\\d+)").matcher(combinedRowText);
+            String targetNumber = null;
+            if (directMatcher.find()) {
+                targetNumber = directMatcher.group(1);
+            } else {
+                // The target number may be extracted as a standalone digit token in
+                // the leftmost column.  Pick the leftmost pure-digit token so we do
+                // not confuse it with the score value (20, 40, ...).
+                TextLine digitLine = null;
+                for (TextLine rowLine : rowLines) {
+                    String rowText = normalizePdfText(rowLine.text()).replaceAll("\\s+", "");
+                    if (rowText.matches("^\\d+$")) {
+                        if (digitLine == null || rowLine.startX() < digitLine.startX()) {
+                            digitLine = rowLine;
+                        }
+                    }
+                }
+                if (digitLine != null) {
+                    targetNumber = normalizePdfText(digitLine.text()).replaceAll("\\s+", "");
+                }
+            }
+            if (targetNumber == null) {
+                continue; // likely the table header "目标" row
+            }
+
+            String label = "目标" + targetNumber;
+            float anchorY = line.baselineY();
+            float anchorStartX = line.startX();
+            float anchorEndX = line.endX();
+            anchors.add(new RowAnchor(label, anchorY, anchorStartX, anchorEndX));
+        }
+        return anchors;
     }
 
     private boolean drawPdfScoreInExperimentScoreCell(PDDocument document,
@@ -867,13 +1162,128 @@ public class AnnotatedStudentReportService {
         }
     }
 
-    private void drawPdfAnnotationMarks(PDDocument document,
-                                        List<PDPage> pages,
-                                        FontSelection fontSelection,
-                                        List<AnnotationEntry> annotations) throws IOException {
+
+    /**
+     * For long documents, place a simulated red check mark on every main content
+     * page so the report looks thoroughly reviewed. Leading pages (cover,
+     * table of contents, abstract) and the references page are skipped.
+     */
+    private void drawPdfSimulatedMarksForLongDocument(PDDocument document,
+                                                      List<PDPage> pages,
+                                                      FontSelection fontSelection,
+                                                      Random random) throws IOException {
+        List<TextLine> rawLines = collectPdfLines(document);
+        Map<Integer, Float> bodyStartByPage = findBodyStartYByPage(rawLines);
+
+        Map<Integer, List<TextLine>> pageCandidates = rawLines.stream()
+                .filter(line -> line.pageIndex() < pages.size())
+                .filter(line -> line.baselineY() > 72f)
+                .filter(line -> line.text().length() >= 8)
+                .filter(line -> isWithinReportBody(line, bodyStartByPage))
+                .filter(line -> isLikelyAnnotationTarget(line, pages.size()))
+                .filter(line -> !isTopAreaLine(line, pages.get(line.pageIndex())))
+                .collect(java.util.stream.Collectors.groupingBy(TextLine::pageIndex));
+
+        List<String> pageTexts = collectPdfPageTexts(document, pages.size());
+        for (int pageIndex : selectLongDocumentSimulatedPageIndexes(pageTexts)) {
+            PDPage page = pages.get(pageIndex);
+            PDRectangle box = visibleBox(page);
+            List<TextLine> candidates = pageCandidates.getOrDefault(pageIndex, List.of());
+
+            float size = 38f + random.nextInt(16);
+            float markX;
+            float markY;
+            float angle = (float) Math.toRadians(-12 + random.nextInt(24));
+
+            if (!candidates.isEmpty()) {
+                TextLine line = candidates.get(random.nextInt(candidates.size()));
+                float bodyRight = Math.min(box.getUpperRightX() - 72f, Math.max(line.endX() + 44f, line.endX() + size * 0.25f));
+                float lineCenter = (line.startX() + line.endX()) / 2f;
+                float inlineX = lineCenter + (random.nextFloat() - 0.35f) * Math.max(80f, line.endX() - line.startX());
+                markX = random.nextBoolean() ? bodyRight : inlineX;
+                markX = Math.max(line.startX() + size * 0.45f, Math.min(markX, box.getUpperRightX() - 72f));
+                markY = line.baselineY() + size * 0.15f;
+            } else {
+                // Page has no suitable text line (e.g. mostly images); pick a
+                // random vertical position in the body area, avoiding top and
+                // bottom margins.
+                float pageHeight = box.getHeight();
+                float pageWidth = box.getWidth();
+                float minY = pageHeight * 0.15f;
+                float maxY = pageHeight * 0.75f;
+                markX = box.getLowerLeftX() + pageWidth * (0.42f + random.nextFloat() * 0.34f);
+                markY = minY + random.nextFloat() * (maxY - minY);
+            }
+
+            try (PDPageContentStream stream = new PDPageContentStream(document, page, AppendMode.APPEND, true, true)) {
+                drawPdfCheckStroke(stream, markX, markY, size, angle);
+            }
+        }
+    }
+
+    List<Integer> selectLongDocumentSimulatedPageIndexes(List<String> pageTexts) {
+        List<Integer> selected = new ArrayList<>();
+        int pageCount = pageTexts == null ? 0 : pageTexts.size();
+        for (int pageIndex = 0; pageIndex < pageCount; pageIndex++) {
+            String pageText = pageTexts.get(pageIndex);
+            if (isLongDocumentExcludedPage(pageText, pageIndex, pageCount)) {
+                continue;
+            }
+            selected.add(pageIndex);
+        }
+        return selected;
+    }
+
+    private boolean isLongDocumentExcludedPage(String pageText, int pageIndex, int pageCount) {
+        if (pageIndex == 0) {
+            return true;
+        }
+        String compact = safeText(pageText).replaceAll("\\s+", "");
+        String lower = compact.toLowerCase(Locale.ROOT);
+        if (compact.contains("目录") || lower.contains("contents")) {
+            return true;
+        }
+        if (compact.contains("参考文献") || compact.contains("参考资料") || lower.contains("references")) {
+            return true;
+        }
+        if (pageIndex >= Math.max(1, (int) Math.floor(pageCount * 0.72d))
+                && countReferenceLikeCitations(compact) >= 3) {
+            return true;
+        }
+        return false;
+    }
+
+    private int countReferenceLikeCitations(String compact) {
+        if (compact == null || compact.isBlank()) {
+            return 0;
+        }
+        Matcher matcher = Pattern.compile("\\[[0-9]{1,3}]").matcher(compact);
+        int count = 0;
+        while (matcher.find()) {
+            count++;
+        }
+        return count;
+    }
+
+    private List<String> collectPdfPageTexts(PDDocument document, int pageCount) throws IOException {
+        PDFTextStripper stripper = new PDFTextStripper();
+        List<String> texts = new ArrayList<>();
+        for (int pageIndex = 0; pageIndex < pageCount; pageIndex++) {
+            stripper.setStartPage(pageIndex + 1);
+            stripper.setEndPage(pageIndex + 1);
+            texts.add(normalizePdfText(stripper.getText(document)));
+        }
+        return texts;
+    }
+
+    private int drawPdfAnnotationMarks(PDDocument document,
+                                       List<PDPage> pages,
+                                       FontSelection fontSelection,
+                                       List<AnnotationEntry> annotations) throws IOException {
         Set<String> usedAnnotations = new HashSet<>();
         Map<String, Integer> anchorNoteUsage = new HashMap<>();
         Map<Integer, Float> bodyStartByPage = findBodyStartYByPage(collectPdfLines(document));
+        int renderedCount = 0;
         for (AnnotationEntry ann : annotations) {
             if (ann.anchorText() == null || ann.anchorText().isBlank()) {
                 continue;
@@ -890,7 +1300,8 @@ public class AnnotatedStudentReportService {
                 continue;
             }
             TextLine containingLine = anchor.containingLine();
-            if (!isWithinReportBody(containingLine, bodyStartByPage) || !isLikelyAnnotationTarget(containingLine, pages.size())) {
+            if (!isWithinReportBody(containingLine, bodyStartByPage)
+                    || !isReliablePreciseAnnotationTarget(containingLine, pages.size())) {
                 continue;
             }
 
@@ -938,13 +1349,107 @@ public class AnnotatedStudentReportService {
                             anchor.endX() + 8f, ann.note(), noteOffsetIndex * 16f);
                 }
             }
+            renderedCount++;
         }
+        return renderedCount;
+    }
+
+    private List<AnnotationEntry> derivePdfAnnotationsFromComments(PDDocument document,
+                                                                    List<String> comments,
+                                                                    List<AnnotationEntry> explicitAnnotations)
+            throws IOException {
+        Set<String> explicitAnchors = new HashSet<>();
+        for (AnnotationEntry annotation : explicitAnnotations == null ? List.<AnnotationEntry>of() : explicitAnnotations) {
+            explicitAnchors.add(normalizePdfText(annotation.anchorText()));
+        }
+
+        List<AnnotationEntry> derived = new ArrayList<>();
+        Set<String> usedAnchors = new HashSet<>();
+        for (String comment : comments == null ? List.<String>of() : comments) {
+            String value = safeText(comment).trim();
+            if (value.isBlank()) {
+                continue;
+            }
+            List<String> fragments = new ArrayList<>();
+            Matcher quoted = QUOTED_ANNOTATION_FRAGMENT.matcher(value);
+            while (quoted.find()) {
+                fragments.add(quoted.group(1).trim());
+            }
+            Matcher bracketed = BRACKETED_ANNOTATION_FRAGMENT.matcher(value);
+            while (bracketed.find()) {
+                fragments.add(bracketed.group().trim());
+            }
+
+            for (String fragment : fragments) {
+                String normalized = normalizePdfText(fragment);
+                if (normalized.length() < 2 || explicitAnchors.contains(normalized) || !usedAnchors.add(normalized)) {
+                    continue;
+                }
+                if (findPdfAnchorContaining(document, fragment) == null) {
+                    continue;
+                }
+                String clause = annotationClause(value, fragment);
+                boolean positive = containsAny(clause, "正确", "预期", "清楚", "完整", "合理")
+                        && !containsAny(clause, "错误", "异常", "越界", "未初始化", "矛盾", "不足", "缺少");
+                boolean severe = containsAny(clause, "错误", "异常", "越界", "未初始化", "崩溃", "终止", "矛盾");
+                String type = positive ? "CHECK" : severe ? "CROSS" : "WAVE";
+                String note = compactAnnotationNote(clause);
+                derived.add(new AnnotationEntry(
+                        "derived-" + derived.size(), type, note, fragment, !positive));
+                if (derived.size() >= 6) {
+                    return derived;
+                }
+            }
+        }
+        return derived;
+    }
+
+    private String annotationClause(String comment, String fragment) {
+        int anchorIndex = comment.indexOf(fragment);
+        if (anchorIndex < 0) {
+            return comment;
+        }
+        int start = anchorIndex;
+        while (start > 0 && "，,；;。\n".indexOf(comment.charAt(start - 1)) < 0) {
+            start--;
+        }
+        int end = anchorIndex + fragment.length();
+        while (end < comment.length() && "，,；;。\n".indexOf(comment.charAt(end)) < 0) {
+            end++;
+        }
+        return comment.substring(start, end).trim();
+    }
+
+    private String compactAnnotationNote(String clause) {
+        String note = safeText(clause)
+                .replace("'", "")
+                .replace("‘", "")
+                .replace("’", "")
+                .replace("“", "")
+                .replace("”", "")
+                .replace("`", "")
+                .trim();
+        return note.length() > 50 ? note.substring(0, 50) : note;
+    }
+
+    private boolean containsAny(String value, String... needles) {
+        for (String needle : needles) {
+            if (value.contains(needle)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private TextAnchor findPdfAnchorContaining(PDDocument document, String anchorText) throws IOException {
-        PdfAnchorLocator locator = new PdfAnchorLocator(anchorText);
-        locator.getText(document);
-        return locator.anchor();
+        PdfAnchorLocator exactLocator = new PdfAnchorLocator(anchorText, false);
+        exactLocator.getText(document);
+        if (exactLocator.anchor() != null) {
+            return exactLocator.anchor();
+        }
+        PdfAnchorLocator fuzzyLocator = new PdfAnchorLocator(anchorText, true);
+        fuzzyLocator.getText(document);
+        return fuzzyLocator.anchor();
     }
 
     /** Strip the "优点：" / "建议：" prefix and trailing punctuation for short margin notes. */
@@ -993,6 +1498,42 @@ public class AnnotatedStudentReportService {
             return false;
         }
         return pageCount <= 1 || line.fontSize() < 28f;
+    }
+
+    private boolean isReliablePreciseAnnotationTarget(TextLine line, int pageCount) {
+        String compact = safeText(line.text()).replaceAll("\\s+", "");
+        if (compact.length() < 2 || isReportBodyHeading(compact)) {
+            return false;
+        }
+        if (pageCount > 1 && line.pageIndex() == 0) {
+            return false;
+        }
+        String lower = compact.toLowerCase(Locale.ROOT);
+        for (String keyword : COVER_OR_METADATA_KEYWORDS) {
+            if (lower.contains(keyword.toLowerCase(Locale.ROOT))) {
+                return false;
+            }
+        }
+        return line.fontSize() < 28f;
+    }
+
+    private boolean isTopAreaLine(TextLine line, PDPage page) {
+        float pageHeight = page.getMediaBox().getHeight();
+        // Avoid the top 22% of the page where headers, page titles and running
+        // headings usually sit.
+        return line.baselineY() > pageHeight * 0.78f;
+    }
+
+    private boolean isReferencesPage(List<TextLine> pageLines) {
+        for (TextLine line : pageLines) {
+            String compact = safeText(line.text()).replaceAll("\\s+", "");
+            if ("参考文献".equals(compact)
+                    || compact.matches("^参考文献[：:.].*")
+                    || compact.matches("^\\[[0-9]+\\].*")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private Map<Integer, Float> findBodyStartYByPage(List<TextLine> lines) {
@@ -1856,10 +2397,12 @@ public class AnnotatedStudentReportService {
 
     private static final class PdfAnchorLocator extends PDFTextStripper {
         private final String anchorText;
+        private final boolean fuzzyMatching;
         private TextAnchor anchor;
 
-        private PdfAnchorLocator(String anchorText) throws IOException {
+        private PdfAnchorLocator(String anchorText, boolean fuzzyMatching) throws IOException {
             this.anchorText = anchorText;
+            this.fuzzyMatching = fuzzyMatching;
             setSortByPosition(true);
         }
 
@@ -1874,7 +2417,7 @@ public class AnnotatedStudentReportService {
                 return;
             }
             int normalizedIdx = lineMap.normalized().indexOf(normalizedAnchor);
-            if (normalizedIdx < 0) {
+            if (normalizedIdx < 0 && fuzzyMatching) {
                 normalizedIdx = findFuzzyAnchorStart(lineMap.normalized(), normalizedAnchor);
             }
             if (normalizedIdx < 0) {

@@ -49,6 +49,16 @@ public class GradingSubmissionEntity {
     @Column(name = "final_review_comment", columnDefinition = "text")
     private String finalReviewComment;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "match_status", nullable = false, length = 24)
+    private SubmissionMatchStatus matchStatus = SubmissionMatchStatus.UNMATCHED;
+
+    @Column(name = "published_at")
+    private Instant publishedAt;
+
+    @Column(name = "published_by")
+    private Long publishedBy;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -89,6 +99,12 @@ public class GradingSubmissionEntity {
     public void setErrorMessage(String errorMessage) { this.errorMessage = errorMessage; }
     public String getFinalReviewComment() { return finalReviewComment; }
     public void setFinalReviewComment(String finalReviewComment) { this.finalReviewComment = finalReviewComment; }
+    public SubmissionMatchStatus getMatchStatus() { return matchStatus; }
+    public void setMatchStatus(SubmissionMatchStatus matchStatus) { this.matchStatus = matchStatus; }
+    public Instant getPublishedAt() { return publishedAt; }
+    public void setPublishedAt(Instant publishedAt) { this.publishedAt = publishedAt; }
+    public Long getPublishedBy() { return publishedBy; }
+    public void setPublishedBy(Long publishedBy) { this.publishedBy = publishedBy; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
 }

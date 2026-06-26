@@ -36,6 +36,10 @@ build/
 local.env.ps1
 .env
 data/lucene-index/
+.deploy-venv/
+.deploy-pass
+.deploy-key*
+sftp_batch.txt
 
 ### Runtime logs ###
 *.log

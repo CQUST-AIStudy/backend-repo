@@ -356,6 +356,170 @@ class AnnotatedStudentReportServiceTest {
     }
 
     @Test
+    void renderRealPointerReportDerivesPreciseErrorAnnotationsWhenWorkerOmitsThem() throws Exception {
+        Path sourcePdf = Path.of("src", "test", "resources", "reports",
+                "pointer-array-report-with-errors.pdf");
+        byte[] source = Files.readAllBytes(sourcePdf);
+
+        AnnotatedStudentReportService.RenderedReport rendered = service.render(
+                "pointer-array-report-with-errors.pdf",
+                source,
+                "邹名格",
+                new BigDecimal("51"),
+                "报告完成了基本实验流程，但循环边界和临时指针的使用存在明显错误，需要结合异常输出重新检查代码。",
+                List.of(
+                        "代码正确性这部分需要重点修正：循环条件'i <= n'会越界访问，swap函数中的'temp'未初始化就被解引用。",
+                        "数组遍历也使用了'i <= 5'，因此错误读取了arr[5]。",
+                        "报告把[程序异常终止]解释为成功交换，结论与运行结果矛盾。"
+                ),
+                "张老师",
+                List.of()
+        );
+
+        Path artifactsDir = Path.of("target", "test-artifacts");
+        Files.createDirectories(artifactsDir);
+        Path annotatedPdf = artifactsDir.resolve("pointer-array-report-with-errors-annotated.pdf");
+        Files.write(annotatedPdf, rendered.bytes());
+
+        try (PDDocument pdf = PDDocument.load(rendered.bytes())) {
+            assertEquals(7, pdf.getNumberOfPages());
+            PDFRenderer renderer = new PDFRenderer(pdf);
+            int markedErrorPages = 0;
+            for (int pageIndex : List.of(2, 4, 5)) {
+                BufferedImage image = renderer.renderImageWithDPI(pageIndex, 144);
+                ImageIO.write(image, "png", artifactsDir.resolve(
+                        "pointer-array-report-annotated-page-" + (pageIndex + 1) + ".png").toFile());
+                if (countRedPixels(image, 0.08, 0.96, 0.08, 0.94) > 250) {
+                    markedErrorPages++;
+                }
+            }
+            assertTrue(markedErrorPages >= 2,
+                    "Expected visible error marks on at least two real report pages, found " + markedErrorPages);
+            BufferedImage cover = renderer.renderImageWithDPI(0, 144);
+            assertTrue(countRedPixels(cover, 0.08, 0.96, 0.08, 0.94) < 1800,
+                    "The cover page must not receive a large random correction mark");
+        }
+    }
+
+    @Test
+    void renderLongDocumentPdfSimulatesCheckmarksOnMainPages() throws Exception {
+        Path sample = Path.of("D:\\Downloads\\谢晓娟-2025521044-实训报告.pdf");
+        if (!Files.exists(sample)) {
+            return;
+        }
+        byte[] source = Files.readAllBytes(sample);
+        int originalPages;
+        try (PDDocument pdf = PDDocument.load(source)) {
+            originalPages = pdf.getNumberOfPages();
+        }
+        if (originalPages <= 10) {
+            return;
+        }
+
+        AnnotatedStudentReportService.RenderedReport rendered = service.render(
+                sample.getFileName().toString(),
+                source,
+                "谢晓娟",
+                new BigDecimal("78"),
+                "报告整体完成较好，实验步骤记录完整，建议在结果分析部分进一步结合代码输出说明结论依据。",
+                List.of("实验步骤记录完整", "结果分析可进一步深化"),
+                "张老师",
+                List.of(),
+                List.of(
+                        new AnnotatedStudentReportService.DimensionScore("目标1", new BigDecimal("16")),
+                        new AnnotatedStudentReportService.DimensionScore("目标2", new BigDecimal("10"))
+                )
+        );
+
+        Path artifactsDir = Path.of("target", "test-artifacts");
+        Files.createDirectories(artifactsDir);
+        String runId = java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("MMddHHmmss"));
+        String baseName = "xie-annotated-" + runId;
+        Files.write(artifactsDir.resolve(baseName + ".pdf"), rendered.bytes());
+
+        try (PDDocument pdf = PDDocument.load(rendered.bytes())) {
+            assertEquals(originalPages + 1, pdf.getNumberOfPages());
+
+            // Diagnostic: print first page text to understand table layout.
+            PDFTextStripper stripper = new PDFTextStripper();
+            stripper.setStartPage(1);
+            stripper.setEndPage(1);
+            String firstPageText = stripper.getText(pdf);
+            System.out.println("=== FIRST PAGE TEXT ===");
+            System.out.println(firstPageText);
+            System.out.println("=== END FIRST PAGE TEXT ===");
+
+            // The cover table should have dimension scores calibrated against
+            // the displayed total.  The raw 16 + 10 values are intentionally
+            // inconsistent with 78/100, so 目标2 must not be written verbatim.
+            assertTrue(firstPageText.contains("16分"), "Expected calibrated 目标1 score on cover page");
+            assertTrue(firstPageText.contains("31分"), "Expected calibrated 目标2 score on cover page");
+            assertFalse(firstPageText.contains("10分"), "目标2 score should be calibrated instead of copied verbatim");
+            assertTrue(firstPageText.contains("78分"), "Expected total score on cover page");
+
+            PDFRenderer renderer = new PDFRenderer(pdf);
+            PDFTextStripper pageStripper = new PDFTextStripper();
+
+            int markedMainPages = 0;
+            int checkedMainPages = 0;
+            int referencePages = 0;
+            List<Double> markCenters = new java.util.ArrayList<>();
+            for (int i = 3; i < originalPages; i++) {
+                BufferedImage image = renderer.renderImageWithDPI(i, 144);
+                ImageIO.write(image, "png", artifactsDir.resolve(baseName + "-page-" + (i + 1) + ".png").toFile());
+
+                pageStripper.setStartPage(i + 1);
+                pageStripper.setEndPage(i + 1);
+                String pageText = pageStripper.getText(pdf).replaceAll("\\s+", "");
+                boolean isReferencePage = pageText.contains("参考文献")
+                        || pageText.contains("参考资料")
+                        || pageText.matches(".*\\[[0-9]+\\].*");
+
+                if (isReferencePage) {
+                    referencePages++;
+                    continue;
+                }
+
+                checkedMainPages++;
+                if (countRedPixels(image, 0.08, 0.96, 0.08, 0.94) > 250) {
+                    markedMainPages++;
+                    markCenters.add(redPixelCenterXRatio(image));
+                }
+            }
+
+            // Also save the first three pages for manual inspection.
+            for (int i = 0; i < Math.min(3, originalPages); i++) {
+                BufferedImage image = renderer.renderImageWithDPI(i, 144);
+                ImageIO.write(image, "png", artifactsDir.resolve(baseName + "-page-" + (i + 1) + ".png").toFile());
+            }
+            ImageIO.write(renderer.renderImageWithDPI(pdf.getNumberOfPages() - 1, 144), "png",
+                    artifactsDir.resolve(baseName + "-review-page.png").toFile());
+
+            assertTrue(checkedMainPages > 0,
+                    "Expected at least one main content page to check");
+            assertEquals(checkedMainPages, markedMainPages,
+                    "Expected every main content page (excluding references) to have a visible check mark, but only "
+                            + markedMainPages + "/" + checkedMainPages + " were marked (skipped " + referencePages + " reference pages)");
+            assertTrue(markCenters.stream().anyMatch(x -> x < 0.82),
+                    "Expected at least one simulated check mark to be near the text body instead of all marks staying in the far-right margin: "
+                            + markCenters);
+        }
+    }
+
+    @Test
+    void longDocumentSimulationSkipsCoverTableOfContentsAndReferences() {
+        List<String> pageTexts = List.of(
+                "重庆科技大学 实验报告 课程名称 人工智能",
+                "目录 一、实验目的 二、实验过程 三、实验结果",
+                "一、实验目的 掌握数据预处理流程",
+                "二、实验过程 这里是正文分析和代码说明",
+                "参考文献 [1] Python 文档 [2] OpenCV 文档 [3] PyTorch 文档"
+        );
+
+        assertEquals(List.of(2, 3), service.selectLongDocumentSimulatedPageIndexes(pageTexts));
+    }
+
+    @Test
     void renderPdfRemovesTrailingGeneratedReviewBeforeAddingNewOne() throws Exception {
         byte[] source = createPdfWithTrailingGeneratedReviewPage();
 
@@ -547,6 +711,27 @@ class AnnotatedStudentReportServiceTest {
             }
         }
         return redPixels;
+    }
+
+    private double redPixelCenterXRatio(BufferedImage image) {
+        long weightedX = 0;
+        int redPixels = 0;
+        for (int y = 0; y < image.getHeight(); y++) {
+            for (int x = 0; x < image.getWidth(); x++) {
+                int rgb = image.getRGB(x, y);
+                int r = (rgb >> 16) & 0xFF;
+                int g = (rgb >> 8) & 0xFF;
+                int b = rgb & 0xFF;
+                if (r > 170 && g < 120 && b < 120) {
+                    weightedX += x;
+                    redPixels++;
+                }
+            }
+        }
+        if (redPixels == 0) {
+            return 1.0d;
+        }
+        return (weightedX / (double) redPixels) / image.getWidth();
     }
 
     private int countOccurrences(String text, String needle) {
