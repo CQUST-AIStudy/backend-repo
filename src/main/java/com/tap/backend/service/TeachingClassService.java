@@ -5,6 +5,7 @@ import com.tap.backend.domain.classroom.TeachingClassEntity;
 import com.tap.backend.domain.user.UserEntity;
 import com.tap.backend.domain.user.UserRole;
 import com.tap.backend.repo.ClassStudentRepository;
+import com.tap.backend.repo.ClassAssignmentCleanupRepository;
 import com.tap.backend.repo.TeachingClassRepository;
 import com.tap.backend.repo.UserRepository;
 import java.util.ArrayList;
@@ -26,19 +27,25 @@ public class TeachingClassService {
     private final UserRepository userRepo;
     private final PasswordEncoder passwordEncoder;
     private final LegacyPtaRosterService legacyPtaRosterService;
+    private final TeachingClassDeletionGuard teachingClassDeletionGuard;
+    private final ClassAssignmentCleanupRepository classAssignmentCleanupRepository;
 
     public TeachingClassService(
             TeachingClassRepository classRepo,
             ClassStudentRepository studentRepo,
             UserRepository userRepo,
             PasswordEncoder passwordEncoder,
-            LegacyPtaRosterService legacyPtaRosterService
+            LegacyPtaRosterService legacyPtaRosterService,
+            TeachingClassDeletionGuard teachingClassDeletionGuard,
+            ClassAssignmentCleanupRepository classAssignmentCleanupRepository
     ) {
         this.classRepo = classRepo;
         this.studentRepo = studentRepo;
         this.userRepo = userRepo;
         this.passwordEncoder = passwordEncoder;
         this.legacyPtaRosterService = legacyPtaRosterService;
+        this.teachingClassDeletionGuard = teachingClassDeletionGuard;
+        this.classAssignmentCleanupRepository = classAssignmentCleanupRepository;
     }
 
     public record StudentAccountImportItem(
@@ -169,7 +176,19 @@ public class TeachingClassService {
 
     @Transactional
     public void deleteClass(Long classId, Long teacherId) {
-        classRepo.delete(requireOwnedClass(classId, teacherId));
+        deleteClass(classId, teacherId, false);
+    }
+
+    @Transactional
+    public void deleteClass(Long classId, Long teacherId, boolean force) {
+        TeachingClassEntity teachingClass = requireOwnedClass(classId, teacherId);
+        if (teachingClassDeletionGuard.hasBlockingReferences(classId) && !force) {
+            throw new ClassDeletionBlockedException("class is still referenced by published assignments and cannot be deleted");
+        }
+        if (force) {
+            classAssignmentCleanupRepository.deleteAssignmentDataByClassId(classId);
+        }
+        classRepo.delete(teachingClass);
     }
 
     @Transactional(readOnly = true)

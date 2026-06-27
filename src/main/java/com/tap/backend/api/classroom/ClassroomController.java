@@ -28,6 +28,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
@@ -145,10 +146,11 @@ public class ClassroomController {
     @DeleteMapping("/{id}")
     public ApiResponse<Void> deleteClass(
             @AuthenticationPrincipal UserPrincipal principal,
-            @PathVariable Long id
+            @PathVariable Long id,
+            @RequestParam(defaultValue = "false") boolean force
     ) {
         UserEntity user = requireUser(principal);
-        classService.deleteClass(id, user.getId());
+        classService.deleteClass(id, user.getId(), force);
         return ApiResponse.of(null);
     }
 

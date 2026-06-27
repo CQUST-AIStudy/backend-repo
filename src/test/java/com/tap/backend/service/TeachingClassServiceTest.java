@@ -13,6 +13,7 @@ import com.tap.backend.domain.classroom.TeachingClassEntity;
 import com.tap.backend.domain.user.UserEntity;
 import com.tap.backend.domain.user.UserRole;
 import com.tap.backend.repo.ClassStudentRepository;
+import com.tap.backend.repo.ClassAssignmentCleanupRepository;
 import com.tap.backend.repo.TeachingClassRepository;
 import com.tap.backend.repo.UserRepository;
 import java.util.List;
@@ -45,6 +46,12 @@ class TeachingClassServiceTest {
     @Mock
     private LegacyPtaRosterService legacyPtaRosterService;
 
+    @Mock
+    private TeachingClassDeletionGuard teachingClassDeletionGuard;
+
+    @Mock
+    private ClassAssignmentCleanupRepository classAssignmentCleanupRepository;
+
     private TeachingClassService service;
 
     @BeforeEach
@@ -54,8 +61,38 @@ class TeachingClassServiceTest {
                 studentRepo,
                 userRepo,
                 passwordEncoder,
-                legacyPtaRosterService
+                legacyPtaRosterService,
+                teachingClassDeletionGuard,
+                classAssignmentCleanupRepository
         );
+    }
+
+    @Test
+    void deleteClassRejectsWhenAssignmentOfferingExists() {
+        TeachingClassEntity teachingClass = teachingClass(1L, 10L);
+        when(classRepo.findById(1L)).thenReturn(Optional.of(teachingClass));
+        when(teachingClassDeletionGuard.hasBlockingReferences(1L)).thenReturn(true);
+
+        ClassDeletionBlockedException error = assertThrows(
+                ClassDeletionBlockedException.class,
+                () -> service.deleteClass(1L, 10L)
+        );
+
+        assertEquals("class is still referenced by published assignments and cannot be deleted", error.getMessage());
+        verify(classAssignmentCleanupRepository, never()).deleteAssignmentDataByClassId(1L);
+        verify(classRepo, never()).delete(any());
+    }
+
+    @Test
+    void deleteClassForceCleansAssignmentDataBeforeDeletingClass() {
+        TeachingClassEntity teachingClass = teachingClass(1L, 10L);
+        when(classRepo.findById(1L)).thenReturn(Optional.of(teachingClass));
+        when(teachingClassDeletionGuard.hasBlockingReferences(1L)).thenReturn(true);
+
+        service.deleteClass(1L, 10L, true);
+
+        verify(classAssignmentCleanupRepository).deleteAssignmentDataByClassId(1L);
+        verify(classRepo).delete(teachingClass);
     }
 
     @Test

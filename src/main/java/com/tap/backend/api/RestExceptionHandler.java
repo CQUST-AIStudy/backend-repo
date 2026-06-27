@@ -2,6 +2,7 @@ package com.tap.backend.api;
 
 import com.tap.common.api.ProblemResponse;
 import com.tap.backend.quota.QuotaExceededException;
+import com.tap.backend.service.ClassDeletionBlockedException;
 import com.tap.backend.service.InvalidClassPasswordException;
 import java.util.NoSuchElementException;
 import org.springframework.http.HttpStatus;
@@ -34,6 +35,12 @@ public class RestExceptionHandler {
   @ResponseStatus(HttpStatus.UNPROCESSABLE_ENTITY)
   public ProblemResponse invalidClassPassword(InvalidClassPasswordException e) {
     return ProblemResponse.of("INVALID_CLASS_PASSWORD", e.getMessage());
+  }
+
+  @ExceptionHandler(ClassDeletionBlockedException.class)
+  @ResponseStatus(HttpStatus.CONFLICT)
+  public ProblemResponse classDeletionBlocked(ClassDeletionBlockedException e) {
+    return ProblemResponse.of("CLASS_DELETE_CONFLICT", e.getMessage());
   }
 
   @ExceptionHandler(NoSuchElementException.class)
