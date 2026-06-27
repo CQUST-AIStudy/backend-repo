@@ -12,6 +12,7 @@ import com.tap.backend.service.grading.animation.AnimationWorkflowRouter;
 import com.tap.backend.service.grading.animation.CodeContext;
 import com.tap.backend.service.grading.animation.CodeHighlightAnimationWorkflow;
 import com.tap.backend.service.grading.animation.CodeContextExtractor;
+import com.tap.backend.service.grading.animation.CommentIssueExtractor;
 import com.tap.backend.service.grading.animation.ErrorPatternDetector;
 import com.tap.backend.service.grading.animation.ErrorPatternDetector.ErrorType;
 import com.tap.backend.service.grading.animation.GenericHighlightWorkflow;
@@ -44,6 +45,7 @@ public class GradingErrorDemonstrationService {
     private final ErrorPatternDetector errorPatternDetector;
     private final AnimationWorkflowRouter router;
     private final LLMCodeExtractor llmCodeExtractor;
+    private final CommentIssueExtractor commentIssueExtractor;
     private final CodeHighlightAnimationWorkflow codeHighlightWorkflow;
     private final PythonTutorWorkflow pythonTutorWorkflow;
     private final HtmlAnimationWorkflow htmlAnimationWorkflow;
@@ -55,6 +57,7 @@ public class GradingErrorDemonstrationService {
                                             ErrorPatternDetector errorPatternDetector,
                                             AnimationWorkflowRouter router,
                                             LLMCodeExtractor llmCodeExtractor,
+                                            CommentIssueExtractor commentIssueExtractor,
                                             CodeHighlightAnimationWorkflow codeHighlightWorkflow,
                                             PythonTutorWorkflow pythonTutorWorkflow,
                                             HtmlAnimationWorkflow htmlAnimationWorkflow,
@@ -65,6 +68,7 @@ public class GradingErrorDemonstrationService {
         this.errorPatternDetector = errorPatternDetector;
         this.router = router;
         this.llmCodeExtractor = llmCodeExtractor;
+        this.commentIssueExtractor = commentIssueExtractor;
         this.codeHighlightWorkflow = codeHighlightWorkflow;
         this.pythonTutorWorkflow = pythonTutorWorkflow;
         this.htmlAnimationWorkflow = htmlAnimationWorkflow;
@@ -87,8 +91,13 @@ public class GradingErrorDemonstrationService {
 
         ProblemContext problemContext = problemContextResolver.resolve(
                 submission == null ? null : submission.getTask());
-        Map<String, String> llmFullCode = extractLLMFullCode(problemContext, scoreItems, evidenceBlocks);
-        List<AnimationCandidate> candidates = collectCandidates(scoreItems, evidenceBlocks, problemContext, llmFullCode);
+        String finalReview = submission == null ? null : submission.getFinalReviewComment();
+        String title = problemContext == null ? null : problemContext.experimentTitle();
+
+        List<CommentIssueExtractor.CommentIssue> commentIssues =
+                commentIssueExtractor.extractIssues(title, scoreItems, finalReview, evidenceBlocks);
+        Map<String, String> llmFullCode = extractLLMFullCode(problemContext, scoreItems, evidenceBlocks, commentIssues);
+        List<AnimationCandidate> candidates = collectCandidates(scoreItems, evidenceBlocks, problemContext, llmFullCode, commentIssues);
 
         List<ErrorDemonstration> result = new ArrayList<>();
         for (int i = 0; i < candidates.size(); i++) {
@@ -115,16 +124,23 @@ public class GradingErrorDemonstrationService {
     private Map<String, String> extractLLMFullCode(
             ProblemContext problemContext,
             List<ScoreItemEntity> scoreItems,
-            List<EvidenceBlockEntity> evidenceBlocks) {
+            List<EvidenceBlockEntity> evidenceBlocks,
+            List<CommentIssueExtractor.CommentIssue> commentIssues) {
         if (llmCodeExtractor == null || scoreItems == null || evidenceBlocks == null) {
             return Map.of();
         }
-        List<String> referencedIds = scoreItems.stream()
+        List<String> referencedIds = new ArrayList<>(scoreItems.stream()
                 .flatMap(item -> parseAnnotations(item.getAnnotationsJson()).stream())
                 .map(AnimationCandidate.AnnotationInfo::evidenceId)
                 .filter(id -> id != null && !id.isBlank())
                 .distinct()
-                .toList();
+                .toList());
+        if (commentIssues != null) {
+            commentIssues.stream()
+                    .map(CommentIssueExtractor.CommentIssue::evidenceId)
+                    .filter(id -> id != null && !id.isBlank())
+                    .forEach(referencedIds::add);
+        }
         List<EvidenceBlockEntity> relevantBlocks = evidenceBlocks.stream()
                 .filter(eb -> eb.getEvidenceId() != null && referencedIds.contains(eb.getEvidenceId()))
                 .toList();
@@ -132,11 +148,14 @@ public class GradingErrorDemonstrationService {
         return llmCodeExtractor.extractFullCode(title, relevantBlocks);
     }
 
+
+
     private List<AnimationCandidate> collectCandidates(
             List<ScoreItemEntity> scoreItems,
             List<EvidenceBlockEntity> evidenceBlocks,
             ProblemContext problemContext,
-            Map<String, String> llmFullCode) {
+            Map<String, String> llmFullCode,
+            List<CommentIssueExtractor.CommentIssue> commentIssues) {
 
         if (scoreItems == null || evidenceBlocks == null) {
             return List.of();
@@ -150,24 +169,121 @@ public class GradingErrorDemonstrationService {
         for (ScoreItemEntity item : scoreItems) {
             List<AnimationCandidate.AnnotationInfo> annotations = parseAnnotations(item.getAnnotationsJson());
             for (AnimationCandidate.AnnotationInfo ann : annotations) {
-                EvidenceBlockEntity block = evidenceById.get(ann.evidenceId());
-                if (block == null || block.getContent() == null) {
-                    continue;
+                AnimationCandidate candidate = buildCandidate(item, ann, evidenceById, llmFullCode, problemContext);
+                if (candidate != null) {
+                    candidates.add(candidate);
                 }
-                String evidenceKind = block.getKind() == null ? "text" : block.getKind().name();
-                ErrorType errorType = errorPatternDetector.detect(ann.anchorText(), ann.note(), evidenceKind);
-                if (errorType == null || errorType == ErrorType.GENERIC_HIGHLIGHT) {
-                    continue; // 无法识别为明确错误类型，不生成动画
-                }
-                CodeContext codeContext = resolveCodeContext(block, ann, llmFullCode);
-                if (errorPatternDetector.isCodeError(errorType)
-                        && (codeContext == null || codeContext.fullLines().isEmpty())) {
-                    continue; // 代码类错误必须能在证据中定位 anchor
-                }
-                candidates.add(new AnimationCandidate(item, ann, block, codeContext, problemContext, errorType));
             }
         }
+
+        // 如果结构化批注没产生候选，从评语/总评里再挖一遍
+        if (commentIssues != null) {
+            for (CommentIssueExtractor.CommentIssue issue : commentIssues) {
+                AnimationCandidate candidate = buildCandidateFromCommentIssue(issue, evidenceById, evidenceBlocks, llmFullCode, problemContext);
+                if (candidate != null && candidates.stream().noneMatch(c -> sameAnchor(c, issue))) {
+                    candidates.add(candidate);
+                }
+            }
+        }
+
         return candidates;
+    }
+
+    private AnimationCandidate buildCandidate(
+            ScoreItemEntity item,
+            AnimationCandidate.AnnotationInfo ann,
+            Map<String, EvidenceBlockEntity> evidenceById,
+            Map<String, String> llmFullCode,
+            ProblemContext problemContext) {
+        EvidenceBlockEntity block = evidenceById.get(ann.evidenceId());
+        if (block == null || block.getContent() == null) {
+            return null;
+        }
+        String evidenceKind = block.getKind() == null ? "text" : block.getKind().name();
+        ErrorType errorType = errorPatternDetector.detect(ann.anchorText(), ann.note(), evidenceKind);
+        if (errorType == null || errorType == ErrorType.GENERIC_HIGHLIGHT) {
+            return null;
+        }
+        CodeContext codeContext = resolveCodeContext(block, ann, llmFullCode);
+        if (errorPatternDetector.isCodeError(errorType)
+                && (codeContext == null || codeContext.fullLines().isEmpty())) {
+            return null;
+        }
+        return new AnimationCandidate(item, ann, block, codeContext, problemContext, errorType);
+    }
+
+    private AnimationCandidate buildCandidateFromCommentIssue(
+            CommentIssueExtractor.CommentIssue issue,
+            Map<String, EvidenceBlockEntity> evidenceById,
+            List<EvidenceBlockEntity> evidenceBlocks,
+            Map<String, String> llmFullCode,
+            ProblemContext problemContext) {
+        EvidenceBlockEntity block = evidenceById.get(issue.evidenceId());
+        if (block == null || block.getContent() == null) {
+            // evidence_id 未指定或不存在，尝试在所有代码证据块里定位 anchor
+            block = findBestCodeBlockForAnchor(issue.anchorText(), evidenceBlocks, llmFullCode);
+        }
+        if (block == null || block.getContent() == null) {
+            return null;
+        }
+        String evidenceKind = block.getKind() == null ? "text" : block.getKind().name();
+        ErrorType errorType = detectErrorType(issue.errorTypeHint(), issue.anchorText(), issue.note(), evidenceKind);
+        AnimationCandidate.AnnotationInfo ann = new AnimationCandidate.AnnotationInfo(
+                "CROSS", block.getEvidenceId(), issue.anchorText(), issue.note(), false);
+        CodeContext codeContext = resolveCodeContext(block, ann, llmFullCode);
+        if (codeContext == null || codeContext.fullLines().isEmpty()) {
+            return null;
+        }
+        return new AnimationCandidate(null, ann, block, codeContext, problemContext, errorType);
+    }
+
+    private EvidenceBlockEntity findBestCodeBlockForAnchor(
+            String anchorText,
+            List<EvidenceBlockEntity> evidenceBlocks,
+            Map<String, String> llmFullCode) {
+        if (evidenceBlocks == null) {
+            return null;
+        }
+        // 优先在 LLM 已提取到完整代码的证据块里找
+        for (EvidenceBlockEntity block : evidenceBlocks) {
+            String llmCode = llmFullCode == null ? null : llmFullCode.get(block.getEvidenceId());
+            if (llmCode != null && !llmCode.isBlank()
+                    && codeContextExtractor.extract(llmCode, anchorText).fullLines().size() > 0) {
+                return block;
+            }
+        }
+        // 否则在原始证据内容里找
+        for (EvidenceBlockEntity block : evidenceBlocks) {
+            if (block.getContent() != null
+                    && codeContextExtractor.extract(block.getContent(), anchorText).fullLines().size() > 0) {
+                return block;
+            }
+        }
+        // 最后找第一个看起来像代码的证据块兜底
+        return evidenceBlocks.stream()
+                .filter(eb -> eb.getContent() != null && codeContextExtractor.extract(eb.getContent(), "").fullLines().size() > 0)
+                .findFirst()
+                .orElse(null);
+    }
+
+    private ErrorType detectErrorType(String hint, String anchor, String note, String evidenceKind) {
+        if (hint != null && !hint.isBlank()) {
+            try {
+                return ErrorType.valueOf(hint.toUpperCase(Locale.ROOT));
+            } catch (IllegalArgumentException ignored) {
+                // fall through
+            }
+        }
+        ErrorType detected = errorPatternDetector.detect(anchor, note, evidenceKind);
+        if (detected == null || detected == ErrorType.GENERIC_HIGHLIGHT) {
+            return ErrorType.CONCEPT;
+        }
+        return detected;
+    }
+
+    private boolean sameAnchor(AnimationCandidate candidate, CommentIssueExtractor.CommentIssue issue) {
+        return candidate.evidenceBlock().getEvidenceId().equals(issue.evidenceId())
+                && candidate.anchor().equals(issue.anchorText());
     }
 
     private CodeContext resolveCodeContext(

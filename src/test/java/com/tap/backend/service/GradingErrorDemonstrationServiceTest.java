@@ -2,6 +2,8 @@ package com.tap.backend.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -9,10 +11,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tap.backend.domain.grading.EvidenceBlockEntity;
 import com.tap.backend.domain.grading.EvidenceKind;
 import com.tap.backend.domain.grading.GradingSubmissionEntity;
-import com.tap.backend.domain.grading.GradingTaskEntity;
 import com.tap.backend.domain.grading.ScoreItemEntity;
+import com.tap.backend.service.animation.AnimationAiClient;
 import com.tap.backend.service.grading.animation.AnimationWorkflowRouter;
 import com.tap.backend.service.grading.animation.CodeContextExtractor;
+import com.tap.backend.service.grading.animation.CodeHighlightAnimationWorkflow;
+import com.tap.backend.service.grading.animation.CommentIssueExtractor;
 import com.tap.backend.service.grading.animation.ErrorParameterExtractor;
 import com.tap.backend.service.grading.animation.ErrorPatternDetector;
 import com.tap.backend.service.grading.animation.GenericHighlightWorkflow;
@@ -20,10 +24,8 @@ import com.tap.backend.service.grading.animation.HtmlAnimationWorkflow;
 import com.tap.backend.service.grading.animation.LLMCodeExtractor;
 import com.tap.backend.service.grading.animation.ProblemContext;
 import com.tap.backend.service.grading.animation.ProblemContextResolver;
-import com.tap.backend.service.grading.animation.CodeHighlightAnimationWorkflow;
 import com.tap.backend.service.grading.animation.PythonTutorWorkflow;
 import com.tap.backend.service.grading.animation.ResultCompareWorkflow;
-import com.tap.backend.service.animation.AnimationAiClient;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
@@ -43,6 +45,8 @@ class GradingErrorDemonstrationServiceTest {
         AnimationWorkflowRouter router = new AnimationWorkflowRouter();
         LLMCodeExtractor llmCodeExtractor = mock(LLMCodeExtractor.class);
         when(llmCodeExtractor.extractFullCode(null, List.of())).thenReturn(Map.of());
+        CommentIssueExtractor commentIssueExtractor = mock(CommentIssueExtractor.class);
+        when(commentIssueExtractor.extractIssues(null, List.of(), null, List.of())).thenReturn(List.of());
 
         PythonTutorWorkflow pythonTutorWorkflow = new PythonTutorWorkflow(new ErrorParameterExtractor());
 
@@ -59,6 +63,7 @@ class GradingErrorDemonstrationServiceTest {
                 detector,
                 router,
                 llmCodeExtractor,
+                commentIssueExtractor,
                 codeHighlightWorkflow,
                 pythonTutorWorkflow,
                 htmlAnimationWorkflow,
@@ -207,7 +212,7 @@ class GradingErrorDemonstrationServiceTest {
     }
 
     @Test
-    void commentFallback_doesNotGenerateAnimation() {
+    void commentFallback_doesNotGenerateAnimation_whenNoEvidence() {
         ScoreItemEntity score = new ScoreItemEntity();
         score.setComment("数组越界：for (int i = 0; i <= n; i++)");
         score.setAnnotationsJson(null);
@@ -216,6 +221,68 @@ class GradingErrorDemonstrationServiceTest {
                 service.buildDemonstrations(new GradingSubmissionEntity(), List.of(score), List.of());
 
         assertTrue(demos.isEmpty(), "Should not generate animation from comments without evidence");
+    }
+
+    @Test
+    void commentIssue_withCodeEvidence_generatesCodeHighlight() {
+        CommentIssueExtractor commentIssueExtractor = mock(CommentIssueExtractor.class);
+
+
+        GradingErrorDemonstrationService customService = buildServiceWithCommentExtractor(commentIssueExtractor);
+
+        EvidenceBlockEntity block = block("ev-bst", EvidenceKind.text, """
+                BiTree search(BiTree T, int key) {
+                    if (T == NULL) return NULL;
+                    if (key < T->data) return search(T->rchild, key);
+                    if (key > T->data) return search(T->lchild, key);
+                    return T;
+                }
+                """);
+        when(commentIssueExtractor.extractIssues(any(), anyList(), any(), anyList()))
+                .thenReturn(List.of(new CommentIssueExtractor.CommentIssue(
+                        "ev-bst", "search(T->rchild, key)", "左右子树递归方向写反了", "LOGIC_ERROR")));
+
+        ScoreItemEntity score = new ScoreItemEntity();
+        score.setComment("BST search 左右子树写反了");
+
+        List<GradingErrorDemonstrationService.ErrorDemonstration> demos =
+                customService.buildDemonstrations(new GradingSubmissionEntity(), List.of(score), List.of(block));
+
+        assertEquals(1, demos.size());
+        assertEquals("CODE_HIGHLIGHT", demos.get(0).workflow());
+        assertTrue(demos.get(0).sourceCode().contains("BiTree search"));
+    }
+
+    private GradingErrorDemonstrationService buildServiceWithCommentExtractor(CommentIssueExtractor extractor) {
+        ProblemContextResolver problemContextResolver = mock(ProblemContextResolver.class);
+        when(problemContextResolver.resolve(null)).thenReturn(ProblemContext.empty());
+        ErrorPatternDetector detector = new ErrorPatternDetector();
+        CodeContextExtractor codeContextExtractor = new CodeContextExtractor();
+        AnimationWorkflowRouter router = new AnimationWorkflowRouter();
+        LLMCodeExtractor llmCodeExtractor = mock(LLMCodeExtractor.class);
+        when(llmCodeExtractor.extractFullCode(null, List.of())).thenReturn(Map.of());
+
+        AnimationAiClient aiClient = mock(AnimationAiClient.class);
+        when(aiClient.isChatAvailable()).thenReturn(false);
+        CodeHighlightAnimationWorkflow codeHighlightWorkflow = new CodeHighlightAnimationWorkflow(aiClient, new ObjectMapper());
+        HtmlAnimationWorkflow htmlAnimationWorkflow = new HtmlAnimationWorkflow(aiClient, new ObjectMapper());
+        PythonTutorWorkflow pythonTutorWorkflow = new PythonTutorWorkflow(new ErrorParameterExtractor());
+        ResultCompareWorkflow resultCompareWorkflow = new ResultCompareWorkflow();
+        GenericHighlightWorkflow genericHighlightWorkflow = new GenericHighlightWorkflow();
+
+        return new GradingErrorDemonstrationService(
+                problemContextResolver,
+                codeContextExtractor,
+                detector,
+                router,
+                llmCodeExtractor,
+                extractor,
+                codeHighlightWorkflow,
+                pythonTutorWorkflow,
+                htmlAnimationWorkflow,
+                resultCompareWorkflow,
+                genericHighlightWorkflow
+        );
     }
 
     private ScoreItemEntity scoreWithAnnotations(String json) {
