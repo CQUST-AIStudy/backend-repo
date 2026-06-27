@@ -151,12 +151,8 @@ public class PtaSyncService {
         Map<String, Object> latestJob = findLatestImportJob(classId);
         Long latestJobId = latestJob.get("id") instanceof Number number ? number.longValue() : null;
 
-        long expectedStudentCount = nativeCount(
-                "SELECT COUNT(*) FROM class_student WHERE class_id = ?1",
-                classId);
-        long boundStudentCount = nativeCount(
-                "SELECT COUNT(*) FROM class_student WHERE class_id = ?1 AND user_id IS NOT NULL",
-                classId);
+        long expectedStudentCount = teachingClassService.countStudents(classId);
+        long boundStudentCount = teachingClassService.countBoundStudents(classId);
 
         long sourceFileCount = 0;
         long rawSubmissionRowCount = 0;

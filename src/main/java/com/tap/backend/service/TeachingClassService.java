@@ -27,6 +27,7 @@ public class TeachingClassService {
     private final UserRepository userRepo;
     private final PasswordEncoder passwordEncoder;
     private final LegacyPtaRosterService legacyPtaRosterService;
+    private final ClassMemberStatsService classMemberStatsService;
     private final TeachingClassDeletionGuard teachingClassDeletionGuard;
     private final ClassAssignmentCleanupRepository classAssignmentCleanupRepository;
 
@@ -36,6 +37,7 @@ public class TeachingClassService {
             UserRepository userRepo,
             PasswordEncoder passwordEncoder,
             LegacyPtaRosterService legacyPtaRosterService,
+            ClassMemberStatsService classMemberStatsService,
             TeachingClassDeletionGuard teachingClassDeletionGuard,
             ClassAssignmentCleanupRepository classAssignmentCleanupRepository
     ) {
@@ -44,6 +46,7 @@ public class TeachingClassService {
         this.userRepo = userRepo;
         this.passwordEncoder = passwordEncoder;
         this.legacyPtaRosterService = legacyPtaRosterService;
+        this.classMemberStatsService = classMemberStatsService;
         this.teachingClassDeletionGuard = teachingClassDeletionGuard;
         this.classAssignmentCleanupRepository = classAssignmentCleanupRepository;
     }
@@ -425,7 +428,12 @@ public class TeachingClassService {
 
     @Transactional(readOnly = true)
     public long countStudents(Long classId) {
-        return studentRepo.countByClassId(classId);
+        return classMemberStatsService.countActiveStudents(classId);
+    }
+
+    @Transactional(readOnly = true)
+    public long countBoundStudents(Long classId) {
+        return classMemberStatsService.countActiveStudentsBoundToUsers(classId);
     }
 
     @Transactional(readOnly = true)

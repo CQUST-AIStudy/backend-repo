@@ -47,6 +47,9 @@ class TeachingClassServiceTest {
     private LegacyPtaRosterService legacyPtaRosterService;
 
     @Mock
+    private ClassMemberStatsService classMemberStatsService;
+
+    @Mock
     private TeachingClassDeletionGuard teachingClassDeletionGuard;
 
     @Mock
@@ -62,6 +65,7 @@ class TeachingClassServiceTest {
                 userRepo,
                 passwordEncoder,
                 legacyPtaRosterService,
+                classMemberStatsService,
                 teachingClassDeletionGuard,
                 classAssignmentCleanupRepository
         );

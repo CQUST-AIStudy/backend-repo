@@ -8,7 +8,6 @@ import com.tap.backend.domain.user.UserEntity;
 import com.tap.backend.domain.user.UserRole;
 import com.tap.backend.quota.UserDailyQuotaUsageEntity;
 import com.tap.backend.quota.UserDailyQuotaUsageRepository;
-import com.tap.backend.repo.ClassStudentRepository;
 import com.tap.backend.repo.GradingSubmissionRepository;
 import com.tap.backend.repo.GradingTaskRepository;
 import com.tap.backend.repo.TeachingClassRepository;
@@ -46,7 +45,7 @@ public class AdminDashboardService {
   private final TeachingClassRepository classRepository;
   private final UserDailyQuotaUsageRepository usageRepository;
   private final PtaCookieService ptaCookieService;
-  private final ClassStudentRepository classStudentRepository;
+  private final TeachingClassService teachingClassService;
   private final GradingTaskRepository gradingTaskRepository;
   private final GradingSubmissionRepository gradingSubmissionRepository;
   private final RestTemplate restTemplate;
@@ -98,7 +97,7 @@ public class AdminDashboardService {
       TeachingClassRepository classRepository,
       UserDailyQuotaUsageRepository usageRepository,
       PtaCookieService ptaCookieService,
-      ClassStudentRepository classStudentRepository,
+      TeachingClassService teachingClassService,
       GradingTaskRepository gradingTaskRepository,
       GradingSubmissionRepository gradingSubmissionRepository,
       @Value("${pta.connect-timeout-ms:5000}") int connectTimeoutMs,
@@ -107,7 +106,7 @@ public class AdminDashboardService {
     this.classRepository = classRepository;
     this.usageRepository = usageRepository;
     this.ptaCookieService = ptaCookieService;
-    this.classStudentRepository = classStudentRepository;
+    this.teachingClassService = teachingClassService;
     this.gradingTaskRepository = gradingTaskRepository;
     this.gradingSubmissionRepository = gradingSubmissionRepository;
 
@@ -146,7 +145,7 @@ public class AdminDashboardService {
 
     // --- P0: 补充 experimentCount / studentCount ---
     long studentCount = classes.stream()
-        .mapToLong(tc -> classStudentRepository.countByClassId(tc.getId()))
+        .mapToLong(tc -> teachingClassService.countStudents(tc.getId()))
         .sum();
     List<GradingTaskEntity> allGradingTasks = gradingTaskRepository.findAll();
     long experimentCount = allGradingTasks.stream()
@@ -272,7 +271,7 @@ public class AdminDashboardService {
         continue;
       }
 
-      long studentCount = classStudentRepository.countByClassId(tc.getId());
+      long studentCount = teachingClassService.countStudents(tc.getId());
       UserEntity teacher = teachersById.get(tc.getTeacherId());
 
       Map<String, Object> item = new LinkedHashMap<>();
@@ -340,7 +339,7 @@ public class AdminDashboardService {
           .reduce(BigDecimal.ZERO, BigDecimal::add)
           .divide(BigDecimal.valueOf(scoredSubs.size()), 1, RoundingMode.HALF_UP);
 
-      long studentCount = classStudentRepository.countByClassId(tc.getId());
+      long studentCount = teachingClassService.countStudents(tc.getId());
       UserEntity teacher = teachersById.get(tc.getTeacherId());
 
       Map<String, Object> item = new LinkedHashMap<>();
@@ -646,7 +645,7 @@ public class AdminDashboardService {
             Comparator.nullsLast(Comparator.reverseOrder())))
         .map(tc -> {
           UserEntity teacher = teachersById.get(tc.getTeacherId());
-          long studentCount = classStudentRepository.countByClassId(tc.getId());
+          long studentCount = teachingClassService.countStudents(tc.getId());
           Map<String, Object> item = new LinkedHashMap<>();
           item.put("id", tc.getId());
           item.put("name", tc.getName());

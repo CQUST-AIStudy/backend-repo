@@ -7,7 +7,6 @@ import org.springframework.data.jpa.repository.JpaRepository;
 
 public interface ClassStudentRepository extends JpaRepository<ClassStudentEntity, Long> {
     List<ClassStudentEntity> findAllByClassId(Long classId);
-    long countByClassId(Long classId);
     boolean existsByClassIdAndStudentNum(Long classId, String studentNum);
     Optional<ClassStudentEntity> findByClassIdAndStudentNum(Long classId, String studentNum);
     List<ClassStudentEntity> findAllByUserId(Long userId);
