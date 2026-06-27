@@ -1369,9 +1369,12 @@ public class AnnotatedStudentReportService {
                 continue;
             }
             TextLine containingLine = anchor.containingLine();
-            if (!isWithinReportBody(containingLine, bodyStartByPage)
-                    || !isReliablePreciseAnnotationTarget(containingLine, pages.size())
-                    || isTopAreaLine(containingLine, pages.get(anchor.pageIndex()))) {
+            boolean withinBody = isWithinReportBody(containingLine, bodyStartByPage);
+            boolean reliable = isReliablePreciseAnnotationTarget(containingLine, pages.size());
+            boolean topArea = isTopAreaLine(containingLine, pages.get(anchor.pageIndex()));
+            System.out.println("[DEBUG] withinBody=" + withinBody + " reliable=" + reliable + " topArea=" + topArea + " pageHeight=" + pages.get(anchor.pageIndex()).getMediaBox().getHeight() + " baselineY=" + containingLine.baselineY());
+            if (!withinBody || !reliable || topArea) {
+                System.out.println("[DEBUG] SKIP: filter failed");
                 continue;
             }
 
@@ -1381,25 +1384,14 @@ public class AnnotatedStudentReportService {
             String anchorKey = normalizePdfText(ann.anchorText());
             int noteOffsetIndex = anchorNoteUsage.merge(anchorKey, 1, Integer::sum) - 1;
             float size = "CROSS".equals(type) ? 38f : 58f;
-            float markX;
-            float markY;
-            if ("CROSS".equals(type)) {
-                MarkPosition position = placeMarkOutsideText(containingLine, box, size,
-                        placedMarksByPage.computeIfAbsent(anchor.pageIndex(), k -> new ArrayList<>()));
-                if (position == null) {
-                    continue;
-                }
-                markX = position.x();
-                markY = position.y();
-            } else {
-                MarkPosition position = placeMarkOutsideText(containingLine, box, size,
-                        placedMarksByPage.computeIfAbsent(anchor.pageIndex(), k -> new ArrayList<>()));
-                if (position == null) {
-                    continue;
-                }
-                markX = position.x();
-                markY = position.y();
+            MarkPosition position = placeMarkOutsideText(containingLine, box, size,
+                    placedMarksByPage.computeIfAbsent(anchor.pageIndex(), k -> new ArrayList<>()));
+            if (position == null) {
+                System.out.println("[DEBUG] SKIP: no placement line.endX=" + containingLine.endX() + " box.width=" + (box.getUpperRightX() - box.getLowerLeftX()) + " size=" + size);
+                continue;
             }
+            float markX = position.x();
+            float markY = position.y();
             float angle = (float) Math.toRadians(-18 + (ann.anchorText().hashCode() % 36));
 
             try (PDPageContentStream stream = new PDPageContentStream(document, page, AppendMode.APPEND, true, true)) {
@@ -1415,8 +1407,10 @@ public class AnnotatedStudentReportService {
                     default -> drawPdfCheckStroke(stream, markX, markY, size, angle);
                 }
                 if (ann.note() != null && !ann.note().isBlank()) {
+                    System.out.println("[DEBUG] Drawing margin note: '" + ann.note() + "' at x=" + (anchor.endX() + 8f) + " y near " + markY + " supportsChinese=" + fontSelection.supportsChinese());
                     drawPdfMarginNote(stream, fontSelection, box, containingLine,
                             anchor.endX() + 8f, ann.note(), noteOffsetIndex * 16f);
+                    System.out.println("[DEBUG] Margin note drawn");
                 }
             }
             renderedCount++;
@@ -1589,9 +1583,10 @@ public class AnnotatedStudentReportService {
 
     private boolean isTopAreaLine(TextLine line, PDPage page) {
         float pageHeight = page.getMediaBox().getHeight();
-        // Avoid the top 22% of the page where headers, page titles and running
-        // headings usually sit.
-        return line.baselineY() > pageHeight * 0.78f;
+        // Avoid the top 15% of the page where headers, page titles and running
+        // headings usually sit.  Use 15% (rather than the previous 22%) to keep
+        // the exclusion zone compact across A4 and Letter sizes (150–190 pt).
+        return line.baselineY() > pageHeight * 0.85f;
     }
 
     private boolean hasSideRoomForMark(TextLine line, PDRectangle box, float size) {
@@ -1627,17 +1622,24 @@ public class AnnotatedStudentReportService {
         // Final fallback for dense full-width paragraphs: put the mark below
         // the anchor line near the page edge. It is still tied to the text
         // region, but avoids covering the current line itself.
-        candidates.add(new MarkPosition(clamp(box.getUpperRightX() - 88f, minX, maxX),
-                clamp(line.baselineY() - size * 1.25f, minY, maxY)));
+        // Position the mark far enough below the text line that overlap is
+        // impossible (1.25 × size plus one line height).
+        float fallbackY = clamp(line.baselineY() - size * 1.25f - Math.max(8f, line.fontSize()), minY, maxY);
+        candidates.add(new MarkPosition(clamp(box.getUpperRightX() - 88f, minX, maxX), fallbackY));
 
-        for (MarkPosition candidate : candidates) {
+        for (int ci = 0; ci < candidates.size(); ci++) {
+            MarkPosition candidate = candidates.get(ci);
             MarkRect rect = MarkRect.of(candidate, size);
-            if (rect.overlapsLine(line) || placedMarks.stream().anyMatch(rect::overlaps)) {
+            boolean overlapsLine = rect.overlapsLine(line);
+            boolean overlapsOther = placedMarks.stream().anyMatch(rect::overlaps);
+            System.out.println("[DEBUG]   candidate[" + ci + "] pos=(" + candidate.x() + "," + candidate.y() + ") rect=[l=" + rect.left() + " r=" + rect.right() + " b=" + rect.bottom() + " t=" + rect.top() + "] overlapsLine=" + overlapsLine + " overlapsOther=" + overlapsOther + " line[startX=" + line.startX() + " endX=" + line.endX() + " top=" + (line.baselineY() + Math.max(8f, line.fontSize() * 0.8f)) + " bottom=" + (line.baselineY() - Math.max(4f, line.fontSize() * 0.35f)) + " fontSize=" + line.fontSize() + "]");
+            if (overlapsLine || overlapsOther) {
                 continue;
             }
             placedMarks.add(rect);
             return candidate;
         }
+        System.out.println("[DEBUG]   all " + candidates.size() + " candidates failed");
         return null;
     }
 
@@ -1711,8 +1713,10 @@ public class AnnotatedStudentReportService {
                                    String note,
                                    float verticalOffset) throws IOException {
         if (!fontSelection.supportsChinese() && note.codePoints().anyMatch(cp -> cp > 0x024F)) {
+            System.out.println("[DEBUG] drawPdfMarginNote: SKIP - no Chinese support for note: " + note);
             return;
         }
+        System.out.println("[DEBUG] drawPdfMarginNote: rendering note='" + note + "' supportsChinese=" + fontSelection.supportsChinese() + " font=" + fontSelection.font().getName());
         float fontSize = 10.5f;
         float lineHeight = fontSize + 2f;
         float rightLimit = box.getUpperRightX() - 16f;

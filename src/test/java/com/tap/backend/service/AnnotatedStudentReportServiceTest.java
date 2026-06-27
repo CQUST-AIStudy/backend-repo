@@ -15,6 +15,7 @@ import javax.imageio.ImageIO;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
+import org.apache.pdfbox.pdmodel.common.PDRectangle;
 import org.apache.pdfbox.pdmodel.font.PDType1Font;
 import org.apache.pdfbox.rendering.PDFRenderer;
 import org.apache.pdfbox.text.PDFTextStripper;
@@ -59,7 +60,7 @@ class AnnotatedStudentReportServiceTest {
     void renderPdfAddsScoreAndReview() throws Exception {
         byte[] source;
         try (PDDocument document = new PDDocument(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
-            document.addPage(new PDPage());
+            document.addPage(new PDPage(PDRectangle.A4));
             document.save(output);
             source = output.toByteArray();
         }
@@ -91,7 +92,7 @@ class AnnotatedStudentReportServiceTest {
     void renderPdfAddsVisibleCheckMarkNearRightMiddle() throws Exception {
         byte[] source;
         try (PDDocument document = new PDDocument(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
-            PDPage page = new PDPage();
+            PDPage page = new PDPage(PDRectangle.A4);
             document.addPage(page);
             try (PDPageContentStream stream = new PDPageContentStream(document, page)) {
                 stream.beginText();
@@ -239,9 +240,19 @@ class AnnotatedStudentReportServiceTest {
         );
 
         try (PDDocument pdf = PDDocument.load(rendered.bytes())) {
+            System.out.println("=== PDF PAGE COUNT: " + pdf.getNumberOfPages());
             String text = new PDFTextStripper().getText(pdf);
-            assertTrue(text.contains("clear environment version"));
-            assertTrue(text.contains("explain why these libraries were chosen"));
+            System.out.println("=== EXTRACTED PDF TEXT (length=" + text.length() + ") ===");
+            // Print each character's codepoint for non-printable chars
+            StringBuilder hex = new StringBuilder();
+            for (char c : text.toCharArray()) {
+                if (c >= 32 && c < 127) hex.append(c);
+                else hex.append("\\u").append(String.format("%04x", (int) c));
+            }
+            System.out.println("HEX: " + hex.toString());
+            System.out.println("=== END EXTRACTED PDF TEXT ===");
+            assertTrue(text.contains("clear environment version"), "Expected 'clear environment version' in text but got:\n" + text);
+            assertTrue(text.contains("explain why these libraries were chosen"), "Expected 'explain why these libraries were chosen' in text but got:\n" + text);
         }
     }
 
@@ -586,7 +597,7 @@ class AnnotatedStudentReportServiceTest {
 
     private byte[] createSimpleErrorReportPdf(String heading, List<String> bodyLines) throws Exception {
         try (PDDocument document = new PDDocument(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
-            PDPage page = new PDPage();
+            PDPage page = new PDPage(PDRectangle.A4);
             document.addPage(page);
             try (PDPageContentStream stream = new PDPageContentStream(document, page)) {
                 stream.beginText();
@@ -618,7 +629,7 @@ class AnnotatedStudentReportServiceTest {
 
     private byte[] createPdfWithTrailingGeneratedReviewPage() throws Exception {
         try (PDDocument document = new PDDocument(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
-            PDPage reportPage = new PDPage();
+            PDPage reportPage = new PDPage(PDRectangle.A4);
             document.addPage(reportPage);
             try (PDPageContentStream stream = new PDPageContentStream(document, reportPage)) {
                 stream.beginText();
@@ -662,7 +673,7 @@ class AnnotatedStudentReportServiceTest {
 
     private byte[] createPdfWithInlineGeneratedReview() throws Exception {
         try (PDDocument document = new PDDocument(); ByteArrayOutputStream output = new ByteArrayOutputStream()) {
-            PDPage page = new PDPage();
+            PDPage page = new PDPage(PDRectangle.A4);
             document.addPage(page);
             try (PDPageContentStream stream = new PDPageContentStream(document, page)) {
                 stream.beginText();
