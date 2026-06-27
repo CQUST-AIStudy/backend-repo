@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Propagation;
 
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -43,7 +44,7 @@ public class WrongQuestionPtaIngestionService {
     this.wrongQuestionService = wrongQuestionService;
   }
 
-  @Transactional
+  @Transactional(propagation = Propagation.REQUIRES_NEW)
   public IngestionSummary ingestRecentPtaWrongAttempts(Long classId) {
     if (classId == null) {
       return new IngestionSummary(0, 0, 0);
@@ -65,11 +66,11 @@ public class WrongQuestionPtaIngestionService {
             ap.source_problem_id      AS source_problem_id,
             MAX(spa.submitted_at)     AS max_submitted_at
           FROM student_problem_attempt spa
-          JOIN class_student cs ON cs.student_num = (
+          JOIN class_student cs ON cs.student_num COLLATE utf8mb4_unicode_ci = (
             SELECT sp2.student_no FROM student_profile sp2
             WHERE sp2.id = spa.student_id AND sp2.status <> 'DELETED'
             LIMIT 1
-          )
+          ) COLLATE utf8mb4_unicode_ci
           JOIN assignment_problem ap ON ap.id = spa.problem_id
           WHERE cs.class_id = ?1
             AND ap.source_problem_id IS NOT NULL
@@ -78,7 +79,8 @@ public class WrongQuestionPtaIngestionService {
           GROUP BY spa.student_id, ap.source_problem_id
         ) latest
         JOIN student_profile sp ON sp.id = latest.student_id
-        JOIN leetcode_problem_bank lb ON lb.source_key = latest.source_problem_id
+        JOIN leetcode_problem_bank lb
+          ON lb.source_key COLLATE utf8mb4_unicode_ci = latest.source_problem_id COLLATE utf8mb4_unicode_ci
         """;
 
     @SuppressWarnings("unchecked")
