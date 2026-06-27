@@ -105,18 +105,28 @@ class GradingSubmissionServiceAiAnnotationTest {
     }
 
     @Test
-    void generatePageLevelAiAnnotations_longPdf_returnsEmpty() throws Exception {
+    void generatePageLevelAiAnnotations_longPdf_readsFirstTenPages() throws Exception {
         byte[] pdfBytes = createMultiPagePdf(11);
         GradingSubmissionEntity submission = new GradingSubmissionEntity();
         submission.setPdfObjectKey("reports/long.pdf");
 
         when(storageService.getBytes("reports/long.pdf")).thenReturn(pdfBytes);
         when(aiProvider.name()).thenReturn("openai");
+        when(aiProvider.chat(anyString(), isNull())).thenAnswer(new Answer<String>() {
+            @Override
+            public String answer(InvocationOnMock invocation) {
+                String prompt = invocation.getArgument(0);
+                if (prompt.contains("第 11 / 11 页")) {
+                    return "[{\"anchor_text\":\"Page 11\",\"note\":\"should not be analyzed\",\"type\":\"CHECK\",\"wavy\":false}]";
+                }
+                return "[{\"anchor_text\":\"content\",\"note\":\"page checked\",\"type\":\"CHECK\",\"wavy\":false}]";
+            }
+        });
 
         List<AnnotatedStudentReportService.AnnotationEntry> annotations =
                 service.generatePageLevelAiAnnotations(submission);
 
-        assertTrue(annotations.isEmpty());
+        assertEquals(10, annotations.size());
     }
 
     @Test

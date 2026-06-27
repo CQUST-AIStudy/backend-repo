@@ -449,13 +449,14 @@ class AnnotatedStudentReportServiceTest {
             System.out.println(firstPageText);
             System.out.println("=== END FIRST PAGE TEXT ===");
 
-            // The cover table should have dimension scores calibrated against
-            // the displayed total.  The raw 16 + 10 values are intentionally
-            // inconsistent with 78/100, so 目标2 must not be written verbatim.
-            assertTrue(firstPageText.contains("16分"), "Expected calibrated 目标1 score on cover page");
-            assertTrue(firstPageText.contains("31分"), "Expected calibrated 目标2 score on cover page");
-            assertFalse(firstPageText.contains("10分"), "目标2 score should be calibrated instead of copied verbatim");
-            assertTrue(firstPageText.contains("78分"), "Expected total score on cover page");
+            // This template is a 60-point course-objective table: the displayed
+            // total must be the sum of the visible objective rows, not the
+            // platform's normalized 100-point total.
+            assertTrue(firstPageText.contains("16分"), "Expected 目标1 score on cover page");
+            assertTrue(firstPageText.contains("31分"), "Expected 目标2 score to be rescaled to the 40-point row");
+            assertTrue(firstPageText.contains("47分"), "Expected objective-table total to equal visible row scores on a 60-point table");
+            assertFalse(firstPageText.contains("10分"), "Course-objective row score must not keep an obviously inconsistent AI fallback");
+            assertFalse(firstPageText.contains("78分"), "Course-objective table total must not use normalized task total directly");
 
             PDFRenderer renderer = new PDFRenderer(pdf);
             PDFTextStripper pageStripper = new PDFTextStripper();
@@ -464,7 +465,7 @@ class AnnotatedStudentReportServiceTest {
             int checkedMainPages = 0;
             int referencePages = 0;
             List<Double> markCenters = new java.util.ArrayList<>();
-            for (int i = 3; i < originalPages; i++) {
+            for (int i = 10; i < originalPages; i++) {
                 BufferedImage image = renderer.renderImageWithDPI(i, 144);
                 ImageIO.write(image, "png", artifactsDir.resolve(baseName + "-page-" + (i + 1) + ".png").toFile());
 
@@ -511,12 +512,25 @@ class AnnotatedStudentReportServiceTest {
         List<String> pageTexts = List.of(
                 "重庆科技大学 实验报告 课程名称 人工智能",
                 "目录 一、实验目的 二、实验过程 三、实验结果",
+                "摘要 本文介绍实验背景和主要内容",
                 "一、实验目的 掌握数据预处理流程",
                 "二、实验过程 这里是正文分析和代码说明",
                 "参考文献 [1] Python 文档 [2] OpenCV 文档 [3] PyTorch 文档"
         );
 
-        assertEquals(List.of(2, 3), service.selectLongDocumentSimulatedPageIndexes(pageTexts));
+        assertEquals(List.of(3, 4), service.selectLongDocumentSimulatedPageIndexes(pageTexts));
+    }
+
+    @Test
+    void longDocumentSimulationCanStartAfterFirstTenPages() {
+        List<String> pageTexts = new java.util.ArrayList<>();
+        pageTexts.add("重庆科技大学 实验报告");
+        for (int i = 2; i <= 12; i++) {
+            pageTexts.add("第" + i + "页 正文内容 方法步骤 结果分析");
+        }
+        pageTexts.add("参考文献 [1] 文献 [2] 文献 [3] 文献");
+
+        assertEquals(List.of(10, 11), service.selectLongDocumentSimulatedPageIndexes(pageTexts, 10));
     }
 
     @Test

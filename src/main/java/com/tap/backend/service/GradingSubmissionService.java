@@ -588,9 +588,9 @@ public class GradingSubmissionService {
     }
 
     /**
-     * For short reports (<=10 pages), ask the AI to read the report page by page and
-     * return inline annotations.  Each page's prompt includes the text of the pages
-     * already read, so the model can relate later conclusions to earlier methods.
+     * Ask the AI to read up to the first 10 pages page by page and return inline
+     * annotations. Each page's prompt includes the text of the pages already read,
+     * so the model can relate later conclusions to earlier methods.
      */
     List<AnnotatedStudentReportService.AnnotationEntry> generatePageLevelAiAnnotations(
             GradingSubmissionEntity submission) {
@@ -607,13 +607,14 @@ public class GradingSubmissionService {
 
         try (PDDocument document = PDDocument.load(new ByteArrayInputStream(pdfBytes))) {
             int totalPages = document.getNumberOfPages();
-            if (totalPages == 0 || totalPages > 10) {
+            if (totalPages == 0) {
                 return result;
             }
 
+            int pagesToAnalyze = Math.min(totalPages, 10);
             PDFTextStripper stripper = new PDFTextStripper();
             List<String> pageTexts = new ArrayList<>();
-            for (int i = 1; i <= totalPages; i++) {
+            for (int i = 1; i <= pagesToAnalyze; i++) {
                 stripper.setStartPage(i);
                 stripper.setEndPage(i);
                 pageTexts.add(normalizeAnnotationText(stripper.getText(document)));
@@ -624,6 +625,10 @@ public class GradingSubmissionService {
                 String currentText = pageTexts.get(i);
                 if (currentText.isBlank()) {
                     previousTexts.add("[第" + (i + 1) + "页无文本]");
+                    continue;
+                }
+                if (isLikelyAnnotationExcludedPage(currentText, i, totalPages)) {
+                    previousTexts.add("[第" + (i + 1) + "页为封面/摘要/目录/参考资料，已跳过批注]");
                     continue;
                 }
 
@@ -695,6 +700,9 @@ public class GradingSubmissionService {
                 3. 如果当前页没有值得标注的地方，返回空数组 []。
                 4. 评语要具体、自然，尽量引用学生实际写到的内容，避免套话。
                 5. 标注应优先关注实验原理、方法步骤、结果分析、结论依据等实质性内容，不要因排版、字体、环境版本等细节给出大量标注。
+                6. 不要选择页眉、页脚、页面最顶部的标题行、学校名、报告题目、目录条目、摘要页、参考资料页作为 anchor_text；这些页面通常返回 []。
+                7. anchor_text 尽量选择正文中部的句子、代码行、实验结果或分析句，不要选择一页开头的第一行文字，避免批注遮挡版面。
+                8. 每页最多给 1 到 2 个最有价值的标注，不要在同一页密集标注。
 
                 输出示例：
                 [{"anchor_text":"系统采用 MQTT 协议上传数据","note":"协议选型合理，说明清晰","type":"CHECK","wavy":false}]
@@ -704,6 +712,37 @@ public class GradingSubmissionService {
                 totalPages,
                 currentPageText
         );
+    }
+
+    private boolean isLikelyAnnotationExcludedPage(String text, int pageIndex, int totalPages) {
+        String compact = normalizeAnnotationText(text).replaceAll("\\s+", "");
+        if (pageIndex == 0 && isLikelyCoverPage(compact)) {
+            return true;
+        }
+        String lower = compact.toLowerCase(Locale.ROOT);
+        if (compact.contains("目录") || compact.contains("摘要") || compact.contains("摘 要")
+                || lower.contains("contents") || lower.contains("abstract")) {
+            return true;
+        }
+        if (compact.contains("参考文献") || compact.contains("参考资料") || lower.contains("references")) {
+            return true;
+        }
+        return pageIndex >= Math.max(1, (int) Math.floor(totalPages * 0.72d))
+                && compact.contains("参考")
+                && compact.split("\\[[0-9]{1,3}]").length >= 3;
+    }
+
+    private boolean isLikelyCoverPage(String compact) {
+        if (compact == null || compact.isBlank()) {
+            return false;
+        }
+        int hits = 0;
+        for (String keyword : List.of("实验报告", "课程名称", "学生姓名", "学号", "指导教师", "重庆科技大学")) {
+            if (compact.contains(keyword)) {
+                hits++;
+            }
+        }
+        return hits >= 2;
     }
 
     List<AnnotatedStudentReportService.AnnotationEntry> parsePageAnnotationJson(String response) {

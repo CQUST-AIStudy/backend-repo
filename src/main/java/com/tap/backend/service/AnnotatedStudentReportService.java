@@ -664,32 +664,31 @@ public class AnnotatedStudentReportService {
             // 1) Prefer the report table cell instead of a decorative corner score.
             drawPdfScoreInReport(document, pages, fontSelection, totalScore, dimensionScores);
 
-            if (pages.size() > LONG_DOCUMENT_PAGE_THRESHOLD) {
-                drawPdfSimulatedMarksForLongDocument(document, pages, fontSelection, random);
-            } else {
-                boolean hasExternalAnnotations = annotations != null && !annotations.isEmpty();
-                int renderedAnnotationCount = drawPdfAnnotationMarks(
-                        document, pages, fontSelection, annotations == null ? List.of() : annotations);
+            boolean hasExternalAnnotations = annotations != null && !annotations.isEmpty();
+            int renderedAnnotationCount = drawPdfAnnotationMarks(
+                    document, pages, fontSelection, annotations == null ? List.of() : annotations);
 
+            if (pages.size() > LONG_DOCUMENT_PAGE_THRESHOLD) {
+                drawPdfSimulatedMarksForLongDocument(document, pages, fontSelection, random,
+                        LONG_DOCUMENT_PAGE_THRESHOLD);
+            } else if (!hasExternalAnnotations) {
                 // If the caller already supplied AI-generated or score-derived annotations,
                 // do not add legacy fallbacks to avoid visual clutter.  Fallbacks are only
                 // for legacy reports that have no annotations at all.
-                if (!hasExternalAnnotations) {
-                    // Older workers may return scores and detailed comments without the
-                    // structured annotations field. Recover only text fragments that
-                    // really occur in the report, so the fallback stays deterministic.
-                    if (renderedAnnotationCount < 2) {
-                        List<AnnotationEntry> derivedAnnotations = derivePdfAnnotationsFromComments(
-                                document, dimensionComments, annotations);
-                        renderedAnnotationCount += drawPdfAnnotationMarks(
-                                document, pages, fontSelection, derivedAnnotations);
-                    }
+                // Older workers may return scores and detailed comments without the
+                // structured annotations field. Recover only text fragments that
+                // really occur in the report, so the fallback stays deterministic.
+                if (renderedAnnotationCount < 2) {
+                    List<AnnotationEntry> derivedAnnotations = derivePdfAnnotationsFromComments(
+                            document, dimensionComments, annotations);
+                    renderedAnnotationCount += drawPdfAnnotationMarks(
+                            document, pages, fontSelection, derivedAnnotations);
+                }
 
-                    // Keep the legacy visual fallback only for historical reports that
-                    // contain neither usable anchors nor concrete quoted evidence.
-                    if (renderedAnnotationCount == 0) {
-                        drawPdfContentMarks(document, pages, fontSelection, dimensionComments, random);
-                    }
+                // Keep the legacy visual fallback only for historical reports that
+                // contain neither usable anchors nor concrete quoted evidence.
+                if (renderedAnnotationCount == 0) {
+                    drawPdfContentMarks(document, pages, fontSelection, dimensionComments, random);
                 }
             }
 
@@ -839,12 +838,15 @@ public class AnnotatedStudentReportService {
                 ? (scoreColumnHeader.startX() + scoreColumnHeader.endX()) / 2f
                 : box.getUpperRightX() - 60f;
         Map<String, BigDecimal> maxScoreByLabel = extractCourseObjectiveMaxScores(firstPageLines, anchors, scoreColumnCenterX);
-        Map<String, BigDecimal> scoreByLabel = calibrateCourseObjectiveScores(rawScoreByLabel, maxScoreByLabel, totalScore);
+        Map<String, BigDecimal> scoreByLabel = normalizeCourseObjectiveScores(rawScoreByLabel, maxScoreByLabel, totalScore);
+        BigDecimal objectiveTableTotal = scoreByLabel.values().stream()
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         for (RowAnchor anchor : anchors) {
             BigDecimal score;
             if ("成绩".equals(anchor.label())) {
-                score = totalScore;
+                score = objectiveTableTotal.compareTo(BigDecimal.ZERO) > 0 ? objectiveTableTotal : totalScore;
             } else {
                 score = scoreByLabel.get(anchor.label());
             }
@@ -922,45 +924,91 @@ public class AnnotatedStudentReportService {
         return result;
     }
 
-    private Map<String, BigDecimal> calibrateCourseObjectiveScores(Map<String, BigDecimal> rawScoreByLabel,
+    private Map<String, BigDecimal> normalizeCourseObjectiveScores(Map<String, BigDecimal> rawScoreByLabel,
                                                                    Map<String, BigDecimal> maxScoreByLabel,
                                                                    BigDecimal totalScore) {
-        if (rawScoreByLabel == null || rawScoreByLabel.isEmpty() || totalScore == null) {
+        if (rawScoreByLabel == null || rawScoreByLabel.isEmpty()) {
             return rawScoreByLabel == null ? Map.of() : rawScoreByLabel;
         }
-        BigDecimal rawSum = rawScoreByLabel.values().stream()
-                .filter(Objects::nonNull)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal visibleMaxSum = rawScoreByLabel.keySet().stream()
-                .map(maxScoreByLabel::get)
-                .filter(Objects::nonNull)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-        if (visibleMaxSum.compareTo(BigDecimal.ZERO) <= 0) {
-            return rawScoreByLabel;
-        }
-
-        BigDecimal remainingMax = BigDecimal.valueOf(100).subtract(visibleMaxSum).max(BigDecimal.ZERO);
-        boolean impossibleAgainstTotal = rawSum.add(remainingMax).add(BigDecimal.ONE).compareTo(totalScore) < 0;
-        BigDecimal rawRatio = rawSum.divide(visibleMaxSum, 6, RoundingMode.HALF_UP);
-        BigDecimal totalRatio = totalScore.divide(BigDecimal.valueOf(100), 6, RoundingMode.HALF_UP);
-        boolean ratioConflict = rawRatio.subtract(totalRatio).abs().compareTo(new BigDecimal("0.18")) > 0;
-        if (!impossibleAgainstTotal && !ratioConflict) {
-            return rawScoreByLabel;
-        }
-
-        Map<String, BigDecimal> calibrated = new HashMap<>(rawScoreByLabel);
-        for (String label : rawScoreByLabel.keySet()) {
+        Map<String, BigDecimal> normalized = new HashMap<>();
+        for (Map.Entry<String, BigDecimal> entry : rawScoreByLabel.entrySet()) {
+            String label = entry.getKey();
+            BigDecimal raw = entry.getValue();
             BigDecimal max = maxScoreByLabel.get(label);
-            if (max == null || max.compareTo(BigDecimal.ZERO) <= 0) {
+            if (raw == null || max == null || max.compareTo(BigDecimal.ZERO) <= 0) {
+                normalized.put(label, raw);
                 continue;
             }
-            BigDecimal value = max.multiply(totalRatio).setScale(0, RoundingMode.HALF_UP);
-            if (value.compareTo(max) > 0) {
-                value = max;
-            }
-            calibrated.put(label, value);
+            normalized.put(label, raw.max(BigDecimal.ZERO).min(max));
         }
-        return calibrated;
+
+        BigDecimal visibleMax = maxScoreByLabel.values().stream()
+                .filter(Objects::nonNull)
+                .filter(value -> value.compareTo(BigDecimal.ZERO) > 0)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (visibleMax.compareTo(BigDecimal.ZERO) <= 0 || totalScore == null) {
+            return normalized;
+        }
+
+        BigDecimal targetTotal = totalScore;
+        if (totalScore.compareTo(visibleMax) > 0 && totalScore.compareTo(BigDecimal.valueOf(100)) <= 0) {
+            targetTotal = totalScore.multiply(visibleMax)
+                    .divide(BigDecimal.valueOf(100), 6, RoundingMode.HALF_UP);
+        }
+        targetTotal = targetTotal.max(BigDecimal.ZERO).min(visibleMax);
+
+        // When the source report uses a 60-point objective table, the visible
+        // row scores should represent that table scale, not a failed fallback
+        // from one weak AI dimension.  Keep the displayed total at least 60%
+        // for passing-looking reports, then distribute by the row max weights.
+        BigDecimal floor = visibleMax.multiply(BigDecimal.valueOf(0.60d));
+        if (totalScore.compareTo(BigDecimal.valueOf(60)) >= 0 && targetTotal.compareTo(floor) < 0) {
+            targetTotal = floor;
+        }
+
+        BigDecimal normalizedSum = normalized.values().stream()
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal tolerance = visibleMax.multiply(BigDecimal.valueOf(0.15d));
+        if (normalizedSum.subtract(targetTotal).abs().compareTo(tolerance) <= 0) {
+            return normalized;
+        }
+
+        return allocateCourseObjectiveScores(maxScoreByLabel, targetTotal);
+    }
+
+    private Map<String, BigDecimal> allocateCourseObjectiveScores(Map<String, BigDecimal> maxScoreByLabel,
+                                                                  BigDecimal targetTotal) {
+        List<Map.Entry<String, BigDecimal>> entries = maxScoreByLabel.entrySet().stream()
+                .filter(entry -> entry.getValue() != null && entry.getValue().compareTo(BigDecimal.ZERO) > 0)
+                .sorted(Map.Entry.comparingByKey())
+                .toList();
+        BigDecimal visibleMax = entries.stream()
+                .map(Map.Entry::getValue)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (entries.isEmpty() || visibleMax.compareTo(BigDecimal.ZERO) <= 0) {
+            return Map.of();
+        }
+
+        int targetInt = targetTotal.setScale(0, RoundingMode.HALF_UP).intValue();
+        Map<String, BigDecimal> allocated = new HashMap<>();
+        int used = 0;
+        for (int i = 0; i < entries.size(); i++) {
+            Map.Entry<String, BigDecimal> entry = entries.get(i);
+            int value;
+            if (i == entries.size() - 1) {
+                value = targetInt - used;
+            } else {
+                value = targetTotal.multiply(entry.getValue())
+                        .divide(visibleMax, 6, RoundingMode.HALF_UP)
+                        .setScale(0, RoundingMode.HALF_UP)
+                        .intValue();
+                used += value;
+            }
+            int max = entry.getValue().setScale(0, RoundingMode.HALF_UP).intValue();
+            allocated.put(entry.getKey(), BigDecimal.valueOf(Math.max(0, Math.min(value, max))));
+        }
+        return allocated;
     }
 
     private BigDecimal parseDecimal(String text) {
@@ -1172,6 +1220,14 @@ public class AnnotatedStudentReportService {
                                                       List<PDPage> pages,
                                                       FontSelection fontSelection,
                                                       Random random) throws IOException {
+        drawPdfSimulatedMarksForLongDocument(document, pages, fontSelection, random, 0);
+    }
+
+    private void drawPdfSimulatedMarksForLongDocument(PDDocument document,
+                                                      List<PDPage> pages,
+                                                      FontSelection fontSelection,
+                                                      Random random,
+                                                      int startPageIndex) throws IOException {
         List<TextLine> rawLines = collectPdfLines(document);
         Map<Integer, Float> bodyStartByPage = findBodyStartYByPage(rawLines);
 
@@ -1185,7 +1241,7 @@ public class AnnotatedStudentReportService {
                 .collect(java.util.stream.Collectors.groupingBy(TextLine::pageIndex));
 
         List<String> pageTexts = collectPdfPageTexts(document, pages.size());
-        for (int pageIndex : selectLongDocumentSimulatedPageIndexes(pageTexts)) {
+        for (int pageIndex : selectLongDocumentSimulatedPageIndexes(pageTexts, startPageIndex)) {
             PDPage page = pages.get(pageIndex);
             PDRectangle box = visibleBox(page);
             List<TextLine> candidates = pageCandidates.getOrDefault(pageIndex, List.of());
@@ -1196,13 +1252,17 @@ public class AnnotatedStudentReportService {
             float angle = (float) Math.toRadians(-12 + random.nextInt(24));
 
             if (!candidates.isEmpty()) {
-                TextLine line = candidates.get(random.nextInt(candidates.size()));
-                float bodyRight = Math.min(box.getUpperRightX() - 72f, Math.max(line.endX() + 44f, line.endX() + size * 0.25f));
-                float lineCenter = (line.startX() + line.endX()) / 2f;
-                float inlineX = lineCenter + (random.nextFloat() - 0.35f) * Math.max(80f, line.endX() - line.startX());
-                markX = random.nextBoolean() ? bodyRight : inlineX;
-                markX = Math.max(line.startX() + size * 0.45f, Math.min(markX, box.getUpperRightX() - 72f));
-                markY = line.baselineY() + size * 0.15f;
+                List<TextLine> roomyLines = candidates.stream()
+                        .filter(line -> hasSideRoomForMark(line, box, size))
+                        .toList();
+                TextLine line = (roomyLines.isEmpty() ? candidates : roomyLines)
+                        .get(random.nextInt(roomyLines.isEmpty() ? candidates.size() : roomyLines.size()));
+                MarkPosition position = placeMarkOutsideText(line, box, size, new ArrayList<>());
+                if (position == null) {
+                    continue;
+                }
+                markX = position.x();
+                markY = position.y();
             } else {
                 // Page has no suitable text line (e.g. mostly images); pick a
                 // random vertical position in the body area, avoiding top and
@@ -1222,9 +1282,14 @@ public class AnnotatedStudentReportService {
     }
 
     List<Integer> selectLongDocumentSimulatedPageIndexes(List<String> pageTexts) {
+        return selectLongDocumentSimulatedPageIndexes(pageTexts, 0);
+    }
+
+    List<Integer> selectLongDocumentSimulatedPageIndexes(List<String> pageTexts, int startPageIndex) {
         List<Integer> selected = new ArrayList<>();
         int pageCount = pageTexts == null ? 0 : pageTexts.size();
-        for (int pageIndex = 0; pageIndex < pageCount; pageIndex++) {
+        int from = Math.max(0, startPageIndex);
+        for (int pageIndex = from; pageIndex < pageCount; pageIndex++) {
             String pageText = pageTexts.get(pageIndex);
             if (isLongDocumentExcludedPage(pageText, pageIndex, pageCount)) {
                 continue;
@@ -1241,6 +1306,9 @@ public class AnnotatedStudentReportService {
         String compact = safeText(pageText).replaceAll("\\s+", "");
         String lower = compact.toLowerCase(Locale.ROOT);
         if (compact.contains("目录") || lower.contains("contents")) {
+            return true;
+        }
+        if (compact.contains("摘要") || compact.contains("摘 要") || lower.contains("abstract")) {
             return true;
         }
         if (compact.contains("参考文献") || compact.contains("参考资料") || lower.contains("references")) {
@@ -1283,6 +1351,7 @@ public class AnnotatedStudentReportService {
         Set<String> usedAnnotations = new HashSet<>();
         Map<String, Integer> anchorNoteUsage = new HashMap<>();
         Map<Integer, Float> bodyStartByPage = findBodyStartYByPage(collectPdfLines(document));
+        Map<Integer, List<MarkRect>> placedMarksByPage = new HashMap<>();
         int renderedCount = 0;
         for (AnnotationEntry ann : annotations) {
             if (ann.anchorText() == null || ann.anchorText().isBlank()) {
@@ -1301,7 +1370,8 @@ public class AnnotatedStudentReportService {
             }
             TextLine containingLine = anchor.containingLine();
             if (!isWithinReportBody(containingLine, bodyStartByPage)
-                    || !isReliablePreciseAnnotationTarget(containingLine, pages.size())) {
+                    || !isReliablePreciseAnnotationTarget(containingLine, pages.size())
+                    || isTopAreaLine(containingLine, pages.get(anchor.pageIndex()))) {
                 continue;
             }
 
@@ -1310,25 +1380,25 @@ public class AnnotatedStudentReportService {
             String type = safeText(ann.type()).toUpperCase(Locale.ROOT);
             String anchorKey = normalizePdfText(ann.anchorText());
             int noteOffsetIndex = anchorNoteUsage.merge(anchorKey, 1, Integer::sum) - 1;
-            float size = "CROSS".equals(type) ? 42f : 87f;
+            float size = "CROSS".equals(type) ? 38f : 58f;
             float markX;
             float markY;
             if ("CROSS".equals(type)) {
-                markX = (anchor.startX() + anchor.endX()) / 2f;
-                markY = anchor.baselineY() + anchor.fontSize() * 0.8f + size * 0.1f;
-                if (markY + size * 0.6f > box.getUpperRightY() - 16f) {
-                    markX = anchor.endX() + size * 0.4f;
-                    markY = anchor.baselineY() + anchor.fontSize() + size * 0.5f;
+                MarkPosition position = placeMarkOutsideText(containingLine, box, size,
+                        placedMarksByPage.computeIfAbsent(anchor.pageIndex(), k -> new ArrayList<>()));
+                if (position == null) {
+                    continue;
                 }
-                if (markX + size * 0.6f > box.getUpperRightX() - 16f) {
-                    markX = anchor.startX() - size * 0.4f;
-                }
-                if (markX - size * 0.6f < box.getLowerLeftX() + 16f) {
-                    markX = Math.min(anchor.endX() + size * 0.4f, box.getUpperRightX() - 16f - size * 0.6f);
-                }
+                markX = position.x();
+                markY = position.y();
             } else {
-                markX = Math.min(containingLine.endX() + 14f + size * 0.5f, box.getUpperRightX() - size * 0.92f - 16f);
-                markY = containingLine.baselineY() + size * 0.12f;
+                MarkPosition position = placeMarkOutsideText(containingLine, box, size,
+                        placedMarksByPage.computeIfAbsent(anchor.pageIndex(), k -> new ArrayList<>()));
+                if (position == null) {
+                    continue;
+                }
+                markX = position.x();
+                markY = position.y();
             }
             float angle = (float) Math.toRadians(-18 + (ann.anchorText().hashCode() % 36));
 
@@ -1522,6 +1592,57 @@ public class AnnotatedStudentReportService {
         // Avoid the top 22% of the page where headers, page titles and running
         // headings usually sit.
         return line.baselineY() > pageHeight * 0.78f;
+    }
+
+    private boolean hasSideRoomForMark(TextLine line, PDRectangle box, float size) {
+        float rightGap = box.getUpperRightX() - 24f - line.endX();
+        float leftGap = line.startX() - box.getLowerLeftX() - 24f;
+        return rightGap >= size * 1.1f || leftGap >= size * 1.1f;
+    }
+
+    private MarkPosition placeMarkOutsideText(TextLine line,
+                                              PDRectangle box,
+                                              float size,
+                                              List<MarkRect> placedMarks) {
+        float minX = box.getLowerLeftX() + 24f + size * 0.65f;
+        float maxX = box.getUpperRightX() - 24f - size * 0.65f;
+        float minY = box.getLowerLeftY() + 52f + size * 0.25f;
+        float maxY = box.getUpperRightY() - 52f - size * 0.25f;
+
+        List<MarkPosition> candidates = new ArrayList<>();
+        float rightX = line.endX() + 18f + size * 0.55f;
+        if (rightX <= maxX && rightX - size * 0.55f >= line.endX() + 10f) {
+            candidates.add(new MarkPosition(rightX, clamp(line.baselineY() + size * 0.12f, minY, maxY)));
+            candidates.add(new MarkPosition(rightX, clamp(line.baselineY() - size * 0.72f, minY, maxY)));
+        }
+        float leftX = line.startX() - 18f - size * 0.55f;
+        if (leftX >= minX && leftX + size * 0.55f <= line.startX() - 10f) {
+            candidates.add(new MarkPosition(leftX, clamp(line.baselineY() + size * 0.12f, minY, maxY)));
+            candidates.add(new MarkPosition(leftX, clamp(line.baselineY() - size * 0.72f, minY, maxY)));
+        }
+        float marginX = clamp(Math.max(line.endX() + 24f, box.getUpperRightX() - 92f), minX, maxX);
+        if (marginX - size * 0.55f >= line.endX() + 10f) {
+            candidates.add(new MarkPosition(marginX, clamp(line.baselineY() - size * 0.85f, minY, maxY)));
+        }
+        // Final fallback for dense full-width paragraphs: put the mark below
+        // the anchor line near the page edge. It is still tied to the text
+        // region, but avoids covering the current line itself.
+        candidates.add(new MarkPosition(clamp(box.getUpperRightX() - 88f, minX, maxX),
+                clamp(line.baselineY() - size * 1.25f, minY, maxY)));
+
+        for (MarkPosition candidate : candidates) {
+            MarkRect rect = MarkRect.of(candidate, size);
+            if (rect.overlapsLine(line) || placedMarks.stream().anyMatch(rect::overlaps)) {
+                continue;
+            }
+            placedMarks.add(rect);
+            return candidate;
+        }
+        return null;
+    }
+
+    private float clamp(float value, float min, float max) {
+        return Math.max(min, Math.min(max, value));
     }
 
     private boolean isReferencesPage(List<TextLine> pageLines) {
@@ -2320,6 +2441,33 @@ public class AnnotatedStudentReportService {
 
     /** A fragment of text on a page, in PDF coordinates (origin bottom-left). */
     private record TextLine(int pageIndex, String text, float startX, float endX, float baselineY, float fontSize) {}
+
+    private record MarkPosition(float x, float y) {}
+
+    private record MarkRect(float left, float right, float bottom, float top) {
+        private static MarkRect of(MarkPosition position, float size) {
+            float half = size * 0.68f;
+            return new MarkRect(position.x() - half, position.x() + half,
+                    position.y() - half, position.y() + half);
+        }
+
+        private boolean overlaps(MarkRect other) {
+            return other != null
+                    && left < other.right
+                    && right > other.left
+                    && bottom < other.top
+                    && top > other.bottom;
+        }
+
+        private boolean overlapsLine(TextLine line) {
+            float lineTop = line.baselineY() + Math.max(8f, line.fontSize() * 0.8f);
+            float lineBottom = line.baselineY() - Math.max(4f, line.fontSize() * 0.35f);
+            return left < line.endX() + 4f
+                    && right > line.startX() - 4f
+                    && bottom < lineTop
+                    && top > lineBottom;
+        }
+    }
 
     /** Exact position of anchor_text inside a containing PDF text line. */
     private record TextAnchor(int pageIndex,
