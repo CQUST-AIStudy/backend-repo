@@ -7,7 +7,6 @@ import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
-import jakarta.persistence.Lob;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
@@ -60,12 +59,10 @@ public class WrongQuestionEntity {
   @Column(name = "last_judge_status", length = 64)
   private String lastJudgeStatus;
 
-  @Lob
-  @Column(name = "last_wrong_code")
+  @Column(name = "last_wrong_code", columnDefinition = "MEDIUMTEXT")
   private String lastWrongCode;
 
-  @Lob
-  @Column(name = "last_error_message")
+  @Column(name = "last_error_message", columnDefinition = "TEXT")
   private String lastErrorMessage;
 
   @Column(name = "error_category", length = 32)
@@ -80,8 +77,7 @@ public class WrongQuestionEntity {
   @Column(name = "tags_cached", length = 512)
   private String tagsCached;
 
-  @Lob
-  @Column(name = "notes")
+  @Column(name = "notes", columnDefinition = "TEXT")
   private String notes;
 
   @Column(name = "created_at", nullable = false)

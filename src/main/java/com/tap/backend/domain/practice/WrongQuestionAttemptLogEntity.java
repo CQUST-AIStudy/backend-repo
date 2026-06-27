@@ -7,7 +7,6 @@ import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
-import jakarta.persistence.Lob;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.Table;
 import java.time.Instant;
@@ -34,8 +33,7 @@ public class WrongQuestionAttemptLogEntity {
   @Column(name = "was_ac", nullable = false)
   private boolean wasAc;
 
-  @Lob
-  @Column(name = "code_snippet")
+  @Column(name = "code_snippet", columnDefinition = "MEDIUMTEXT")
   private String codeSnippet;
 
   @Column(name = "runtime_ms")
