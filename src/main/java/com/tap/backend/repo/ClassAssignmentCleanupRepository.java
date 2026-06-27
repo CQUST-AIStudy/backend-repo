@@ -28,17 +28,17 @@ public class ClassAssignmentCleanupRepository {
         jdbcClient.sql("""
                 CREATE TEMPORARY TABLE tmp_class_delete_offerings (
                     id BIGINT PRIMARY KEY
-                ) ENGINE=MEMORY
+                )
                 """).update();
         jdbcClient.sql("""
                 CREATE TEMPORARY TABLE tmp_class_delete_import_jobs (
                     id BIGINT PRIMARY KEY
-                ) ENGINE=MEMORY
+                )
                 """).update();
         jdbcClient.sql("""
                 CREATE TEMPORARY TABLE tmp_class_delete_artifacts (
                     id BIGINT PRIMARY KEY
-                ) ENGINE=MEMORY
+                )
                 """).update();
     }
 
@@ -107,15 +107,20 @@ public class ClassAssignmentCleanupRepository {
     }
 
     private void deleteRows() {
-        jdbcClient.sql("""
-                DELETE FROM pta_api_submission_row
-                WHERE offering_id IN (SELECT id FROM tmp_class_delete_offerings)
-                   OR problem_id IN (
-                       SELECT id
-                       FROM assignment_problem
-                       WHERE offering_id IN (SELECT id FROM tmp_class_delete_offerings)
-                   )
-                """).update();
+        if (tableExists("pta_api_submission_row")) {
+            jdbcClient.sql("""
+                    DELETE FROM pta_api_submission_row
+                    WHERE offering_id IN (SELECT id FROM tmp_class_delete_offerings)
+                    """).update();
+            jdbcClient.sql("""
+                    DELETE FROM pta_api_submission_row
+                    WHERE problem_id IN (
+                        SELECT id
+                        FROM assignment_problem
+                        WHERE offering_id IN (SELECT id FROM tmp_class_delete_offerings)
+                    )
+                    """).update();
+        }
         jdbcClient.sql("""
                 DELETE FROM assignment_offering
                 WHERE id IN (SELECT id FROM tmp_class_delete_offerings)
@@ -128,6 +133,19 @@ public class ClassAssignmentCleanupRepository {
                 DELETE FROM artifact
                 WHERE id IN (SELECT id FROM tmp_class_delete_artifacts)
                 """).update();
+    }
+
+    private boolean tableExists(String tableName) {
+        Integer count = jdbcClient.sql("""
+                SELECT COUNT(*)
+                FROM information_schema.tables
+                WHERE table_schema = DATABASE()
+                  AND table_name = :tableName
+                """)
+                .param("tableName", tableName)
+                .query(Integer.class)
+                .single();
+        return count != null && count > 0;
     }
 
     private void dropTemporaryTables() {
