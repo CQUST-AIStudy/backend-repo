@@ -17,6 +17,11 @@ public class AnimationWorkflowRouter {
     };
 
     public AnimationWorkflow route(AnimationCandidate candidate) {
+        // 只要能在证据块中提取到代码，就优先用代码高亮 + D3 弹窗，让用户看到完整代码
+        if (candidate.codeContext() != null && !candidate.codeContext().fullLines().isEmpty()) {
+            return AnimationWorkflow.CODE_HIGHLIGHT;
+        }
+
         ErrorType errorType = candidate.detectedErrorType();
         if (errorType == null) {
             return defaultRoute(candidate);

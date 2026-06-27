@@ -16,6 +16,7 @@ import com.tap.backend.service.grading.animation.ErrorPatternDetector;
 import com.tap.backend.service.grading.animation.ErrorPatternDetector.ErrorType;
 import com.tap.backend.service.grading.animation.GenericHighlightWorkflow;
 import com.tap.backend.service.grading.animation.HtmlAnimationWorkflow;
+import com.tap.backend.service.grading.animation.LLMCodeExtractor;
 import com.tap.backend.service.grading.animation.ProblemContext;
 import com.tap.backend.service.grading.animation.ProblemContextResolver;
 import com.tap.backend.service.grading.animation.PythonTutorWorkflow;
@@ -42,6 +43,7 @@ public class GradingErrorDemonstrationService {
     private final CodeContextExtractor codeContextExtractor;
     private final ErrorPatternDetector errorPatternDetector;
     private final AnimationWorkflowRouter router;
+    private final LLMCodeExtractor llmCodeExtractor;
     private final CodeHighlightAnimationWorkflow codeHighlightWorkflow;
     private final PythonTutorWorkflow pythonTutorWorkflow;
     private final HtmlAnimationWorkflow htmlAnimationWorkflow;
@@ -52,6 +54,7 @@ public class GradingErrorDemonstrationService {
                                             CodeContextExtractor codeContextExtractor,
                                             ErrorPatternDetector errorPatternDetector,
                                             AnimationWorkflowRouter router,
+                                            LLMCodeExtractor llmCodeExtractor,
                                             CodeHighlightAnimationWorkflow codeHighlightWorkflow,
                                             PythonTutorWorkflow pythonTutorWorkflow,
                                             HtmlAnimationWorkflow htmlAnimationWorkflow,
@@ -61,6 +64,7 @@ public class GradingErrorDemonstrationService {
         this.codeContextExtractor = codeContextExtractor;
         this.errorPatternDetector = errorPatternDetector;
         this.router = router;
+        this.llmCodeExtractor = llmCodeExtractor;
         this.codeHighlightWorkflow = codeHighlightWorkflow;
         this.pythonTutorWorkflow = pythonTutorWorkflow;
         this.htmlAnimationWorkflow = htmlAnimationWorkflow;
@@ -83,7 +87,8 @@ public class GradingErrorDemonstrationService {
 
         ProblemContext problemContext = problemContextResolver.resolve(
                 submission == null ? null : submission.getTask());
-        List<AnimationCandidate> candidates = collectCandidates(scoreItems, evidenceBlocks, problemContext);
+        Map<String, String> llmFullCode = extractLLMFullCode(problemContext, scoreItems, evidenceBlocks);
+        List<AnimationCandidate> candidates = collectCandidates(scoreItems, evidenceBlocks, problemContext, llmFullCode);
 
         List<ErrorDemonstration> result = new ArrayList<>();
         for (int i = 0; i < candidates.size(); i++) {
@@ -107,10 +112,31 @@ public class GradingErrorDemonstrationService {
         return result;
     }
 
+    private Map<String, String> extractLLMFullCode(
+            ProblemContext problemContext,
+            List<ScoreItemEntity> scoreItems,
+            List<EvidenceBlockEntity> evidenceBlocks) {
+        if (llmCodeExtractor == null || scoreItems == null || evidenceBlocks == null) {
+            return Map.of();
+        }
+        List<String> referencedIds = scoreItems.stream()
+                .flatMap(item -> parseAnnotations(item.getAnnotationsJson()).stream())
+                .map(AnimationCandidate.AnnotationInfo::evidenceId)
+                .filter(id -> id != null && !id.isBlank())
+                .distinct()
+                .toList();
+        List<EvidenceBlockEntity> relevantBlocks = evidenceBlocks.stream()
+                .filter(eb -> eb.getEvidenceId() != null && referencedIds.contains(eb.getEvidenceId()))
+                .toList();
+        String title = problemContext == null ? null : problemContext.experimentTitle();
+        return llmCodeExtractor.extractFullCode(title, relevantBlocks);
+    }
+
     private List<AnimationCandidate> collectCandidates(
             List<ScoreItemEntity> scoreItems,
             List<EvidenceBlockEntity> evidenceBlocks,
-            ProblemContext problemContext) {
+            ProblemContext problemContext,
+            Map<String, String> llmFullCode) {
 
         if (scoreItems == null || evidenceBlocks == null) {
             return List.of();
@@ -133,7 +159,7 @@ public class GradingErrorDemonstrationService {
                 if (errorType == null || errorType == ErrorType.GENERIC_HIGHLIGHT) {
                     continue; // 无法识别为明确错误类型，不生成动画
                 }
-                CodeContext codeContext = codeContextExtractor.extract(block.getContent(), ann.anchorText());
+                CodeContext codeContext = resolveCodeContext(block, ann, llmFullCode);
                 if (errorPatternDetector.isCodeError(errorType)
                         && (codeContext == null || codeContext.fullLines().isEmpty())) {
                     continue; // 代码类错误必须能在证据中定位 anchor
@@ -142,6 +168,22 @@ public class GradingErrorDemonstrationService {
             }
         }
         return candidates;
+    }
+
+    private CodeContext resolveCodeContext(
+            EvidenceBlockEntity block,
+            AnimationCandidate.AnnotationInfo ann,
+            Map<String, String> llmFullCode) {
+        CodeContext local = codeContextExtractor.extract(block.getContent(), ann.anchorText());
+        String llmCode = llmFullCode == null ? null : llmFullCode.get(ann.evidenceId());
+        if (llmCode != null && !llmCode.isBlank()) {
+            CodeContext fromLlm = codeContextExtractor.extract(llmCode, ann.anchorText());
+            if (fromLlm != null && !fromLlm.fullLines().isEmpty()) {
+                // LLM 提取到更完整的代码，优先使用
+                return fromLlm;
+            }
+        }
+        return local;
     }
 
     private List<AnimationCandidate.AnnotationInfo> parseAnnotations(String annotationsJson) {

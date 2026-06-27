@@ -65,7 +65,7 @@ public class ErrorPatternDetector {
         // 概念/原理类：文字描述或 vlm 证据中包含明确知识点关键词
         if (("text".equalsIgnoreCase(evidenceKind) || "vlm".equalsIgnoreCase(evidenceKind))
                 && containsAny(combined, "递归", "指针", "链表", "树", "图", "复杂度",
-                        "原理", "内存", "概念", "理解", "算法")) {
+                        "原理", "内存", "概念", "理解", "算法", "分析", "调试")) {
             return ErrorType.CONCEPT;
         }
 

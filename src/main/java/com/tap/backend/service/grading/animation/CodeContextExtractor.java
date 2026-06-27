@@ -18,6 +18,12 @@ public class CodeContextExtractor {
     private static final Pattern BLOCK_START = Pattern.compile("\\{");
     private static final Pattern BLOCK_END = Pattern.compile("\\}");
 
+    private static final String[] CODE_KEYWORDS = {
+            "for", "while", "if", "else", "switch", "int ", "char ", "float ",
+            "double ", "void ", "struct ", "return", "break", "continue",
+            "malloc", "free", "printf", "scanf", "arr[", "->", "#include"
+    };
+
     public CodeContext extract(String content, String anchorText) {
         if (content == null || content.isBlank()) {
             return emptyContext();
@@ -33,6 +39,10 @@ public class CodeContextExtractor {
             anchorLine = fuzzyFindLineIndex(allLines, anchorText);
         }
         if (anchorLine < 0) {
+            // 即使 anchor 没定位到，只要证据块本身是代码，也返回完整代码供展示
+            if (looksLikeCode(allLines)) {
+                return fullContext(allLines);
+            }
             return emptyContext();
         }
 
@@ -121,6 +131,32 @@ public class CodeContextExtractor {
             }
         }
         return -1;
+    }
+
+    private CodeContext fullContext(List<String> allLines) {
+        return new CodeContext(
+                new ArrayList<>(allLines),
+                1,
+                1,
+                1,
+                allLines.size()
+        );
+    }
+
+    private boolean looksLikeCode(List<String> lines) {
+        int hits = 0;
+        for (String line : lines) {
+            String lower = line.toLowerCase();
+            for (String keyword : CODE_KEYWORDS) {
+                if (lower.contains(keyword.toLowerCase())) {
+                    hits++;
+                    if (hits >= 2) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     private CodeContext emptyContext() {

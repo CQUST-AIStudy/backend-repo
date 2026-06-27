@@ -17,6 +17,7 @@ import com.tap.backend.service.grading.animation.ErrorParameterExtractor;
 import com.tap.backend.service.grading.animation.ErrorPatternDetector;
 import com.tap.backend.service.grading.animation.GenericHighlightWorkflow;
 import com.tap.backend.service.grading.animation.HtmlAnimationWorkflow;
+import com.tap.backend.service.grading.animation.LLMCodeExtractor;
 import com.tap.backend.service.grading.animation.ProblemContext;
 import com.tap.backend.service.grading.animation.ProblemContextResolver;
 import com.tap.backend.service.grading.animation.CodeHighlightAnimationWorkflow;
@@ -24,6 +25,7 @@ import com.tap.backend.service.grading.animation.PythonTutorWorkflow;
 import com.tap.backend.service.grading.animation.ResultCompareWorkflow;
 import com.tap.backend.service.animation.AnimationAiClient;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -39,6 +41,9 @@ class GradingErrorDemonstrationServiceTest {
         ErrorPatternDetector detector = new ErrorPatternDetector();
         CodeContextExtractor codeContextExtractor = new CodeContextExtractor();
         AnimationWorkflowRouter router = new AnimationWorkflowRouter();
+        LLMCodeExtractor llmCodeExtractor = mock(LLMCodeExtractor.class);
+        when(llmCodeExtractor.extractFullCode(null, List.of())).thenReturn(Map.of());
+
         PythonTutorWorkflow pythonTutorWorkflow = new PythonTutorWorkflow(new ErrorParameterExtractor());
 
         AnimationAiClient aiClient = mock(AnimationAiClient.class);
@@ -53,6 +58,7 @@ class GradingErrorDemonstrationServiceTest {
                 codeContextExtractor,
                 detector,
                 router,
+                llmCodeExtractor,
                 codeHighlightWorkflow,
                 pythonTutorWorkflow,
                 htmlAnimationWorkflow,
@@ -122,7 +128,7 @@ class GradingErrorDemonstrationServiceTest {
     }
 
     @Test
-    void conceptAnnotation_generatesHtmlAnimation() {
+    void conceptAnnotation_withCode_routesToCodeHighlight() {
         ScoreItemEntity score = scoreWithAnnotations("""
                 [{"evidence_id":"ev-4","type":"CROSS","anchor_text":"递归","note":"请理解递归调用过程","wavy":false}]
                 """);
@@ -136,7 +142,30 @@ class GradingErrorDemonstrationServiceTest {
                 service.buildDemonstrations(new GradingSubmissionEntity(), List.of(score), List.of(block));
 
         assertEquals(1, demos.size());
-        assertEquals("HTML_ANIMATION", demos.get(0).workflow());
+        assertEquals("CODE_HIGHLIGHT", demos.get(0).workflow());
+        assertTrue(demos.get(0).sourceCode().contains("int fib"));
+    }
+
+    @Test
+    void missingDebugAnalysis_withCode_showsFullCode() {
+        ScoreItemEntity score = scoreWithAnnotations("""
+                [{"evidence_id":"ev-dbg","type":"CROSS","anchor_text":"仅描述结果","note":"仅描述结果，未分析调试过程","wavy":false}]
+                """);
+        EvidenceBlockEntity block = block("ev-dbg", EvidenceKind.text, """
+                BiTree search(BiTree T, int key) {
+                    if (T == NULL) return NULL;
+                    if (key < T->data) return search(T->rchild, key);
+                    if (key > T->data) return search(T->lchild, key);
+                    return T;
+                }
+                """);
+
+        List<GradingErrorDemonstrationService.ErrorDemonstration> demos =
+                service.buildDemonstrations(new GradingSubmissionEntity(), List.of(score), List.of(block));
+
+        assertEquals(1, demos.size());
+        assertEquals("CODE_HIGHLIGHT", demos.get(0).workflow());
+        assertTrue(demos.get(0).sourceCode().contains("BiTree search"));
     }
 
     @Test
@@ -158,7 +187,7 @@ class GradingErrorDemonstrationServiceTest {
     }
 
     @Test
-    void anchorNotLocatable_generatesNothing() {
+    void anchorNotLocatable_butCodeBlock_fallsBackToFullCode() {
         ScoreItemEntity score = scoreWithAnnotations("""
                 [{"evidence_id":"ev-6","type":"CROSS","anchor_text":"这段代码越界了","note":"数组越界","wavy":false}]
                 """);
@@ -172,7 +201,9 @@ class GradingErrorDemonstrationServiceTest {
         List<GradingErrorDemonstrationService.ErrorDemonstration> demos =
                 service.buildDemonstrations(new GradingSubmissionEntity(), List.of(score), List.of(block));
 
-        assertTrue(demos.isEmpty(), "Should not generate animation when anchor cannot be located in evidence");
+        assertEquals(1, demos.size(), "Should fallback to full code block when anchor cannot be located");
+        assertEquals("CODE_HIGHLIGHT", demos.get(0).workflow());
+        assertTrue(demos.get(0).sourceCode().contains("int arr[5]"));
     }
 
     @Test

@@ -31,9 +31,23 @@ class CodeContextExtractorTest {
     }
 
     @Test
-    void returnsEmptyContextWhenAnchorMissing() {
-        CodeContext ctx = extractor.extract("int main() { return 0; }", "not found");
+    void returnsEmptyContextForNonCodeContent() {
+        CodeContext ctx = extractor.extract("这是一段纯文字说明，没有代码。", "not found");
         assertNotNull(ctx);
         assertEquals(0, ctx.fullLines().size());
+    }
+
+    @Test
+    void fallsBackToFullCodeBlockWhenAnchorMissing() {
+        CodeContext ctx = extractor.extract("""
+                int main() {
+                    printf("hello");
+                    return 0;
+                }
+                """, "not found");
+        assertNotNull(ctx);
+        assertEquals(4, ctx.fullLines().size());
+        assertTrue(ctx.fullCode().contains("int main()"));
+        assertEquals(1, ctx.relativeAnchorLine());
     }
 }
