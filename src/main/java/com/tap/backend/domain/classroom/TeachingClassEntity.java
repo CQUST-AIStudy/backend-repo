@@ -70,6 +70,12 @@ public class TeachingClassEntity {
     @Column(name = "sync_status", length = 32)
     private String syncStatus = "IDLE";
 
+    @Column(name = "status", nullable = false, length = 16)
+    private String status = "ACTIVE";
+
+    @Column(name = "archived_at")
+    private Instant archivedAt;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -145,6 +151,12 @@ public class TeachingClassEntity {
 
     public String getSyncStatus() { return syncStatus; }
     public void setSyncStatus(String syncStatus) { this.syncStatus = syncStatus; }
+
+    public String getStatus() { return status; }
+    public void setStatus(String status) { this.status = status; }
+
+    public Instant getArchivedAt() { return archivedAt; }
+    public void setArchivedAt(Instant archivedAt) { this.archivedAt = archivedAt; }
 
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }

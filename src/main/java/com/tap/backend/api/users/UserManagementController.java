@@ -24,6 +24,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -151,8 +152,10 @@ public class UserManagementController {
   }
 
   @GetMapping
-  public ApiResponse<List<UserResponse>> list() {
+  public ApiResponse<List<UserResponse>> list(@RequestParam(required = false) String role) {
+    UserRole requestedRole = role == null || role.isBlank() ? null : parseRole(role);
     return ApiResponse.of(userRepository.findAllByOrderByCreatedAtDesc().stream()
+        .filter(user -> requestedRole == null || user.getRole() == requestedRole)
         .map(this::toResponse)
         .toList());
   }
