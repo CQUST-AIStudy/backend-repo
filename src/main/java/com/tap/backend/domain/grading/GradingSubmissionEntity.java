@@ -59,6 +59,9 @@ public class GradingSubmissionEntity {
     @Column(name = "published_by")
     private Long publishedBy;
 
+    @Column(name = "error_demonstrations_json", columnDefinition = "longtext")
+    private String errorDemonstrationsJson;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -107,4 +110,6 @@ public class GradingSubmissionEntity {
     public void setPublishedBy(Long publishedBy) { this.publishedBy = publishedBy; }
     public Instant getCreatedAt() { return createdAt; }
     public Instant getUpdatedAt() { return updatedAt; }
+    public String getErrorDemonstrationsJson() { return errorDemonstrationsJson; }
+    public void setErrorDemonstrationsJson(String errorDemonstrationsJson) { this.errorDemonstrationsJson = errorDemonstrationsJson; }
 }

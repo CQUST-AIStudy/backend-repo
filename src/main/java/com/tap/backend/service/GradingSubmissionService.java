@@ -9,6 +9,7 @@ import com.tap.backend.academic.entity.Score;
 import com.tap.backend.academic.entity.Student;
 import com.tap.backend.academic.entity.StudentCode;
 import com.tap.backend.academic.entity.Submission;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -161,12 +162,9 @@ public class GradingSubmissionService {
         result.put("publishedBy", submission.getPublishedBy());
         result.put("published", submission.getPublishedAt() != null);
         result.put("scores", scores.stream().map(this::scoreDto).toList());
-        try {
-            result.put("errorDemonstrations", errorDemonstrationService.buildDemonstrations(submission, scores, evidence));
-        } catch (Exception e) {
-            log.warn("生成错误演示失败，返回空列表不影响详情页加载: submissionId={}, {}", submissionId, e.getMessage());
-            result.put("errorDemonstrations", List.of());
-        }
+        // Error demonstrations are loaded separately via /error-demonstrations endpoint
+        // to avoid blocking the detail page with heavy AI computation
+        result.put("errorDemonstrations", List.of());
         result.put("evidenceBlocks", evidence.stream().map(this::evidenceDto).toList());
         result.put("traces", traces.stream().map(this::traceDto).toList());
         result.put("reportFiles", reportFileRepo.findAllBySubmissionIdOrderByCreatedAtDesc(submissionId).stream()
@@ -178,12 +176,38 @@ public class GradingSubmissionService {
         return result;
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public List<GradingErrorDemonstrationService.ErrorDemonstration> buildErrorDemonstrations(Long submissionId, Long teacherId) {
         GradingSubmissionEntity submission = requireOwnedSubmission(submissionId, teacherId);
+
+        // 1. Read from persisted JSON first (zero AI calls)
+        String persistedJson = submission.getErrorDemonstrationsJson();
+        if (persistedJson != null && !persistedJson.isBlank()) {
+            try {
+                return objectMapper.readValue(persistedJson,
+                        new TypeReference<List<GradingErrorDemonstrationService.ErrorDemonstration>>() {});
+            } catch (Exception e) {
+                log.warn("Failed to deserialize persisted error demonstrations for submission {}: {}",
+                        submissionId, e.getMessage());
+            }
+        }
+
+        // 2. Not yet persisted — generate now and save to DB
         List<ScoreItemEntity> scores = scoreItemRepo.findAllBySubmissionId(submissionId);
         List<EvidenceBlockEntity> evidence = evidenceRepo.findAllBySubmissionId(submissionId);
-        return errorDemonstrationService.buildDemonstrations(submission, scores, evidence);
+        List<GradingErrorDemonstrationService.ErrorDemonstration> demos =
+                errorDemonstrationService.buildDemonstrations(submission, scores, evidence);
+
+        try {
+            submission.setErrorDemonstrationsJson(
+                    objectMapper.writeValueAsString(demos));
+            submissionRepo.save(submission);
+        } catch (Exception e) {
+            log.warn("Failed to persist error demonstrations for submission {}: {}",
+                    submissionId, e.getMessage());
+        }
+
+        return demos;
     }
 
     @Transactional
@@ -242,6 +266,10 @@ public class GradingSubmissionService {
         result.put("submissionId", submissionId);
         result.put("totalScore", total);
         result.put("overrideId", override.getId());
+
+        // Invalidate persisted error demonstrations since scores changed — will regenerate on next read
+        submission.setErrorDemonstrationsJson(null);
+        submissionRepo.save(submission);
         return result;
     }
 
@@ -255,6 +283,8 @@ public class GradingSubmissionService {
 
         String review = generateStructuredReview(submission, scores, dimensionNames, experimentContext);
         submission.setFinalReviewComment(review);
+        // Invalidate persisted error demonstrations since review changed — will regenerate on next read
+        submission.setErrorDemonstrationsJson(null);
         submissionRepo.save(submission);
         refreshAnnotatedReportIfPresent(submission);
         return review;
@@ -264,6 +294,8 @@ public class GradingSubmissionService {
     public void saveFinalReview(Long submissionId, String review, Long teacherId) {
         GradingSubmissionEntity submission = requireOwnedSubmission(submissionId, teacherId);
         submission.setFinalReviewComment(review);
+        // Invalidate persisted error demonstrations since review changed — will regenerate on next read
+        submission.setErrorDemonstrationsJson(null);
         submissionRepo.save(submission);
         refreshAnnotatedReportIfPresent(submission);
     }
@@ -401,8 +433,13 @@ public class GradingSubmissionService {
             ExperimentContext experimentContext = extractExperimentContext(submissionId);
             String teacherComment = buildTeacherComment(submission, scores, dimensionNames, experimentContext);
             AnnotatedReportArtifact artifact = createAnnotatedReport(submission, scores, teacherComment);
+            // Generate and persist error demonstrations alongside the annotated report
+            persistErrorDemonstrations(submission, scores);
             return preparedReportResult(submission, artifact);
         }
+
+        // Even if review and report already exist, ensure error demonstrations are persisted
+        persistErrorDemonstrationsIfNeeded(submissionId);
 
         ReportFileEntity preferredReport = selectPreferredReport(submissionId);
         Map<String, Object> result = new LinkedHashMap<>();
@@ -527,6 +564,37 @@ public class GradingSubmissionService {
         result.put("studentId", student.getStudent_id());
         result.put("publishedScore", publishedScore);
         result.put("report", report);
+    }
+
+    /**
+     * Generate error demonstrations from scores/evidence and persist JSON to the submission.
+     * Called during auto-finalization so the data is ready before the teacher opens the detail page.
+     */
+    private void persistErrorDemonstrations(GradingSubmissionEntity submission, List<ScoreItemEntity> scores) {
+        try {
+            List<EvidenceBlockEntity> evidence = evidenceRepo.findAllBySubmissionId(submission.getId());
+            List<GradingErrorDemonstrationService.ErrorDemonstration> demos =
+                    errorDemonstrationService.buildDemonstrations(submission, scores, evidence);
+            submission.setErrorDemonstrationsJson(objectMapper.writeValueAsString(demos));
+            submissionRepo.save(submission);
+            log.info("Persisted {} error demonstrations for submission {}", demos.size(), submission.getId());
+        } catch (Exception e) {
+            log.warn("Failed to persist error demonstrations for submission {}: {}",
+                    submission.getId(), e.getMessage());
+        }
+    }
+
+    /**
+     * If the submission does not yet have persisted error demonstrations, generate and save them now.
+     */
+    private void persistErrorDemonstrationsIfNeeded(Long submissionId) {
+        GradingSubmissionEntity submission = submissionRepo.findById(submissionId).orElse(null);
+        if (submission == null) return;
+        if (submission.getErrorDemonstrationsJson() != null && !submission.getErrorDemonstrationsJson().isBlank()) {
+            return; // already persisted
+        }
+        List<ScoreItemEntity> scores = scoreItemRepo.findAllBySubmissionId(submissionId);
+        persistErrorDemonstrations(submission, scores);
     }
 
     private AnnotatedReportArtifact createAnnotatedReport(GradingSubmissionEntity submission,
