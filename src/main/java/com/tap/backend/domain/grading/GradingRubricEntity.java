@@ -32,6 +32,15 @@ public class GradingRubricEntity {
     @Column(name = "custom_prompt", columnDefinition = "text")
     private String customPrompt;
 
+    @Column(name = "image_object_key", length = 512)
+    private String imageObjectKey;
+
+    @Column(name = "image_parsed_at")
+    private Instant imageParsedAt;
+
+    @Column(name = "image_parsed_json", columnDefinition = "json")
+    private String imageParsedJson;
+
     @OneToMany(mappedBy = "rubric", cascade = CascadeType.ALL, orphanRemoval = true)
     @OrderBy("sortOrder ASC")
     private List<RubricDimensionEntity> dimensions = new ArrayList<>();
@@ -65,6 +74,12 @@ public class GradingRubricEntity {
     public void setDescription(String description) { this.description = description; }
     public String getCustomPrompt() { return customPrompt; }
     public void setCustomPrompt(String customPrompt) { this.customPrompt = customPrompt; }
+    public String getImageObjectKey() { return imageObjectKey; }
+    public void setImageObjectKey(String imageObjectKey) { this.imageObjectKey = imageObjectKey; }
+    public Instant getImageParsedAt() { return imageParsedAt; }
+    public void setImageParsedAt(Instant imageParsedAt) { this.imageParsedAt = imageParsedAt; }
+    public String getImageParsedJson() { return imageParsedJson; }
+    public void setImageParsedJson(String imageParsedJson) { this.imageParsedJson = imageParsedJson; }
     public List<RubricDimensionEntity> getDimensions() { return dimensions; }
     public void setDimensions(List<RubricDimensionEntity> dimensions) { this.dimensions = dimensions; }
     public Instant getCreatedAt() { return createdAt; }

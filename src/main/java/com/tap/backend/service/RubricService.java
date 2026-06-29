@@ -2,14 +2,20 @@ package com.tap.backend.service;
 
 import com.tap.backend.domain.grading.*;
 import com.tap.backend.domain.user.UserEntity;
+import com.tap.backend.infra.storage.ObjectStorageService;
 import com.tap.backend.repo.GradingRubricRepository;
 import com.tap.backend.repo.GradingTaskRepository;
 import com.tap.backend.repo.UserRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
+import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 @Service
 public class RubricService {
@@ -17,13 +23,19 @@ public class RubricService {
     private final GradingRubricRepository rubricRepo;
     private final GradingTaskRepository taskRepo;
     private final UserRepository userRepo;
+    private final GradingWorkerClient workerClient;
+    private final ObjectStorageService objectStorage;
 
     public RubricService(GradingRubricRepository rubricRepo,
                          GradingTaskRepository taskRepo,
-                         UserRepository userRepo) {
+                         UserRepository userRepo,
+                         GradingWorkerClient workerClient,
+                         ObjectStorageService objectStorage) {
         this.rubricRepo = rubricRepo;
         this.taskRepo = taskRepo;
         this.userRepo = userRepo;
+        this.workerClient = workerClient;
+        this.objectStorage = objectStorage;
     }
 
     @Transactional
@@ -44,6 +56,69 @@ public class RubricService {
 
         for (int i = 0; i < dimensions.size(); i++) {
             DimensionInput d = dimensions.get(i);
+            RubricDimensionEntity dim = new RubricDimensionEntity();
+            dim.setRubric(rubric);
+            dim.setName(d.name());
+            dim.setDescription(d.description());
+            dim.setMaxScore(d.maxScore());
+            dim.setWeight(d.weight());
+            dim.setSortOrder(i);
+            rubric.getDimensions().add(dim);
+        }
+
+        return rubricRepo.save(rubric);
+    }
+
+    @Transactional
+    public GradingRubricEntity createFromImage(Long teacherId, MultipartFile image,
+                                                String nameHint, String subjectHint,
+                                                String descriptionHint, String customPromptHint) {
+        GradingWorkerClient.ParseRubricResult parsed = workerClient.parseRubricImage(image);
+        if (parsed.getDimensions().isEmpty()) {
+            throw new IllegalArgumentException("Could not parse any scoring dimensions from the image");
+        }
+
+        List<DimensionInput> inputs = new ArrayList<>();
+        for (GradingWorkerClient.ParseRubricResult.Dimension d : parsed.getDimensions()) {
+            if (d.getName() == null || d.getName().isBlank() || d.getMaxScore() == null) {
+                continue;
+            }
+            inputs.add(new DimensionInput(d.getName(), d.getDescription(), d.getMaxScore(), d.getWeight()));
+        }
+        if (inputs.isEmpty()) {
+            throw new IllegalArgumentException("Parsed dimensions are invalid");
+        }
+        validateDimensions(inputs);
+
+        // Upload image to object storage
+        String ext = resolveImageExtension(image.getOriginalFilename());
+        String objectKey = "rubrics/" + teacherId + "/" + UUID.randomUUID() + ext;
+        try {
+            objectStorage.putBytes(objectKey, image.getBytes(), image.getContentType() != null ? image.getContentType() : "image/png");
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to upload rubric image", e);
+        }
+
+        String rubricName = firstNonBlank(nameHint, parsed.getRubricName(), "实验报告评分标准");
+        String subject = firstNonBlank(subjectHint, "实验课程");
+        String description = firstNonBlank(descriptionHint,
+                "由评分表图片自动解析生成的量规。原始总分：" + parsed.getTotalScore() + "。", "");
+
+        UserEntity teacher = userRepo.findById(teacherId)
+                .orElseThrow(() -> new IllegalArgumentException("Teacher not found"));
+
+        GradingRubricEntity rubric = new GradingRubricEntity();
+        rubric.setTeacher(teacher);
+        rubric.setName(rubricName);
+        rubric.setSubject(subject);
+        rubric.setDescription(description);
+        rubric.setCustomPrompt(customPromptHint);
+        rubric.setImageObjectKey(objectKey);
+        rubric.setImageParsedAt(Instant.now());
+        rubric.setImageParsedJson(parsed.getRawJson());
+
+        for (int i = 0; i < inputs.size(); i++) {
+            DimensionInput d = inputs.get(i);
             RubricDimensionEntity dim = new RubricDimensionEntity();
             dim.setRubric(rubric);
             dim.setName(d.name());
@@ -144,4 +219,25 @@ public class RubricService {
 
     public record DimensionInput(String name, String description,
                                   java.math.BigDecimal maxScore, Integer weight) {}
+
+    private static String resolveImageExtension(String filename) {
+        if (filename == null) {
+            return ".png";
+        }
+        String lower = filename.toLowerCase();
+        if (lower.endsWith(".png")) return ".png";
+        if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return ".jpg";
+        if (lower.endsWith(".gif")) return ".gif";
+        if (lower.endsWith(".webp")) return ".webp";
+        return ".png";
+    }
+
+    private static String firstNonBlank(String... values) {
+        for (String v : values) {
+            if (v != null && !v.isBlank()) {
+                return v;
+            }
+        }
+        return "";
+    }
 }

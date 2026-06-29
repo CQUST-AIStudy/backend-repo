@@ -1,305 +1,205 @@
 package com.tap.backend.service.grading.animation;
 
-import com.tap.backend.service.grading.animation.ErrorParameterExtractor.ArrayBoundsParams;
-import com.tap.backend.service.grading.animation.ErrorParameterExtractor.PointerParams;
+import com.tap.backend.service.grading.animation.execution.CodeExecutionSandboxService;
+import com.tap.backend.service.grading.animation.execution.ExecutionTrace;
+import com.tap.backend.service.grading.animation.execution.TraceStep;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
  * Python Tutor 式代码执行可视化工作流。
- * 基于真实 anchor_text 和完整代码上下文提取参数，生成 trace。
+ * <p>
+ * 基于真实代码执行得到的 trace，生成教学动画数据。
+ * 不再使用以前基于规则手工构造步骤的伪执行方式。
  */
 @Component
 public class PythonTutorWorkflow {
 
-    private final ErrorParameterExtractor parameterExtractor;
+    private static final Logger log = LoggerFactory.getLogger(PythonTutorWorkflow.class);
 
-    public PythonTutorWorkflow(ErrorParameterExtractor parameterExtractor) {
-        this.parameterExtractor = parameterExtractor;
+    private final CodeExecutionSandboxService sandboxService;
+
+    public PythonTutorWorkflow(CodeExecutionSandboxService sandboxService) {
+        this.sandboxService = sandboxService;
     }
 
     public AnimationResult generate(AnimationCandidate candidate, int index) {
-        ErrorPatternDetector.ErrorType type = candidate.detectedErrorType();
-        if (type == null) {
-            type = ErrorPatternDetector.ErrorType.GENERIC_HIGHLIGHT;
+        CodeContext ctx = candidate.codeContext();
+        String sourceCode = ctx == null ? candidate.anchor() : ctx.fullCode();
+        int anchorLine = ctx == null ? 1 : ctx.relativeAnchorLine();
+        ErrorPatternDetector.ErrorType errorType = candidate.detectedErrorType();
+        if (errorType == null) {
+            errorType = ErrorPatternDetector.ErrorType.GENERIC_HIGHLIGHT;
         }
 
-        return switch (type) {
-            case ARRAY_BOUNDS -> buildArrayBounds(candidate);
-            case INVALID_POINTER -> buildInvalidPointer(candidate);
-            case INFINITE_LOOP -> buildInfiniteLoop(candidate);
-            case MEMORY_LEAK -> buildMemoryLeak(candidate);
-            case RECURSION -> buildRecursion(candidate);
-            case RUNTIME_ERROR -> buildRuntimeError(candidate);
-            case TYPE_ERROR -> buildTypeError(candidate);
-            case LOGIC_ERROR -> buildLogicError(candidate);
-            default -> buildGenericCodeTrace(candidate);
+        // 1. 真实执行代码
+        ExecutionTrace trace = sandboxService.execute("c", sourceCode, buildStdin(candidate));
+
+        if (!trace.success()) {
+            log.warn("PYTHON_TUTOR 真实执行失败，回退: {}", trace.errorMessage());
+            return fallbackResult(candidate, anchorLine, trace.errorMessage());
+        }
+
+        // 2. 找到错误步骤
+        int errorStepIndex = findErrorStepIndex(trace, anchorLine, errorType);
+
+        // 3. 生成解释文本
+        String explanation = buildExplanation(candidate, errorType, trace, errorStepIndex);
+        String correctedCode = buildCorrectedCode(candidate, errorType);
+
+        // 4. 组装结果
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("errorType", errorType.name());
+        metadata.put("dataStructure", mapToDataStructure(errorType));
+        metadata.put("sourceCode", sourceCode);
+        metadata.put("correctedCode", correctedCode);
+        metadata.put("errorLine", anchorLine);
+        metadata.put("errorStepIndex", errorStepIndex);
+        metadata.put("trace", trace.toFrameList());
+
+        return new AnimationResult(
+                AnimationWorkflow.PYTHON_TUTOR.name(),
+                buildTitle(candidate, errorType),
+                explanation,
+                trace.toFrameList(),
+                metadata
+        );
+    }
+
+    private int findErrorStepIndex(ExecutionTrace trace, int anchorLine,
+                                   ErrorPatternDetector.ErrorType errorType) {
+        List<TraceStep> steps = trace.steps();
+        if (steps == null || steps.isEmpty()) {
+            return -1;
+        }
+
+        // 优先使用 trace 中标记为 error 的步骤
+        for (int i = 0; i < steps.size(); i++) {
+            if (steps.get(i).error()) {
+                return i;
+            }
+        }
+
+        // 否则回退到 anchor 所在行对应的步骤
+        for (int i = 0; i < steps.size(); i++) {
+            if (steps.get(i).line() == anchorLine) {
+                return i;
+            }
+        }
+
+        // 对于数组越界，尝试找到 i >= n 的那一步
+        if (errorType == ErrorPatternDetector.ErrorType.ARRAY_BOUNDS) {
+            Integer n = extractIntVariable(steps, "n");
+            if (n != null) {
+                for (int i = 0; i < steps.size(); i++) {
+                    Integer idx = extractIntVariable(steps.subList(0, i + 1), "i");
+                    if (idx != null && idx >= n) {
+                        return i;
+                    }
+                }
+            }
+        }
+
+        return steps.size() - 1;
+    }
+
+    private String buildStdin(AnimationCandidate candidate) {
+        // 如果题目或实验上下文提供了输入数据，可以在这里注入。
+        // 目前先返回空输入，后续可从 problemContext 或测试用例中提取。
+        return "";
+    }
+
+    private String buildExplanation(AnimationCandidate candidate,
+                                    ErrorPatternDetector.ErrorType errorType,
+                                    ExecutionTrace trace,
+                                    int errorStepIndex) {
+        ProblemContext problem = candidate.problemContext();
+        String title = problem == null || problem.experimentTitle() == null
+                ? "该实验" : "「" + problem.experimentTitle() + "」";
+
+        String base = candidate.note();
+        if (base == null || base.isBlank()) {
+            base = switch (errorType) {
+                case ARRAY_BOUNDS -> "数组访问超出了合法范围";
+                case INVALID_POINTER -> "指针未指向有效内存";
+                case INFINITE_LOOP -> "程序陷入死循环";
+                case MEMORY_LEAK -> "动态分配的内存未释放";
+                case RECURSION -> "递归调用缺少终止条件或层次过深";
+                case RUNTIME_ERROR -> "程序运行时异常";
+                case TYPE_ERROR -> "类型不匹配";
+                case LOGIC_ERROR -> "逻辑错误导致结果不正确";
+                default -> "代码执行出现错误";
+            };
+        }
+
+        String stepInfo = "";
+        List<TraceStep> steps = trace.steps();
+        if (errorStepIndex >= 0 && errorStepIndex < steps.size()) {
+            TraceStep step = steps.get(errorStepIndex);
+            stepInfo = String.format("（执行到第 %d 步，源代码第 %d 行）", step.step(), step.line());
+        }
+
+        return title + "中，" + base + stepInfo;
+    }
+
+    private String buildCorrectedCode(AnimationCandidate candidate,
+                                      ErrorPatternDetector.ErrorType errorType) {
+        CodeContext ctx = candidate.codeContext();
+        String anchor = candidate.anchor();
+        String sourceCode = ctx == null ? anchor : ctx.fullCode();
+
+        return switch (errorType) {
+            case ARRAY_BOUNDS -> {
+                // 把 <= n 改为 < n，或把 i < n+1 改为 i < n
+                String corrected = sourceCode.replace("<= n", "< n");
+                if (corrected.equals(sourceCode)) {
+                    corrected = sourceCode.replace("< n + 1", "< n");
+                }
+                yield corrected.equals(sourceCode) ? "请检查数组访问下标是否越界" : corrected;
+            }
+            case INVALID_POINTER -> "请确保指针在使用前已指向有效内存，例如：\nint *p = &target;\n*p = value;";
+            case INFINITE_LOOP -> "请检查循环变量是否在循环体内更新，确保终止条件最终成立。";
+            case MEMORY_LEAK -> "请在不再使用动态内存时调用 free(ptr)，并将 ptr 置为 NULL。";
+            case RECURSION -> "请确保递归函数有明确的终止条件，并控制递归深度。";
+            case RUNTIME_ERROR -> "请根据异常信息检查输入、类型和运行环境。";
+            case TYPE_ERROR -> "请检查类型匹配，必要时进行显式类型转换。";
+            case LOGIC_ERROR -> "请重新梳理解题逻辑，验证边界条件。";
+            default -> candidate.note() != null ? candidate.note() : "请根据批注修正代码。";
         };
     }
 
-    private AnimationResult buildArrayBounds(AnimationCandidate candidate) {
+    private AnimationResult fallbackResult(AnimationCandidate candidate, int anchorLine, String reason) {
         CodeContext ctx = candidate.codeContext();
-        String anchor = candidate.anchor();
-        String contextCode = ctx == null ? anchor : ctx.fullCode();
-        ArrayBoundsParams params = parameterExtractor.extractArrayBounds(anchor, contextCode);
-        List<String> values = parameterExtractor.extractArrayLiteralValues(contextCode);
-        int arraySize = params.arraySize();
-
-        List<Map<String, Object>> steps = new ArrayList<>();
-        int anchorLine = ctx == null ? 1 : ctx.relativeAnchorLine();
-
-        for (int i = 0; i < arraySize; i++) {
-            steps.add(buildStep(i + 1, anchorLine,
-                    "i = " + i + "，访问 arr[" + i + "]",
-                    Map.of("i", String.valueOf(i), "n", String.valueOf(arraySize)),
-                    arrayState(values, arraySize, i, false),
-                    false));
+        String sourceCode = ctx == null ? candidate.anchor() : ctx.fullCode();
+        ErrorPatternDetector.ErrorType errorType = candidate.detectedErrorType();
+        if (errorType == null) {
+            errorType = ErrorPatternDetector.ErrorType.GENERIC_HIGHLIGHT;
         }
 
-        if (params.isInclusive() && params.loopUpperBound() >= arraySize) {
-            steps.add(buildStep(arraySize + 1, anchorLine,
-                    "条件 i <= " + params.loopUpperBound() + " 仍成立，访问 arr[" + arraySize + "] 导致越界",
-                    Map.of("i", String.valueOf(arraySize), "n", String.valueOf(arraySize)),
-                    arrayState(values, arraySize, arraySize, true),
-                    true));
-        }
-
-        String corrected = buildCorrectedLoop(anchor, params.isInclusive());
-        return new AnimationResult(
-                AnimationWorkflow.PYTHON_TUTOR.name(),
-                "数组越界：循环终止条件有误",
-                buildExplanation(candidate, "数组越界"),
-                steps,
-                Map.of(
-                        "errorType", "ARRAY_BOUNDS",
-                        "dataStructure", "array",
-                        "sourceCode", ctx == null ? anchor : ctx.fullCode(),
-                        "correctedCode", corrected,
-                        "errorLine", anchorLine,
-                        "arraySize", arraySize
-                )
-        );
-    }
-
-    private AnimationResult buildInvalidPointer(AnimationCandidate candidate) {
-        CodeContext ctx = candidate.codeContext();
-        String anchor = candidate.anchor();
-        String contextCode = ctx == null ? anchor : ctx.fullCode();
-        PointerParams params = parameterExtractor.extractPointer(anchor, contextCode);
-        int anchorLine = ctx == null ? 1 : ctx.relativeAnchorLine();
-
         List<Map<String, Object>> steps = new ArrayList<>();
-        steps.add(buildStep(1, anchorLine,
-                "声明指针 " + params.pointerVar() + "，但尚未指向有效内存",
-                Map.of(params.pointerVar(), "未初始化"),
-                pointerState(params.pointerVar(), null, false),
-                false));
-        steps.add(buildStep(2, anchorLine + 1,
-                "执行 *" + params.dereferenceVar() + " 时，程序尝试访问未知地址",
-                Map.of(params.pointerVar(), "未知地址"),
-                pointerState(params.pointerVar(), "未知地址", true),
-                true));
+        steps.add(buildStep(1, anchorLine, "执行到错误位置", Map.of(), Map.of("dataStructure", "code", "nodes", List.of(), "edges", List.of()), true));
+
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("errorType", errorType.name());
+        metadata.put("dataStructure", "code");
+        metadata.put("sourceCode", sourceCode);
+        metadata.put("correctedCode", candidate.note());
+        metadata.put("errorLine", anchorLine);
+        metadata.put("errorStepIndex", 0);
+        metadata.put("trace", steps);
+        metadata.put("fallbackReason", reason);
 
         return new AnimationResult(
                 AnimationWorkflow.PYTHON_TUTOR.name(),
-                "未初始化指针：解引用未知地址",
-                buildExplanation(candidate, "空指针/未初始化指针"),
+                buildTitle(candidate, errorType),
+                candidate.note() != null ? candidate.note() : "真实执行失败：" + reason,
                 steps,
-                Map.of(
-                        "errorType", "INVALID_POINTER",
-                        "dataStructure", "pointer",
-                        "sourceCode", ctx == null ? anchor : ctx.fullCode(),
-                        "correctedCode", "int " + params.pointerVar() + " = &target;\n*" + params.pointerVar() + " = value;",
-                        "errorLine", anchorLine
-                )
-        );
-    }
-
-    private AnimationResult buildInfiniteLoop(AnimationCandidate candidate) {
-        CodeContext ctx = candidate.codeContext();
-        String anchor = candidate.anchor();
-        int anchorLine = ctx == null ? 1 : ctx.relativeAnchorLine();
-        ErrorParameterExtractor.LoopParams params = parameterExtractor.extractLoop(anchor);
-
-        List<Map<String, Object>> steps = new ArrayList<>();
-        for (int i = 0; i < 5; i++) {
-            steps.add(buildStep(i + 1, anchorLine,
-                    "第 " + (i + 1) + " 次迭代，循环条件仍成立：" + params.condition(),
-                    Map.of("iteration", String.valueOf(i + 1)),
-                    loopState(params.condition(), false),
-                    false));
-        }
-        steps.add(buildStep(6, anchorLine,
-                "循环条件始终为真，程序无法退出循环",
-                Map.of("状态", "死循环"),
-                loopState(params.condition(), true),
-                true));
-
-        return new AnimationResult(
-                AnimationWorkflow.PYTHON_TUTOR.name(),
-                "死循环：循环终止条件永远为真",
-                buildExplanation(candidate, "死循环"),
-                steps,
-                Map.of(
-                        "errorType", "INFINITE_LOOP",
-                        "dataStructure", "loop",
-                        "sourceCode", ctx == null ? anchor : ctx.fullCode(),
-                        "correctedCode", "检查循环变量更新，确保条件最终能变为假",
-                        "errorLine", anchorLine
-                )
-        );
-    }
-
-    private AnimationResult buildMemoryLeak(AnimationCandidate candidate) {
-        CodeContext ctx = candidate.codeContext();
-        String anchor = candidate.anchor();
-        int anchorLine = ctx == null ? 1 : ctx.relativeAnchorLine();
-
-        List<Map<String, Object>> steps = new ArrayList<>();
-        steps.add(buildStep(1, anchorLine,
-                "调用 malloc 分配了一块堆内存",
-                Map.of("heap", "已分配 1 块"),
-                heapState(1, false),
-                false));
-        steps.add(buildStep(2, anchorLine + 1,
-                "程序退出前没有调用 free 释放，造成内存泄漏",
-                Map.of("heap", "1 块未释放"),
-                heapState(1, true),
-                true));
-
-        return new AnimationResult(
-                AnimationWorkflow.PYTHON_TUTOR.name(),
-                "内存泄漏：动态分配未释放",
-                buildExplanation(candidate, "内存泄漏"),
-                steps,
-                Map.of(
-                        "errorType", "MEMORY_LEAK",
-                        "dataStructure", "heap",
-                        "sourceCode", ctx == null ? anchor : ctx.fullCode(),
-                        "correctedCode", "free(ptr);\nptr = NULL;",
-                        "errorLine", anchorLine
-                )
-        );
-    }
-
-    private AnimationResult buildRecursion(AnimationCandidate candidate) {
-        CodeContext ctx = candidate.codeContext();
-        String anchor = candidate.anchor();
-        int anchorLine = ctx == null ? 1 : ctx.relativeAnchorLine();
-
-        List<Map<String, Object>> steps = new ArrayList<>();
-        for (int i = 0; i < 4; i++) {
-            steps.add(buildStep(i + 1, anchorLine,
-                    "递归调用第 " + (i + 1) + " 层",
-                    Map.of("depth", String.valueOf(i + 1), "call", "f(" + (i + 1) + ")"),
-                    recursionState(i + 1, false),
-                    false));
-        }
-        steps.add(buildStep(5, anchorLine,
-                "递归层次过深或缺少有效终止条件，可能导致栈溢出",
-                Map.of("depth", "过深", "call", "..."),
-                recursionState(4, true),
-                true));
-
-        return new AnimationResult(
-                AnimationWorkflow.PYTHON_TUTOR.name(),
-                "递归错误：终止条件或递归深度问题",
-                buildExplanation(candidate, "递归错误"),
-                steps,
-                Map.of(
-                        "errorType", "RECURSION",
-                        "dataStructure", "tree",
-                        "sourceCode", ctx == null ? anchor : ctx.fullCode(),
-                        "correctedCode", "确保递归有明确的终止条件，并控制递归深度",
-                        "errorLine", anchorLine
-                )
-        );
-    }
-
-    private AnimationResult buildRuntimeError(AnimationCandidate candidate) {
-        CodeContext ctx = candidate.codeContext();
-        String anchor = candidate.anchor();
-        int anchorLine = ctx == null ? 1 : ctx.relativeAnchorLine();
-
-        List<Map<String, Object>> steps = new ArrayList<>();
-        steps.add(buildStep(1, anchorLine,
-                "程序执行到该语句",
-                Map.of("状态", "运行中"),
-                genericState(false),
-                false));
-        steps.add(buildStep(2, anchorLine,
-                "运行时异常触发，程序无法继续",
-                Map.of("状态", "异常终止"),
-                genericState(true),
-                true));
-
-        return new AnimationResult(
-                AnimationWorkflow.PYTHON_TUTOR.name(),
-                "运行时错误",
-                buildExplanation(candidate, "运行时错误"),
-                steps,
-                Map.of(
-                        "errorType", "RUNTIME_ERROR",
-                        "dataStructure", "code",
-                        "sourceCode", ctx == null ? anchor : ctx.fullCode(),
-                        "correctedCode", "请根据异常信息检查该语句的输入和环境",
-                        "errorLine", anchorLine
-                )
-        );
-    }
-
-    private AnimationResult buildTypeError(AnimationCandidate candidate) {
-        return buildSimpleError(candidate, "类型错误", "TYPE_ERROR", "code",
-                "检查类型匹配，必要时进行显式类型转换");
-    }
-
-    private AnimationResult buildLogicError(AnimationCandidate candidate) {
-        return buildSimpleError(candidate, "逻辑错误", "LOGIC_ERROR", "code",
-                "重新梳理解题逻辑，验证边界条件");
-    }
-
-    private AnimationResult buildGenericCodeTrace(AnimationCandidate candidate) {
-        return buildSimpleError(candidate, "代码执行错误", "CODE_ERROR", "code",
-                "请根据批注修正该语句后重新运行");
-    }
-
-    private AnimationResult buildSimpleError(AnimationCandidate candidate,
-                                             String title,
-                                             String errorType,
-                                             String dataStructure,
-                                             String corrected) {
-        CodeContext ctx = candidate.codeContext();
-        String anchor = candidate.anchor();
-        int anchorLine = ctx == null ? 1 : ctx.relativeAnchorLine();
-
-        List<Map<String, Object>> steps = new ArrayList<>();
-        steps.add(buildStep(1, anchorLine,
-                "执行到错误语句",
-                Map.of("状态", "运行中"),
-                genericState(false),
-                false));
-        steps.add(buildStep(2, anchorLine,
-                candidate.note(),
-                Map.of("状态", "异常"),
-                genericState(true),
-                true));
-
-        return new AnimationResult(
-                AnimationWorkflow.PYTHON_TUTOR.name(),
-                title,
-                buildExplanation(candidate, title),
-                steps,
-                Map.of(
-                        "errorType", errorType,
-                        "dataStructure", dataStructure,
-                        "sourceCode", ctx == null ? anchor : ctx.fullCode(),
-                        "correctedCode", corrected,
-                        "errorLine", anchorLine
-                )
+                metadata
         );
     }
 
@@ -316,87 +216,46 @@ public class PythonTutorWorkflow {
         return step;
     }
 
-    private Map<String, Object> arrayState(List<String> values, int size, int activeIndex, boolean outOfBounds) {
-        List<Map<String, Object>> nodes = new ArrayList<>();
-        for (int i = 0; i < size; i++) {
-            nodes.add(Map.of(
-                    "id", "arr" + i,
-                    "label", "arr[" + i + "]",
-                    "value", i < values.size() ? values.get(i) : String.valueOf((i + 1) * 10),
-                    "active", i == activeIndex,
-                    "outOfBounds", false,
-                    "index", i
-            ));
-        }
-        if (outOfBounds) {
-            nodes.add(Map.of(
-                    "id", "arr" + size,
-                    "label", "arr[" + size + "]",
-                    "value", "越界",
-                    "active", true,
-                    "outOfBounds", true,
-                    "index", size
-            ));
-        }
-        return Map.of("dataStructure", "array", "nodes", nodes, "edges", List.of());
+    private String buildTitle(AnimationCandidate candidate, ErrorPatternDetector.ErrorType type) {
+        String name = type == null ? "代码错误" : switch (type) {
+            case ARRAY_BOUNDS -> "数组越界";
+            case INVALID_POINTER -> "指针错误";
+            case INFINITE_LOOP -> "死循环";
+            case MEMORY_LEAK -> "内存泄漏";
+            case RECURSION -> "递归错误";
+            case RUNTIME_ERROR -> "运行时错误";
+            case TYPE_ERROR -> "类型错误";
+            case LOGIC_ERROR -> "逻辑错误";
+            default -> "代码错误";
+        };
+        return name + "演示";
     }
 
-    private Map<String, Object> pointerState(String pointerVar, String target, boolean error) {
-        List<Map<String, Object>> nodes = new ArrayList<>();
-        nodes.add(Map.of("id", "ptr", "label", pointerVar, "value", target == null ? "?" : target, "active", true));
-        if (target != null) {
-            nodes.add(Map.of("id", "target", "label", target, "value", "未知", "active", error));
+    private String mapToDataStructure(ErrorPatternDetector.ErrorType type) {
+        if (type == null) return "code";
+        return switch (type) {
+            case ARRAY_BOUNDS -> "array";
+            case INVALID_POINTER -> "pointer";
+            case INFINITE_LOOP -> "loop";
+            case MEMORY_LEAK -> "heap";
+            case RECURSION -> "tree";
+            default -> "code";
+        };
+    }
+
+    @SuppressWarnings("unchecked")
+    private Integer extractIntVariable(List<TraceStep> steps, String varName) {
+        if (steps == null || steps.isEmpty()) {
+            return null;
         }
-        List<Map<String, Object>> edges = new ArrayList<>();
-        if (target != null) {
-            edges.add(Map.of("from", "ptr", "to", "target", "label", "指向"));
+        TraceStep last = steps.get(steps.size() - 1);
+        Object value = last.locals().get(varName);
+        if (value instanceof Integer) {
+            return (Integer) value;
         }
-        return Map.of("dataStructure", "pointer", "nodes", nodes, "edges", edges);
-    }
-
-    private Map<String, Object> loopState(String condition, boolean error) {
-        List<Map<String, Object>> nodes = List.of(
-                Map.of("id", "loop", "label", "循环", "value", condition, "active", true)
-        );
-        return Map.of("dataStructure", "loop", "nodes", nodes, "edges", List.of());
-    }
-
-    private Map<String, Object> heapState(int blocks, boolean leaked) {
-        List<Map<String, Object>> nodes = new ArrayList<>();
-        for (int i = 0; i < blocks; i++) {
-            nodes.add(Map.of("id", "heap" + i, "label", "heap[" + i + "]", "value", leaked ? "未释放" : "已分配", "active", true));
+        if (value instanceof Number) {
+            return ((Number) value).intValue();
         }
-        return Map.of("dataStructure", "heap", "nodes", nodes, "edges", List.of());
-    }
-
-    private Map<String, Object> recursionState(int depth, boolean error) {
-        List<Map<String, Object>> nodes = new ArrayList<>();
-        List<Map<String, Object>> edges = new ArrayList<>();
-        for (int i = 0; i < depth; i++) {
-            nodes.add(Map.of("id", "call" + i, "label", "f(" + (i + 1) + ")", "value", "调用中", "active", i == depth - 1));
-            if (i > 0) {
-                edges.add(Map.of("from", "call" + (i - 1), "to", "call" + i, "label", "调用"));
-            }
-        }
-        return Map.of("dataStructure", "tree", "nodes", nodes, "edges", edges);
-    }
-
-    private Map<String, Object> genericState(boolean error) {
-        return Map.of("dataStructure", "code", "nodes", List.of(), "edges", List.of());
-    }
-
-    private String buildExplanation(AnimationCandidate candidate, String errorLabel) {
-        ProblemContext problem = candidate.problemContext();
-        String title = problem == null || problem.experimentTitle() == null
-                ? "该实验" : "「" + problem.experimentTitle() + "」";
-        return title + "中，" + errorLabel + "：" + candidate.note();
-    }
-
-    private String buildCorrectedLoop(String anchor, boolean isInclusive) {
-        if (anchor == null) return "for (int i = 0; i < n; i++) { ... }";
-        if (isInclusive) {
-            return anchor.replace("<=", "<");
-        }
-        return anchor;
+        return null;
     }
 }

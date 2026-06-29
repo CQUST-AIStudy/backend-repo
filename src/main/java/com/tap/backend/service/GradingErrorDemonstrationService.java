@@ -28,6 +28,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Collectors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 /**
@@ -36,6 +38,8 @@ import org.springframework.stereotype.Service;
  */
 @Service
 public class GradingErrorDemonstrationService {
+
+    private static final Logger log = LoggerFactory.getLogger(GradingErrorDemonstrationService.class);
 
     private static final int MAX_DEMONSTRATIONS = 4;
 
@@ -334,11 +338,31 @@ public class GradingErrorDemonstrationService {
     private AnimationResult executeWorkflow(AnimationWorkflow workflow, AnimationCandidate candidate, int index) {
         return switch (workflow) {
             case CODE_HIGHLIGHT -> codeHighlightWorkflow.generate(candidate, index);
-            case PYTHON_TUTOR -> pythonTutorWorkflow.generate(candidate, index);
+            case PYTHON_TUTOR -> {
+                AnimationResult ptResult = pythonTutorWorkflow.generate(candidate, index);
+                // 真实执行失败或没有 trace 步骤时，回退到代码高亮
+                if (isPythonTutorFallback(ptResult)) {
+                    log.warn("PYTHON_TUTOR 回退到 CODE_HIGHLIGHT: candidate={}", candidate.anchor());
+                    yield codeHighlightWorkflow.generate(candidate, index);
+                }
+                yield ptResult;
+            }
             case HTML_ANIMATION -> htmlAnimationWorkflow.generate(candidate, index);
             case RESULT_COMPARE -> resultCompareWorkflow.generate(candidate, index);
             case GENERIC_HIGHLIGHT -> genericHighlightWorkflow.generate(candidate, index);
         };
+    }
+
+    private boolean isPythonTutorFallback(AnimationResult result) {
+        if (result == null) {
+            return true;
+        }
+        List<?> frames = result.frames();
+        if (frames == null || frames.isEmpty()) {
+            return true;
+        }
+        Object reason = result.metadata().get("fallbackReason");
+        return reason != null && !reason.toString().isBlank();
     }
 
     private ErrorDemonstration toErrorDemonstration(AnimationCandidate candidate,

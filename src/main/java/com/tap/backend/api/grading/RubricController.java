@@ -67,6 +67,27 @@ public class RubricController {
         }
     }
 
+    @PostMapping("/from-image")
+    public ResponseEntity<?> createFromImage(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @RequestParam("image") MultipartFile image,
+            @RequestParam(value = "name", required = false) String name,
+            @RequestParam(value = "subject", required = false) String subject,
+            @RequestParam(value = "description", required = false) String description,
+            @RequestParam(value = "customPrompt", required = false) String customPrompt
+    ) {
+        Long teacherId = teacherPrincipalResolver.requireTeacherId(principal);
+        try {
+            var rubric = rubricService.createFromImage(
+                    teacherId, image, name, subject, description, customPrompt);
+            return ResponseEntity.ok(ApiResponse.of(toDto(rubric)));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+        } catch (IllegalStateException e) {
+            return ResponseEntity.status(502).body(Map.of("message", e.getMessage()));
+        }
+    }
+
     @PostMapping
     public ResponseEntity<?> create(
             @AuthenticationPrincipal UserPrincipal principal,
@@ -153,6 +174,8 @@ public class RubricController {
         dto.put("subject", rubric.getSubject() != null ? rubric.getSubject() : "");
         dto.put("description", rubric.getDescription() != null ? rubric.getDescription() : "");
         dto.put("customPrompt", rubric.getCustomPrompt() != null ? rubric.getCustomPrompt() : "");
+        dto.put("imageObjectKey", rubric.getImageObjectKey() != null ? rubric.getImageObjectKey() : "");
+        dto.put("imageParsedAt", rubric.getImageParsedAt() != null ? rubric.getImageParsedAt().toString() : "");
         dto.put("createdAt", rubric.getCreatedAt().toString());
         dto.put("dimensions", rubric.getDimensions().stream().map(this::toDimensionDto).toList());
         return dto;

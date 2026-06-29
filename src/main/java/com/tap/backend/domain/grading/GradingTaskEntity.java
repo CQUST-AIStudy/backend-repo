@@ -44,7 +44,7 @@ public class GradingTaskEntity {
     private java.math.BigDecimal scoreRangeMax;
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "status", nullable = false, length = 16)
+    @Column(name = "status", nullable = false, length = 24)
     private GradingTaskStatus status = GradingTaskStatus.PENDING;
 
     @Column(name = "total_count", nullable = false)

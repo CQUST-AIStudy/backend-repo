@@ -28,6 +28,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
 import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -945,21 +946,84 @@ public class AnnotatedStudentReportService {
     private Map<String, BigDecimal> normalizeCourseObjectiveScores(Map<String, BigDecimal> rawScoreByLabel,
                                                                    Map<String, BigDecimal> maxScoreByLabel,
                                                                    BigDecimal totalScore) {
-        if (rawScoreByLabel == null || rawScoreByLabel.isEmpty()) {
-            return rawScoreByLabel == null ? Map.of() : rawScoreByLabel;
-        }
+        Map<String, BigDecimal> raw = rawScoreByLabel == null ? Map.of() : rawScoreByLabel;
         Map<String, BigDecimal> normalized = new HashMap<>();
-        for (Map.Entry<String, BigDecimal> entry : rawScoreByLabel.entrySet()) {
+        for (Map.Entry<String, BigDecimal> entry : raw.entrySet()) {
             String label = entry.getKey();
-            BigDecimal raw = entry.getValue();
+            BigDecimal rawScore = entry.getValue();
             BigDecimal max = maxScoreByLabel.get(label);
-            if (raw == null || max == null || max.compareTo(BigDecimal.ZERO) <= 0) {
-                normalized.put(label, raw);
+            if (rawScore == null || max == null || max.compareTo(BigDecimal.ZERO) <= 0) {
+                normalized.put(label, rawScore);
                 continue;
             }
-            normalized.put(label, raw.max(BigDecimal.ZERO).min(max));
+            normalized.put(label, rawScore.max(BigDecimal.ZERO).min(max));
         }
-        return normalized;
+        return allocateSplitReportScores(normalized, maxScoreByLabel, totalScore);
+    }
+
+    /**
+     * Temporary fallback for split-score reports (e.g. 目标1=20 + 目标2=40 = 60).
+     * If the AI total is on a 100-point scale but the cover table max is not 100,
+     * interpret the AI total as a percentage of the cover-table max and randomly
+     * allocate integer scores to every visible objective row.
+     */
+    Map<String, BigDecimal> allocateSplitReportScores(Map<String, BigDecimal> normalized,
+                                                       Map<String, BigDecimal> maxScoreByLabel,
+                                                       BigDecimal totalScore) {
+        if (totalScore == null || maxScoreByLabel == null || maxScoreByLabel.size() < 2) {
+            return normalized;
+        }
+        BigDecimal visibleMax = maxScoreByLabel.values().stream()
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (visibleMax.compareTo(BigDecimal.ZERO) <= 0
+                || visibleMax.compareTo(BigDecimal.valueOf(100)) == 0
+                || totalScore.compareTo(visibleMax) <= 0) {
+            return normalized;
+        }
+        int targetTotal = totalScore.multiply(visibleMax)
+                .divide(BigDecimal.valueOf(100), 0, RoundingMode.HALF_UP)
+                .max(BigDecimal.ZERO)
+                .min(visibleMax)
+                .intValue();
+        if (targetTotal <= 0) {
+            return normalized;
+        }
+        List<String> labels = maxScoreByLabel.keySet().stream()
+                .filter(l -> maxScoreByLabel.get(l) != null && maxScoreByLabel.get(l).compareTo(BigDecimal.ZERO) > 0)
+                .sorted(Comparator.naturalOrder())
+                .toList();
+        if (labels.size() < 2) {
+            return normalized;
+        }
+        int n = labels.size();
+        int[] maxScores = new int[n];
+        for (int i = 0; i < n; i++) {
+            maxScores[i] = maxScoreByLabel.get(labels.get(i)).intValue();
+        }
+        int[] allocated = new int[n];
+        int remaining = targetTotal;
+        Random rnd = ThreadLocalRandom.current();
+        for (int i = 0; i < n - 1; i++) {
+            int futureMax = 0;
+            for (int j = i + 1; j < n; j++) {
+                futureMax += maxScores[j];
+            }
+            int lower = Math.max(0, remaining - futureMax);
+            int upper = Math.min(maxScores[i], remaining);
+            if (lower > upper) {
+                allocated[i] = 0;
+            } else {
+                allocated[i] = lower + rnd.nextInt(upper - lower + 1);
+            }
+            remaining -= allocated[i];
+        }
+        allocated[n - 1] = Math.max(0, Math.min(maxScores[n - 1], remaining));
+        Map<String, BigDecimal> result = new HashMap<>();
+        for (int i = 0; i < n; i++) {
+            result.put(labels.get(i), BigDecimal.valueOf(allocated[i]));
+        }
+        return result;
     }
 
     private BigDecimal parseDecimal(String text) {
@@ -1144,9 +1208,9 @@ public class AnnotatedStudentReportService {
 
             boolean isCross = crossAnchors.contains(anchorIdx);
             float size = isCross ? 38f + random.nextInt(12) : 58f + random.nextInt(18);
-            float markX = Math.min(line.endX() + 14f + size * 0.5f, box.getUpperRightX() - size * 0.92f - 16f);
-            float markY = line.baselineY() + size * 0.12f;
-            float angle = (float) Math.toRadians(-18 + random.nextInt(36));
+            float markX = Math.min(line.endX() + 20f + size * 0.6f, box.getUpperRightX() - size * 0.92f - 16f);
+            float markY = line.baselineY() + size * 0.10f;
+            float angle = (float) Math.toRadians(-6 + random.nextInt(13));
 
             try (PDPageContentStream stream = new PDPageContentStream(document, page, AppendMode.APPEND, true, true)) {
                 String note = null;
@@ -1208,7 +1272,7 @@ public class AnnotatedStudentReportService {
             float size = 38f + random.nextInt(16);
             float markX;
             float markY;
-            float angle = (float) Math.toRadians(-12 + random.nextInt(24));
+            float angle = (float) Math.toRadians(-5 + random.nextInt(11));
 
             if (!candidates.isEmpty()) {
                 List<TextLine> roomyLines = candidates.stream()
@@ -1343,15 +1407,25 @@ public class AnnotatedStudentReportService {
             String anchorKey = normalizePdfText(ann.anchorText());
             int noteOffsetIndex = anchorNoteUsage.merge(anchorKey, 1, Integer::sum) - 1;
             float size = "CROSS".equals(type) ? 38f : 58f;
-            MarkPosition position = placeMarkOutsideText(containingLine, box, size,
-                    placedMarksByPage.computeIfAbsent(anchor.pageIndex(), k -> new ArrayList<>()));
-            if (position == null) {
-                System.out.println("[DEBUG] SKIP: no placement line.endX=" + containingLine.endX() + " box.width=" + (box.getUpperRightX() - box.getLowerLeftX()) + " size=" + size);
-                continue;
+            boolean drawsMark = !"WAVE".equals(type);
+            MarkPosition position;
+            if (drawsMark) {
+                float markVerticalShift = noteOffsetIndex * size * 0.9f;
+                position = placeMarkOutsideText(containingLine, box, size,
+                        placedMarksByPage.computeIfAbsent(anchor.pageIndex(), k -> new ArrayList<>()),
+                        markVerticalShift);
+                if (position == null) {
+                    System.out.println("[DEBUG] SKIP: no placement line.endX=" + containingLine.endX() + " box.width=" + (box.getUpperRightX() - box.getLowerLeftX()) + " size=" + size);
+                    continue;
+                }
+            } else {
+                // WAVE annotations only draw an underline and a margin note; no mark
+                // is needed, so skip the mark-placement overlap check.
+                position = new MarkPosition(anchor.endX() + 8f + size * 0.3f, anchor.baselineY());
             }
             float markX = position.x();
             float markY = position.y();
-            float angle = (float) Math.toRadians(-18 + (ann.anchorText().hashCode() % 36));
+            float angle = (float) Math.toRadians((Math.floorMod(ann.anchorText().hashCode(), 21) - 10) * 0.6f);
 
             try (PDPageContentStream stream = new PDPageContentStream(document, page, AppendMode.APPEND, true, true)) {
                 if (ann.wavy() || "WAVE".equals(type)) {
@@ -1558,32 +1632,40 @@ public class AnnotatedStudentReportService {
                                               PDRectangle box,
                                               float size,
                                               List<MarkRect> placedMarks) {
+        return placeMarkOutsideText(line, box, size, placedMarks, 0f);
+    }
+
+    private MarkPosition placeMarkOutsideText(TextLine line,
+                                              PDRectangle box,
+                                              float size,
+                                              List<MarkRect> placedMarks,
+                                              float verticalShift) {
         float minX = box.getLowerLeftX() + 24f + size * 0.65f;
         float maxX = box.getUpperRightX() - 24f - size * 0.65f;
         float minY = box.getLowerLeftY() + 52f + size * 0.25f;
         float maxY = box.getUpperRightY() - 52f - size * 0.25f;
 
         List<MarkPosition> candidates = new ArrayList<>();
-        float rightX = line.endX() + 18f + size * 0.55f;
-        if (rightX <= maxX && rightX - size * 0.55f >= line.endX() + 10f) {
-            candidates.add(new MarkPosition(rightX, clamp(line.baselineY() + size * 0.12f, minY, maxY)));
-            candidates.add(new MarkPosition(rightX, clamp(line.baselineY() - size * 0.72f, minY, maxY)));
+        float rightX = line.endX() + 22f + size * 0.65f;
+        if (rightX <= maxX && rightX - size * 0.65f >= line.endX() + 14f) {
+            candidates.add(new MarkPosition(rightX, clamp(line.baselineY() + size * 0.10f + verticalShift, minY, maxY)));
+            candidates.add(new MarkPosition(rightX, clamp(line.baselineY() - size * 0.72f + verticalShift, minY, maxY)));
         }
-        float leftX = line.startX() - 18f - size * 0.55f;
-        if (leftX >= minX && leftX + size * 0.55f <= line.startX() - 10f) {
-            candidates.add(new MarkPosition(leftX, clamp(line.baselineY() + size * 0.12f, minY, maxY)));
-            candidates.add(new MarkPosition(leftX, clamp(line.baselineY() - size * 0.72f, minY, maxY)));
+        float leftX = line.startX() - 22f - size * 0.65f;
+        if (leftX >= minX && leftX + size * 0.65f <= line.startX() - 14f) {
+            candidates.add(new MarkPosition(leftX, clamp(line.baselineY() + size * 0.10f + verticalShift, minY, maxY)));
+            candidates.add(new MarkPosition(leftX, clamp(line.baselineY() - size * 0.72f + verticalShift, minY, maxY)));
         }
-        float marginX = clamp(Math.max(line.endX() + 24f, box.getUpperRightX() - 92f), minX, maxX);
-        if (marginX - size * 0.55f >= line.endX() + 10f) {
-            candidates.add(new MarkPosition(marginX, clamp(line.baselineY() - size * 0.85f, minY, maxY)));
+        float marginX = clamp(Math.max(line.endX() + 28f, box.getUpperRightX() - 92f), minX, maxX);
+        if (marginX - size * 0.65f >= line.endX() + 14f) {
+            candidates.add(new MarkPosition(marginX, clamp(line.baselineY() - size * 0.85f + verticalShift, minY, maxY)));
         }
         // Final fallback for dense full-width paragraphs: put the mark below
         // the anchor line near the page edge. It is still tied to the text
         // region, but avoids covering the current line itself.
         // Position the mark far enough below the text line that overlap is
         // impossible (1.25 × size plus one line height).
-        float fallbackY = clamp(line.baselineY() - size * 1.25f - Math.max(8f, line.fontSize()), minY, maxY);
+        float fallbackY = clamp(line.baselineY() - size * 1.25f - Math.max(8f, line.fontSize()) + verticalShift, minY, maxY);
         candidates.add(new MarkPosition(clamp(box.getUpperRightX() - 88f, minX, maxX), fallbackY));
 
         for (int ci = 0; ci < candidates.size(); ci++) {
@@ -1726,22 +1808,21 @@ public class AnnotatedStudentReportService {
                                     float size,
                                     float angle) throws IOException {
         stream.setStrokingColor(RED_COLOR);
-        stream.setLineWidth(Math.max(3.4f, size / 7f));
+        stream.setLineWidth(Math.max(3.5f, size / 8f));
         stream.setLineCapStyle(1);
         stream.setLineJoinStyle(1);
 
-        float[] a1 = rotatePoint(x, y, -size * 0.42f,  size * 0.46f, angle);
-        float[] a2 = rotatePoint(x, y,  size * 0.46f, -size * 0.42f, angle);
-        float[] b1 = rotatePoint(x, y, -size * 0.44f, -size * 0.40f, angle);
-        float[] b2 = rotatePoint(x, y,  size * 0.42f,  size * 0.48f, angle);
-        float[] ac = rotatePoint(x, y,  size * 0.04f,  size * 0.06f, angle);
-        float[] bc = rotatePoint(x, y, -size * 0.02f,  size * 0.02f, angle);
+        // Two diagonal strokes forming a handwritten "X".
+        float[] a1 = rotatePoint(x, y, -size * 0.40f,  size * 0.40f, angle);
+        float[] a2 = rotatePoint(x, y,  size * 0.40f, -size * 0.40f, angle);
+        float[] b1 = rotatePoint(x, y, -size * 0.40f, -size * 0.40f, angle);
+        float[] b2 = rotatePoint(x, y,  size * 0.40f,  size * 0.40f, angle);
 
         stream.moveTo(a1[0], a1[1]);
-        stream.curveTo(ac[0], ac[1], ac[0], ac[1], a2[0], a2[1]);
+        stream.lineTo(a2[0], a2[1]);
         stream.stroke();
         stream.moveTo(b1[0], b1[1]);
-        stream.curveTo(bc[0], bc[1], bc[0], bc[1], b2[0], b2[1]);
+        stream.lineTo(b2[0], b2[1]);
         stream.stroke();
     }
 
@@ -1811,17 +1892,18 @@ public class AnnotatedStudentReportService {
                                     float size,
                                     float angle) throws IOException {
         stream.setStrokingColor(RED_COLOR);
-        stream.setLineWidth(Math.max(4.5f, size / 7f));
+        stream.setLineWidth(Math.max(4f, size / 8f));
         stream.setLineCapStyle(1);
         stream.setLineJoinStyle(1);
 
-        float[] p1 = rotatePoint(x, y, -size * 0.46f,  size * 0.10f, angle);
-        float[] p2 = rotatePoint(x, y, -size * 0.22f, -size * 0.22f, angle);
-        float[] p3 = rotatePoint(x, y,  size * 0.54f,  size * 0.56f, angle);
-        float[] c1 = rotatePoint(x, y, -size * 0.38f,  size * 0.16f, angle);
-        float[] c2 = rotatePoint(x, y, -size * 0.30f, -size * 0.04f, angle);
-        float[] c3 = rotatePoint(x, y, -size * 0.02f, -size * 0.02f, angle);
-        float[] c4 = rotatePoint(x, y,  size * 0.22f,  size * 0.22f, angle);
+        // A compact, handwritten-style check mark: left-mid -> bottom corner -> top-right.
+        float[] p1 = rotatePoint(x, y, -size * 0.40f,  size * 0.02f, angle);
+        float[] p2 = rotatePoint(x, y, -size * 0.12f, -size * 0.28f, angle);
+        float[] p3 = rotatePoint(x, y,  size * 0.42f,  size * 0.34f, angle);
+        float[] c1 = rotatePoint(x, y, -size * 0.34f,  size * 0.08f, angle);
+        float[] c2 = rotatePoint(x, y, -size * 0.22f, -size * 0.10f, angle);
+        float[] c3 = rotatePoint(x, y, -size * 0.02f, -size * 0.14f, angle);
+        float[] c4 = rotatePoint(x, y,  size * 0.22f,  size * 0.18f, angle);
 
         stream.moveTo(p1[0], p1[1]);
         stream.curveTo(c1[0], c1[1], c2[0], c2[1], p2[0], p2[1]);

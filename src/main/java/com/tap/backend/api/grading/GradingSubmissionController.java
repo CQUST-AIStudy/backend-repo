@@ -140,6 +140,19 @@ public class GradingSubmissionController {
         }
     }
 
+    @PostMapping("/{id}/pre-generate")
+    public ResponseEntity<?> preGenerateSubmissionResources(
+            @PathVariable Long id,
+            @AuthenticationPrincipal UserPrincipal principal
+    ) {
+        Long teacherId = teacherPrincipalResolver.requireTeacherId(principal);
+        try {
+            return ResponseEntity.ok(ApiResponse.of(submissionService.ensureReviewAndAnnotatedReport(id, teacherId)));
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+        }
+    }
+
     @PutMapping("/{id}/student-match")
     public ResponseEntity<?> confirmStudentMatch(
             @PathVariable Long id,
