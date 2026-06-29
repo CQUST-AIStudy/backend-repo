@@ -259,6 +259,14 @@ tap:
     export:
       max-concurrency: ${GRADING_EXPORT_MAX_CONCURRENCY:6}
       submit-interval-ms: ${GRADING_EXPORT_SUBMIT_INTERVAL_MS:30}
+    code-tracer:
+      python: ${CODE_TRACER_PYTHON:python3.11}
+      script: ${CODE_TRACER_SCRIPT:}
+      timeout-ms: ${CODE_TRACER_TIMEOUT_MS:10000}
+    worker:
+      base-url: ${GRADING_WORKER_BASE_URL:http://127.0.0.1:8004}
+      connect-timeout-ms: ${GRADING_WORKER_CONNECT_TIMEOUT_MS:5000}
+      read-timeout-ms: ${GRADING_WORKER_READ_TIMEOUT_MS:60000}
   animation:
     chat-model: ${ANIMATION_CHAT_MODEL:}
     tts-model: ${ANIMATION_TTS_MODEL:qwen-tts}

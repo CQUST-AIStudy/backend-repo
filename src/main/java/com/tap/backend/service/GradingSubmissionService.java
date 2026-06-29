@@ -17,6 +17,8 @@ import com.tap.backend.ai.AiProvider;
 import com.tap.backend.ai.AiProperties;
 import com.tap.backend.audit.AuditAction;
 import com.tap.backend.audit.AuditService;
+import com.tap.backend.domain.grading.AnnotatedReportStatus;
+import com.tap.backend.domain.grading.ErrorDemonstrationStatus;
 import com.tap.backend.domain.grading.EvidenceBlockEntity;
 import com.tap.backend.domain.grading.GradingSubmissionEntity;
 import com.tap.backend.domain.grading.GradingTaskEntity;
@@ -173,6 +175,8 @@ public class GradingSubmissionService {
         ReportFileEntity preferredReport = selectPreferredReport(submissionId);
         result.put("hasDownloadableReport", preferredReport != null);
         result.put("preferredReportFileType", preferredReport != null ? preferredReport.getFileType() : null);
+        result.put("annotatedReportStatus", submission.getAnnotatedReportStatus() != null ? submission.getAnnotatedReportStatus().name() : AnnotatedReportStatus.PENDING.name());
+        result.put("errorDemonstrationsStatus", submission.getErrorDemonstrationsStatus() != null ? submission.getErrorDemonstrationsStatus().name() : ErrorDemonstrationStatus.PENDING.name());
         return result;
     }
 
@@ -193,21 +197,25 @@ public class GradingSubmissionService {
         }
 
         // 2. Not yet persisted — generate now and save to DB
-        List<ScoreItemEntity> scores = scoreItemRepo.findAllBySubmissionId(submissionId);
-        List<EvidenceBlockEntity> evidence = evidenceRepo.findAllBySubmissionId(submissionId);
-        List<GradingErrorDemonstrationService.ErrorDemonstration> demos =
-                errorDemonstrationService.buildDemonstrations(submission, scores, evidence);
-
+        submission.setErrorDemonstrationsStatus(ErrorDemonstrationStatus.GENERATING);
+        submissionRepo.save(submission);
         try {
-            submission.setErrorDemonstrationsJson(
-                    objectMapper.writeValueAsString(demos));
+            List<ScoreItemEntity> scores = scoreItemRepo.findAllBySubmissionId(submissionId);
+            List<EvidenceBlockEntity> evidence = evidenceRepo.findAllBySubmissionId(submissionId);
+            List<GradingErrorDemonstrationService.ErrorDemonstration> demos =
+                    errorDemonstrationService.buildDemonstrations(submission, scores, evidence);
+
+            submission.setErrorDemonstrationsJson(objectMapper.writeValueAsString(demos));
+            submission.setErrorDemonstrationsStatus(ErrorDemonstrationStatus.COMPLETED);
             submissionRepo.save(submission);
+            return demos;
         } catch (Exception e) {
+            submission.setErrorDemonstrationsStatus(ErrorDemonstrationStatus.FAILED);
+            submissionRepo.save(submission);
             log.warn("Failed to persist error demonstrations for submission {}: {}",
                     submissionId, e.getMessage());
+            return List.of();
         }
-
-        return demos;
     }
 
     @Transactional
@@ -274,6 +282,7 @@ public class GradingSubmissionService {
 
         // Invalidate persisted error demonstrations since scores changed — will regenerate on next read
         submission.setErrorDemonstrationsJson(null);
+        submission.setErrorDemonstrationsStatus(ErrorDemonstrationStatus.PENDING);
         submissionRepo.save(submission);
         return result;
     }
@@ -290,6 +299,7 @@ public class GradingSubmissionService {
         submission.setFinalReviewComment(review);
         // Invalidate persisted error demonstrations since review changed — will regenerate on next read
         submission.setErrorDemonstrationsJson(null);
+        submission.setErrorDemonstrationsStatus(ErrorDemonstrationStatus.PENDING);
         submissionRepo.save(submission);
         refreshAnnotatedReportIfPresent(submission);
         return review;
@@ -301,6 +311,7 @@ public class GradingSubmissionService {
         submission.setFinalReviewComment(review);
         // Invalidate persisted error demonstrations since review changed — will regenerate on next read
         submission.setErrorDemonstrationsJson(null);
+        submission.setErrorDemonstrationsStatus(ErrorDemonstrationStatus.PENDING);
         submissionRepo.save(submission);
         refreshAnnotatedReportIfPresent(submission);
     }
@@ -426,35 +437,75 @@ public class GradingSubmissionService {
 
         boolean needsReview = submission.getFinalReviewComment() == null || submission.getFinalReviewComment().isBlank();
         boolean needsAnnotatedReport = !hasAnnotatedReport(submissionId);
+        boolean needsErrorDemonstrations = !hasErrorDemonstrations(submission);
 
-        if (needsReview) {
-            generateFinalReview(submissionId, teacherId);
+        // Already fully ready: short-circuit and expose current statuses.
+        if (!needsReview && !needsAnnotatedReport && !needsErrorDemonstrations) {
+            ReportFileEntity preferredReport = selectPreferredReport(submissionId);
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("submissionId", submissionId);
+            result.put("studentName", submission.getStudentName());
+            result.put("finalReviewComment", submission.getFinalReviewComment());
+            result.put("annotatedReady", preferredReport != null);
+            result.put("annotatedFileType", preferredReport != null ? preferredReport.getFileType() : null);
+            result.put("annotatedObjectKey", preferredReport != null ? preferredReport.getObjectKey() : null);
+            result.put("annotatedReportStatus", AnnotatedReportStatus.COMPLETED.name());
+            result.put("errorDemonstrationsStatus", ErrorDemonstrationStatus.COMPLETED.name());
+            return result;
+        }
+
+        submission.setAnnotatedReportStatus(AnnotatedReportStatus.GENERATING);
+        submission.setErrorDemonstrationsStatus(ErrorDemonstrationStatus.GENERATING);
+        submissionRepo.save(submission);
+
+        AnnotatedReportArtifact artifact = null;
+        try {
+            if (needsReview) {
+                generateFinalReview(submissionId, teacherId);
+                submission = requireOwnedSubmission(submissionId, teacherId);
+            }
+
+            if (needsAnnotatedReport || needsReview) {
+                List<ScoreItemEntity> scores = scoreItemRepo.findAllBySubmissionId(submissionId);
+                Map<Long, String> dimensionNames = buildDimensionNameMap(submission);
+                ExperimentContext experimentContext = extractExperimentContext(submissionId);
+                String teacherComment = buildTeacherComment(submission, scores, dimensionNames, experimentContext);
+                artifact = createAnnotatedReport(submission, scores, teacherComment);
+                // Generate and persist error demonstrations alongside the annotated report
+                persistErrorDemonstrations(submission, scores);
+            } else {
+                // Even if review and report already exist, ensure error demonstrations are persisted
+                persistErrorDemonstrationsIfNeeded(submissionId);
+            }
+
             submission = requireOwnedSubmission(submissionId, teacherId);
+            submission.setAnnotatedReportStatus(hasAnnotatedReport(submissionId)
+                    ? AnnotatedReportStatus.COMPLETED : AnnotatedReportStatus.FAILED);
+            submission.setErrorDemonstrationsStatus(hasErrorDemonstrations(submission)
+                    ? ErrorDemonstrationStatus.COMPLETED : ErrorDemonstrationStatus.FAILED);
+            submissionRepo.save(submission);
+
+            if (artifact != null) {
+                return preparedReportResult(submission, artifact);
+            }
+            ReportFileEntity preferredReport = selectPreferredReport(submissionId);
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("submissionId", submissionId);
+            result.put("studentName", submission.getStudentName());
+            result.put("finalReviewComment", submission.getFinalReviewComment());
+            result.put("annotatedReady", preferredReport != null);
+            result.put("annotatedFileType", preferredReport != null ? preferredReport.getFileType() : null);
+            result.put("annotatedObjectKey", preferredReport != null ? preferredReport.getObjectKey() : null);
+            result.put("annotatedReportStatus", submission.getAnnotatedReportStatus().name());
+            result.put("errorDemonstrationsStatus", submission.getErrorDemonstrationsStatus().name());
+            return result;
+        } catch (Exception e) {
+            submission = requireOwnedSubmission(submissionId, teacherId);
+            submission.setAnnotatedReportStatus(AnnotatedReportStatus.FAILED);
+            submission.setErrorDemonstrationsStatus(ErrorDemonstrationStatus.FAILED);
+            submissionRepo.save(submission);
+            throw e;
         }
-
-        if (needsAnnotatedReport || needsReview) {
-            List<ScoreItemEntity> scores = scoreItemRepo.findAllBySubmissionId(submissionId);
-            Map<Long, String> dimensionNames = buildDimensionNameMap(submission);
-            ExperimentContext experimentContext = extractExperimentContext(submissionId);
-            String teacherComment = buildTeacherComment(submission, scores, dimensionNames, experimentContext);
-            AnnotatedReportArtifact artifact = createAnnotatedReport(submission, scores, teacherComment);
-            // Generate and persist error demonstrations alongside the annotated report
-            persistErrorDemonstrations(submission, scores);
-            return preparedReportResult(submission, artifact);
-        }
-
-        // Even if review and report already exist, ensure error demonstrations are persisted
-        persistErrorDemonstrationsIfNeeded(submissionId);
-
-        ReportFileEntity preferredReport = selectPreferredReport(submissionId);
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("submissionId", submissionId);
-        result.put("studentName", submission.getStudentName());
-        result.put("finalReviewComment", submission.getFinalReviewComment());
-        result.put("annotatedReady", preferredReport != null);
-        result.put("annotatedFileType", preferredReport != null ? preferredReport.getFileType() : null);
-        result.put("annotatedObjectKey", preferredReport != null ? preferredReport.getObjectKey() : null);
-        return result;
     }
 
     @Transactional
@@ -892,16 +943,30 @@ public class GradingSubmissionService {
         if (!hasAnnotatedReport(submission.getId())) {
             return;
         }
-        List<ScoreItemEntity> scores = scoreItemRepo.findAllBySubmissionId(submission.getId());
-        Map<Long, String> dimensionNames = buildDimensionNameMap(submission);
-        ExperimentContext experimentContext = extractExperimentContext(submission.getId());
-        String teacherComment = buildTeacherComment(submission, scores, dimensionNames, experimentContext);
-        createAnnotatedReport(submission, scores, teacherComment);
+        submission.setAnnotatedReportStatus(AnnotatedReportStatus.GENERATING);
+        submissionRepo.save(submission);
+        try {
+            List<ScoreItemEntity> scores = scoreItemRepo.findAllBySubmissionId(submission.getId());
+            Map<Long, String> dimensionNames = buildDimensionNameMap(submission);
+            ExperimentContext experimentContext = extractExperimentContext(submission.getId());
+            String teacherComment = buildTeacherComment(submission, scores, dimensionNames, experimentContext);
+            createAnnotatedReport(submission, scores, teacherComment);
+            submission.setAnnotatedReportStatus(AnnotatedReportStatus.COMPLETED);
+        } catch (Exception e) {
+            submission.setAnnotatedReportStatus(AnnotatedReportStatus.FAILED);
+            log.warn("Failed to refresh annotated report for submission {}", submission.getId(), e);
+        }
+        submissionRepo.save(submission);
     }
 
     public boolean hasAnnotatedReport(Long submissionId) {
         return findLatestReportByType(submissionId, AnnotatedStudentReportService.FILE_TYPE_ANNOTATED_DOCX).isPresent()
                 || findLatestReportByType(submissionId, AnnotatedStudentReportService.FILE_TYPE_ANNOTATED_PDF).isPresent();
+    }
+
+    public boolean hasErrorDemonstrations(GradingSubmissionEntity submission) {
+        String json = submission.getErrorDemonstrationsJson();
+        return json != null && !json.isBlank();
     }
 
     private java.util.Optional<ReportFileEntity> findLatestReportByType(Long submissionId, String fileType) {

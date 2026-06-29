@@ -11,6 +11,7 @@ import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import javax.imageio.ImageIO;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
@@ -800,6 +801,75 @@ class AnnotatedStudentReportServiceTest {
             return 1.0d;
         }
         return (weightedX / (double) redPixels) / image.getWidth();
+    }
+
+
+
+    @Test
+    void allocateSplitReportScoresDistributesByPercentage() {
+        Map<String, BigDecimal> normalized = Map.of(
+                "目标1", BigDecimal.ZERO,
+                "目标2", BigDecimal.ZERO
+        );
+        Map<String, BigDecimal> maxScoreByLabel = Map.of(
+                "目标1", new BigDecimal("20"),
+                "目标2", new BigDecimal("40")
+        );
+
+        Map<String, BigDecimal> allocated = service.allocateSplitReportScores(normalized, maxScoreByLabel, new BigDecimal("84"));
+
+        int total = allocated.values().stream().mapToInt(BigDecimal::intValue).sum();
+        assertEquals(50, total, "84% of the 60-point cover-table max should be 50");
+        assertTrue(allocated.get("目标1").intValue() >= 0 && allocated.get("目标1").intValue() <= 20);
+        assertTrue(allocated.get("目标2").intValue() >= 0 && allocated.get("目标2").intValue() <= 40);
+    }
+
+    @Test
+    void allocateSplitReportScoresLeavesHundredPointReportUnchanged() {
+        Map<String, BigDecimal> normalized = Map.of(
+                "目标1", new BigDecimal("35"),
+                "目标2", new BigDecimal("45")
+        );
+        Map<String, BigDecimal> maxScoreByLabel = Map.of(
+                "目标1", new BigDecimal("50"),
+                "目标2", new BigDecimal("50")
+        );
+
+        Map<String, BigDecimal> allocated = service.allocateSplitReportScores(normalized, maxScoreByLabel, new BigDecimal("80"));
+
+        assertEquals(new BigDecimal("35"), allocated.get("目标1"));
+        assertEquals(new BigDecimal("45"), allocated.get("目标2"));
+    }
+
+    @Test
+    void renderSplitSixtyPointReportUsesTotalPercentage() throws Exception {
+        Path sample = Path.of("D:\\文档存放\\物联网\\2025520931+胡灵+实训报告.pdf");
+        if (!Files.exists(sample)) {
+            return;
+        }
+
+        byte[] source = Files.readAllBytes(sample);
+        AnnotatedStudentReportService.RenderedReport rendered = service.render(
+                sample.getFileName().toString(),
+                source,
+                "胡灵",
+                new BigDecimal("84"),
+                "报告整体完成度尚可，目标表格中的成绩应以可见课程目标分项为准。",
+                List.of("目标1完成较好", "目标2仍需补足实现与分析"),
+                "张老师",
+                List.of(),
+                List.of(
+                        new AnnotatedStudentReportService.DimensionScore("目标1", BigDecimal.ZERO),
+                        new AnnotatedStudentReportService.DimensionScore("目标2", BigDecimal.ZERO)
+                )
+        );
+
+        Path artifactsDir = Path.of("target", "test-artifacts");
+        Files.createDirectories(artifactsDir);
+        Files.write(artifactsDir.resolve("hu-split-60-point.pdf"), rendered.bytes());
+
+        // The rendered PDF is saved above for manual inspection.
+        // The allocation logic itself is verified by allocateSplitReportScoresDistributesByPercentage().
     }
 
     private int countOccurrences(String text, String needle) {

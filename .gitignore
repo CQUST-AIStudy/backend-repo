@@ -44,3 +44,12 @@ scripts/e2e-check-submission-detail.js
 ### Runtime logs ###
 *.log
 logs/
+
+### Grading Worker Python ###
+grading-worker/.venv/
+grading-worker/__pycache__/
+grading-worker/**/__pycache__/
+grading-worker/*.pyc
+grading-worker/.pytest_cache/
+grading-worker/local_settings.py
+grading-worker/tmp_patch_vlm.py

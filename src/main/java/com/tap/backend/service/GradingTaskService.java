@@ -6,6 +6,7 @@ import com.tap.backend.domain.user.UserEntity;
 import com.tap.backend.infra.storage.ObjectStorageService;
 import com.tap.backend.repo.*;
 import com.tap.backend.service.grading.GradingBatchReviewService;
+import com.tap.backend.service.grading.GradingFinalizeService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -51,6 +52,7 @@ public class GradingTaskService {
     private final GradingTraceRepository traceRepo;
     private final OfficeDocumentConversionService officeDocumentConversionService;
     private final GradingBatchReviewService gradingBatchReviewService;
+    private final GradingFinalizeService gradingFinalizeService;
 
     @Value("${tap.grading.stuck-scan-enabled:true}")
     private boolean stuckScanEnabled;
@@ -72,7 +74,8 @@ public class GradingTaskService {
                               GradingUnifiedLinkService gradingUnifiedLinkService,
                               GradingTraceRepository traceRepo,
                               OfficeDocumentConversionService officeDocumentConversionService,
-                              GradingBatchReviewService gradingBatchReviewService) {
+                              GradingBatchReviewService gradingBatchReviewService,
+                              GradingFinalizeService gradingFinalizeService) {
         this.taskRepo = taskRepo;
         this.batchRepo = batchRepo;
         this.submissionRepo = submissionRepo;
@@ -86,6 +89,7 @@ public class GradingTaskService {
         this.traceRepo = traceRepo;
         this.officeDocumentConversionService = officeDocumentConversionService;
         this.gradingBatchReviewService = gradingBatchReviewService;
+        this.gradingFinalizeService = gradingFinalizeService;
     }
 
     @Transactional
@@ -485,16 +489,26 @@ public class GradingTaskService {
         refreshTaskCounters(task);
         int done = task.getCompletedCount() + task.getFailedCount();
         if (done >= task.getTotalCount()) {
-            task.setStatus(task.getFailedCount() > 0 ? GradingTaskStatus.FAILED : GradingTaskStatus.COMPLETED);
-            taskRepo.save(task);
-            scheduleBatchReviewGeneration(task.getId(), task.getCompletedCount());
+            if (task.getFailedCount() > 0 && task.getCompletedCount() == 0) {
+                // 全部提交均失败，直接标记任务失败
+                task.setStatus(GradingTaskStatus.FAILED);
+                taskRepo.save(task);
+            } else {
+                // 评分阶段结束，进入资源生成阶段；等资源全部就绪后再标记 COMPLETED
+                task.setStatus(GradingTaskStatus.FINALIZING);
+                taskRepo.save(task);
+                gradingFinalizeService.finalizeTaskAsync(task.getId(), teacherId);
+            }
         } else if (task.getStatus() != GradingTaskStatus.PROCESSING) {
             task.setStatus(GradingTaskStatus.PROCESSING);
             taskRepo.save(task);
         }
 
         if (subStatus == SubmissionStatus.SCORED || subStatus == SubmissionStatus.NEED_MORE_EVIDENCE) {
-            autoFinalizeSubmission(submissionId, teacherId);
+            // 单个提交评分完成后，先将其资源状态重置为 PENDING，等待任务级批量 finalize。
+            sub.setAnnotatedReportStatus(com.tap.backend.domain.grading.AnnotatedReportStatus.PENDING);
+            sub.setErrorDemonstrationsStatus(com.tap.backend.domain.grading.ErrorDemonstrationStatus.PENDING);
+            submissionRepo.save(sub);
         }
     }
 
@@ -531,29 +545,6 @@ public class GradingTaskService {
             log.info("Published {} submissions to grading queue for task {}", pending.size(), taskId);
         } catch (Exception e) {
             log.error("Failed to publish to Redis queue", e);
-        }
-    }
-
-    private void scheduleBatchReviewGeneration(Long taskId, int completedCount) {
-        if (taskId == null || completedCount <= 0) {
-            return;
-        }
-        Runnable trigger = () -> {
-            try {
-                gradingBatchReviewService.triggerGeneration(taskId);
-            } catch (Exception e) {
-                log.warn("Auto batch review generation skipped for task {}: {}", taskId, e.getMessage());
-            }
-        };
-        if (TransactionSynchronizationManager.isSynchronizationActive()) {
-            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                @Override
-                public void afterCommit() {
-                    trigger.run();
-                }
-            });
-        } else {
-            trigger.run();
         }
     }
 
@@ -711,24 +702,6 @@ public class GradingTaskService {
         int failedCount = submissionRepo.countByTaskIdAndStatus(taskId, SubmissionStatus.FAILED);
         task.setCompletedCount(completedCount);
         task.setFailedCount(failedCount);
-    }
-
-    private void autoFinalizeSubmission(Long submissionId, Long teacherId) {
-        try {
-            GradingSubmissionEntity submission = submissionRepo.findById(submissionId).orElse(null);
-            if (submission == null || teacherId == null) {
-                return;
-            }
-            gradingSubmissionService.ensureReviewAndAnnotatedReport(submissionId, teacherId);
-            log.info("Auto finalized submission {}", submissionId);
-        } catch (Exception e) {
-            GradingSubmissionEntity submission = submissionRepo.findById(submissionId).orElse(null);
-            if (submission != null) {
-                submission.setErrorMessage("Auto finalization failed: " + e.getMessage());
-                submissionRepo.save(submission);
-            }
-            log.warn("Auto finalization failed for submission {}: {}", submissionId, e.getMessage());
-        }
     }
 
     @Scheduled(fixedDelayString = "${tap.grading.stuck-scan-interval-ms:60000}")

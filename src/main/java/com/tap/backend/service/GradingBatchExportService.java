@@ -223,6 +223,7 @@ public class GradingBatchExportService {
         return switch (status) {
             case PENDING -> "待处理";
             case PROCESSING -> "批改中";
+            case FINALIZING -> "生成资源中";
             case COMPLETED -> "已完成";
             case FAILED -> "存在失败";
         };
