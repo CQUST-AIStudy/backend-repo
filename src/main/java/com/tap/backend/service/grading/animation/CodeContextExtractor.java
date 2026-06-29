@@ -134,12 +134,14 @@ public class CodeContextExtractor {
     }
 
     private CodeContext fullContext(List<String> allLines) {
+        // Anchor not found — don't highlight the entire file.
+        // Only mark the first line so the UI doesn't put "错误位置" on every line.
         return new CodeContext(
                 new ArrayList<>(allLines),
                 1,
                 1,
                 1,
-                allLines.size()
+                1
         );
     }
 

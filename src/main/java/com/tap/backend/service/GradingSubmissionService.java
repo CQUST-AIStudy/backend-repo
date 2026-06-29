@@ -215,6 +215,7 @@ public class GradingSubmissionService {
                                              Long dimensionId,
                                              BigDecimal newScore,
                                              String newComment,
+                                             String newAnnotationsJson,
                                              String reason,
                                              Long teacherId) {
         requireOwnedSubmission(submissionId, teacherId);
@@ -240,6 +241,10 @@ public class GradingSubmissionService {
 
         scoreItem.setScore(newScore);
         scoreItem.setComment(newComment);
+        // Update inline annotations if provided (null means don't change them)
+        if (newAnnotationsJson != null) {
+            scoreItem.setAnnotationsJson(newAnnotationsJson);
+        }
         scoreItem.setStatus(ScoreItemStatus.SCORED);
         scoreItemRepo.save(scoreItem);
 

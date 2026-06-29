@@ -74,6 +74,7 @@ public class GradingSubmissionController {
                     req.dimensionId(),
                     req.newScore(),
                     req.newComment(),
+                    req.newAnnotationsJson(),
                     req.reason(),
                     teacherId
             );
@@ -143,6 +144,7 @@ public class GradingSubmissionController {
             Long dimensionId,
             BigDecimal newScore,
             String newComment,
+            String newAnnotationsJson,
             String reason
     ) {}
 }

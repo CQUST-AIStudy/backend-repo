@@ -24,6 +24,10 @@ import java.io.ByteArrayOutputStream;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
 public class GradingTaskService {
@@ -53,6 +57,8 @@ public class GradingTaskService {
 
     @Value("${tap.grading.stuck-timeout-minutes:20}")
     private long stuckTimeoutMinutes;
+
+    private final ExecutorService storageExecutor = Executors.newFixedThreadPool(8);
 
     public GradingTaskService(GradingTaskRepository taskRepo,
                               GradingBatchRepository batchRepo,
@@ -145,7 +151,8 @@ public class GradingTaskService {
                     experimentId, classId, teacherId);
         }
 
-        // Store documents and create submissions
+        // Phase 1: Read all file bytes and prepare metadata (sequential, fast I/O from temp files)
+        List<FilePrep> prepped = new ArrayList<>();
         for (MultipartFile pdf : validPdfs) {
             try {
                 String originalFilename = pdf.getOriginalFilename();
@@ -158,21 +165,44 @@ public class GradingTaskService {
                     contentType = "application/pdf";
                 }
                 String objectKey = "grading/" + task.getId() + "/" + UUID.randomUUID() + extension;
-                storageService.putBytes(objectKey, sourceBytes, contentType);
-
-                GradingSubmissionEntity sub = new GradingSubmissionEntity();
-                sub.setTask(task);
-                sub.setPdfObjectKey(objectKey);
-                sub.setOriginalFilename(originalFilename);
-                sub.setStudentName(extractStudentName(originalFilename));
-                applyUnifiedSubmissionIdentity(task, sub);
-                sub.setStatus(SubmissionStatus.PENDING);
-                submissionRepo.save(sub);
+                prepped.add(new FilePrep(originalFilename, sourceBytes, contentType, objectKey));
             } catch (Exception e) {
-                log.error("Failed to store document: {}", pdf.getOriginalFilename(), e);
-                rejectedFiles.add(pdf.getOriginalFilename() + " (storage error)");
+                log.error("Failed to read document: {}", pdf.getOriginalFilename(), e);
+                rejectedFiles.add(pdf.getOriginalFilename() + " (read error)");
                 task.setTotalCount(task.getTotalCount() - 1);
             }
+        }
+
+        // Phase 2: Store to MinIO in parallel (8 concurrent uploads)
+        List<CompletableFuture<FilePrep>> futures = prepped.stream()
+                .map(fp -> CompletableFuture.supplyAsync(() -> {
+                    try {
+                        storageService.putBytes(fp.objectKey, fp.bytes, fp.contentType);
+                        return fp;
+                    } catch (Exception e) {
+                        log.error("Failed to store document to MinIO: {}", fp.originalFilename, e);
+                        return null;
+                    }
+                }, storageExecutor))
+                .toList();
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+
+        // Phase 3: Create submissions for successfully stored files
+        for (CompletableFuture<FilePrep> f : futures) {
+            FilePrep fp = f.join();
+            if (fp == null) {
+                rejectedFiles.add("(storage error)");
+                task.setTotalCount(task.getTotalCount() - 1);
+                continue;
+            }
+            GradingSubmissionEntity sub = new GradingSubmissionEntity();
+            sub.setTask(task);
+            sub.setPdfObjectKey(fp.objectKey);
+            sub.setOriginalFilename(fp.originalFilename);
+            sub.setStudentName(extractStudentName(fp.originalFilename));
+            applyUnifiedSubmissionIdentity(task, sub);
+            sub.setStatus(SubmissionStatus.PENDING);
+            submissionRepo.save(sub);
         }
 
         if (task.getTotalCount() <= 0) {
@@ -856,4 +886,7 @@ public class GradingTaskService {
         }
         return width;
     }
+
+    /** Helper record for parallel file storage. */
+    private record FilePrep(String originalFilename, byte[] bytes, String contentType, String objectKey) {}
 }
