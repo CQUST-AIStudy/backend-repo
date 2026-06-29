@@ -273,12 +273,10 @@ public class GradingTaskService {
         if (!task.getTeacherId().equals(teacherId)) {
             throw new IllegalArgumentException("无权删除此任务");
         }
-        if (task.getStatus() == GradingTaskStatus.PROCESSING) {
-            throw new IllegalStateException("任务正在处理中，无法删除");
-        }
-        // CASCADE delete handles submissions, evidence, scores, traces, reports
+        // CASCADE delete handles submissions, evidence, scores, traces, reports.
+        // The Celery worker will gracefully exit when it finds the submission no longer exists.
         taskRepo.delete(task);
-        log.info("Deleted grading task {} by teacher {}", taskId, teacherId);
+        log.info("Deleted grading task {} (status={}) by teacher {}", taskId, task.getStatus(), teacherId);
     }
 
     @Transactional
@@ -374,11 +372,9 @@ public class GradingTaskService {
     @Transactional
     public void deleteOwnedTask(Long taskId, Long teacherId) {
         GradingTaskEntity task = requireOwnedTask(taskId, teacherId);
-        if (task.getStatus() == GradingTaskStatus.PROCESSING) {
-            throw new IllegalStateException("Task is still processing");
-        }
-        // Note: For PENDING tasks, the Celery job in the queue will gracefully exit
-        // when it finds the submission no longer exists (cascade delete).
+        // Allow deletion regardless of status (PENDING, PROCESSING, COMPLETED, FAILED).
+        // The Celery worker will gracefully exit when it finds the submission no longer exists
+        // (cascade delete removes submissions, evidence, scores, traces, reports).
         taskRepo.delete(task);
         log.info("Deleted grading task {} (status={}) by teacher {}", taskId, task.getStatus(), teacherId);
     }

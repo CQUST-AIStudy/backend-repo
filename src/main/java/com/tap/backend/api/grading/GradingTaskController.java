@@ -135,10 +135,10 @@ public class GradingTaskController {
             List<GradingSubmissionEntity> submissions = taskService.getTaskSubmissions(id, teacherId);
             Map<Long, ReportFileEntity> preferredReports = buildPreferredReportMap(id);
 
-            if (backfillSubmissionArtifacts(submissions, preferredReports, teacherId)) {
-                submissions = taskService.getTaskSubmissions(id, teacherId);
-                preferredReports = buildPreferredReportMap(id);
-            }
+            // NOTE: backfillSubmissionArtifacts() was removed from this endpoint because it
+            // synchronously generates AI reviews + annotated reports for every submission missing
+            // them, making the detail page take minutes to load for large tasks.
+            // Teachers can generate reports separately via the "生成红笔批改报告" button.
 
             final Map<Long, ReportFileEntity> reportMap = preferredReports;
             Map<String, Object> dto = new LinkedHashMap<>(toListDto(task));
