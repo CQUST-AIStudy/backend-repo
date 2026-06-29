@@ -88,6 +88,20 @@ public class GradingExportController {
         GradingSubmissionEntity submission = submissionRepo.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Submission not found"));
         ReportFileEntity report = selectPreferredReport(reportFileRepo.findAllBySubmissionIdOrderByCreatedAtDesc(id));
+
+        // If only the simple text PDF exists (no annotated red-pen report), auto-generate it now.
+        // This ensures the "下载批注报告" button always delivers the annotated version.
+        if (report != null && reportPriority(report) < 3
+                && submission.getTotalScore() != null) {
+            try {
+                gradingSubmissionService.ensureReviewAndAnnotatedReport(id, teacherId);
+                report = selectPreferredReport(
+                        reportFileRepo.findAllBySubmissionIdOrderByCreatedAtDesc(id));
+            } catch (Exception e) {
+                // Fall through: serve whatever report is available
+            }
+        }
+
         if (report == null) {
             return ResponseEntity.status(404).body(Map.of("message", "Report not yet generated"));
         }
