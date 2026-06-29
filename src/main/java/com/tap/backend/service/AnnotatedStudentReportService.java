@@ -941,74 +941,7 @@ public class AnnotatedStudentReportService {
             }
             normalized.put(label, raw.max(BigDecimal.ZERO).min(max));
         }
-
-        BigDecimal visibleMax = maxScoreByLabel.values().stream()
-                .filter(Objects::nonNull)
-                .filter(value -> value.compareTo(BigDecimal.ZERO) > 0)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-        if (visibleMax.compareTo(BigDecimal.ZERO) <= 0 || totalScore == null) {
-            return normalized;
-        }
-
-        BigDecimal targetTotal = totalScore;
-        if (totalScore.compareTo(visibleMax) > 0 && totalScore.compareTo(BigDecimal.valueOf(100)) <= 0) {
-            targetTotal = totalScore.multiply(visibleMax)
-                    .divide(BigDecimal.valueOf(100), 6, RoundingMode.HALF_UP);
-        }
-        targetTotal = targetTotal.max(BigDecimal.ZERO).min(visibleMax);
-
-        // When the source report uses a 60-point objective table, the visible
-        // row scores should represent that table scale, not a failed fallback
-        // from one weak AI dimension.  Keep the displayed total at least 60%
-        // for passing-looking reports, then distribute by the row max weights.
-        BigDecimal floor = visibleMax.multiply(BigDecimal.valueOf(0.60d));
-        if (totalScore.compareTo(BigDecimal.valueOf(60)) >= 0 && targetTotal.compareTo(floor) < 0) {
-            targetTotal = floor;
-        }
-
-        BigDecimal normalizedSum = normalized.values().stream()
-                .filter(Objects::nonNull)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal tolerance = visibleMax.multiply(BigDecimal.valueOf(0.15d));
-        if (normalizedSum.subtract(targetTotal).abs().compareTo(tolerance) <= 0) {
-            return normalized;
-        }
-
-        return allocateCourseObjectiveScores(maxScoreByLabel, targetTotal);
-    }
-
-    private Map<String, BigDecimal> allocateCourseObjectiveScores(Map<String, BigDecimal> maxScoreByLabel,
-                                                                  BigDecimal targetTotal) {
-        List<Map.Entry<String, BigDecimal>> entries = maxScoreByLabel.entrySet().stream()
-                .filter(entry -> entry.getValue() != null && entry.getValue().compareTo(BigDecimal.ZERO) > 0)
-                .sorted(Map.Entry.comparingByKey())
-                .toList();
-        BigDecimal visibleMax = entries.stream()
-                .map(Map.Entry::getValue)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-        if (entries.isEmpty() || visibleMax.compareTo(BigDecimal.ZERO) <= 0) {
-            return Map.of();
-        }
-
-        int targetInt = targetTotal.setScale(0, RoundingMode.HALF_UP).intValue();
-        Map<String, BigDecimal> allocated = new HashMap<>();
-        int used = 0;
-        for (int i = 0; i < entries.size(); i++) {
-            Map.Entry<String, BigDecimal> entry = entries.get(i);
-            int value;
-            if (i == entries.size() - 1) {
-                value = targetInt - used;
-            } else {
-                value = targetTotal.multiply(entry.getValue())
-                        .divide(visibleMax, 6, RoundingMode.HALF_UP)
-                        .setScale(0, RoundingMode.HALF_UP)
-                        .intValue();
-                used += value;
-            }
-            int max = entry.getValue().setScale(0, RoundingMode.HALF_UP).intValue();
-            allocated.put(entry.getKey(), BigDecimal.valueOf(Math.max(0, Math.min(value, max))));
-        }
-        return allocated;
+        return normalized;
     }
 
     private BigDecimal parseDecimal(String text) {
@@ -1025,7 +958,8 @@ public class AnnotatedStudentReportService {
 
         for (TextLine line : lines) {
             String text = normalizePdfText(line.text());
-            if (text.contains("成绩")) {
+            String compactText = text.replaceAll("\\s+", "");
+            if ("成绩".equals(compactText)) {
                 anchors.add(new RowAnchor("成绩", line.baselineY(), line.startX(), line.endX()));
                 continue;
             }

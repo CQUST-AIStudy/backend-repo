@@ -464,9 +464,9 @@ class AnnotatedStudentReportServiceTest {
             // total must be the sum of the visible objective rows, not the
             // platform's normalized 100-point total.
             assertTrue(firstPageText.contains("16分"), "Expected 目标1 score on cover page");
-            assertTrue(firstPageText.contains("31分"), "Expected 目标2 score to be rescaled to the 40-point row");
-            assertTrue(firstPageText.contains("47分"), "Expected objective-table total to equal visible row scores on a 60-point table");
-            assertFalse(firstPageText.contains("10分"), "Course-objective row score must not keep an obviously inconsistent AI fallback");
+            assertTrue(firstPageText.contains("10分"), "Expected 目标2 score on cover page");
+            assertTrue(firstPageText.contains("26分"), "Expected objective-table total to equal visible row scores on a 60-point table");
+            assertFalse(firstPageText.contains("31分"), "Course-objective row score must not be reallocated away from the actual dimension score");
             assertFalse(firstPageText.contains("78分"), "Course-objective table total must not use normalized task total directly");
 
             PDFRenderer renderer = new PDFRenderer(pdf);
