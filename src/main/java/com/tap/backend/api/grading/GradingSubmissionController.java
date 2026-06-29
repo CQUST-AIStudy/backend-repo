@@ -48,6 +48,19 @@ public class GradingSubmissionController {
         }
     }
 
+    @GetMapping("/{id}/error-demonstrations")
+    public ResponseEntity<?> errorDemonstrations(
+            @PathVariable Long id,
+            @AuthenticationPrincipal UserPrincipal principal
+    ) {
+        Long teacherId = teacherPrincipalResolver.requireTeacherId(principal);
+        try {
+            return ResponseEntity.ok(ApiResponse.of(submissionService.buildErrorDemonstrations(id, teacherId)));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(404).body(Map.of("message", e.getMessage()));
+        }
+    }
+
     @PutMapping("/{id}/scores")
     public ResponseEntity<?> overrideScore(
             @PathVariable Long id,

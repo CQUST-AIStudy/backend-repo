@@ -55,6 +55,8 @@ import java.io.IOException;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
 import org.springframework.stereotype.Service;
@@ -62,6 +64,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class GradingSubmissionService {
+
+    private static final Logger log = LoggerFactory.getLogger(GradingSubmissionService.class);
 
     private final GradingSubmissionRepository submissionRepo;
     private final GradingTaskRepository taskRepo;
@@ -157,7 +161,12 @@ public class GradingSubmissionService {
         result.put("publishedBy", submission.getPublishedBy());
         result.put("published", submission.getPublishedAt() != null);
         result.put("scores", scores.stream().map(this::scoreDto).toList());
-        result.put("errorDemonstrations", errorDemonstrationService.buildDemonstrations(submission, scores, evidence));
+        try {
+            result.put("errorDemonstrations", errorDemonstrationService.buildDemonstrations(submission, scores, evidence));
+        } catch (Exception e) {
+            log.warn("生成错误演示失败，返回空列表不影响详情页加载: submissionId={}, {}", submissionId, e.getMessage());
+            result.put("errorDemonstrations", List.of());
+        }
         result.put("evidenceBlocks", evidence.stream().map(this::evidenceDto).toList());
         result.put("traces", traces.stream().map(this::traceDto).toList());
         result.put("reportFiles", reportFileRepo.findAllBySubmissionIdOrderByCreatedAtDesc(submissionId).stream()
@@ -167,6 +176,14 @@ public class GradingSubmissionService {
         result.put("hasDownloadableReport", preferredReport != null);
         result.put("preferredReportFileType", preferredReport != null ? preferredReport.getFileType() : null);
         return result;
+    }
+
+    @Transactional(readOnly = true)
+    public List<GradingErrorDemonstrationService.ErrorDemonstration> buildErrorDemonstrations(Long submissionId, Long teacherId) {
+        GradingSubmissionEntity submission = requireOwnedSubmission(submissionId, teacherId);
+        List<ScoreItemEntity> scores = scoreItemRepo.findAllBySubmissionId(submissionId);
+        List<EvidenceBlockEntity> evidence = evidenceRepo.findAllBySubmissionId(submissionId);
+        return errorDemonstrationService.buildDemonstrations(submission, scores, evidence);
     }
 
     @Transactional

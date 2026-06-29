@@ -37,6 +37,10 @@ local.env.ps1
 .env
 data/lucene-index/
 
+### Temporary files ###
+.deploy-venv/
+scripts/e2e-check-submission-detail.js
+
 ### Runtime logs ###
 *.log
 logs/
