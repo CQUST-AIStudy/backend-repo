@@ -10,6 +10,7 @@ import com.tap.backend.security.UserPrincipal;
 import com.tap.backend.service.AnnotatedStudentReportService;
 import com.tap.backend.service.GradingSubmissionService;
 import com.tap.backend.service.GradingTaskService;
+import com.tap.backend.service.GradingUnifiedLinkService;
 import com.tap.backend.service.TeacherSignatureService;
 import com.tap.common.api.ApiResponse;
 import java.util.Comparator;
@@ -42,6 +43,7 @@ public class GradingTaskController {
     private final com.tap.backend.repo.GradingBatchRepository batchRepo;
     private final TeacherPrincipalResolver teacherPrincipalResolver;
     private final TeacherSignatureService signatureService;
+    private final GradingUnifiedLinkService gradingUnifiedLinkService;
 
     public GradingTaskController(
             GradingTaskService taskService,
@@ -49,7 +51,8 @@ public class GradingTaskController {
             ReportFileRepository reportFileRepo,
             com.tap.backend.repo.GradingBatchRepository batchRepo,
             TeacherPrincipalResolver teacherPrincipalResolver,
-            TeacherSignatureService signatureService
+            TeacherSignatureService signatureService,
+            GradingUnifiedLinkService gradingUnifiedLinkService
     ) {
         this.taskService = taskService;
         this.gradingSubmissionService = gradingSubmissionService;
@@ -57,6 +60,7 @@ public class GradingTaskController {
         this.batchRepo = batchRepo;
         this.teacherPrincipalResolver = teacherPrincipalResolver;
         this.signatureService = signatureService;
+        this.gradingUnifiedLinkService = gradingUnifiedLinkService;
     }
 
     @PostMapping
@@ -145,6 +149,30 @@ public class GradingTaskController {
             attachBatchNames(List.of(dto));
             dto.put("submissions", submissions.stream().map(submission -> toSubDto(submission, reportMap.get(submission.getId()))).toList());
             return ResponseEntity.ok(ApiResponse.of(dto));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.status(404).body(Map.of("message", e.getMessage()));
+        }
+    }
+
+    @GetMapping("/{id}/match-candidates")
+    public ResponseEntity<?> matchCandidates(
+            @PathVariable Long id,
+            @AuthenticationPrincipal UserPrincipal principal
+    ) {
+        Long teacherId = teacherPrincipalResolver.requireTeacherId(principal);
+        try {
+            GradingTaskEntity task = taskService.getTaskDetail(id, teacherId);
+            List<GradingUnifiedLinkService.SubmissionIdentity> roster = gradingUnifiedLinkService.listRoster(task);
+            List<Map<String, Object>> result = roster.stream()
+                    .map(identity -> {
+                        Map<String, Object> row = new LinkedHashMap<>();
+                        row.put("studentId", identity.studentProfileId());
+                        row.put("studentNo", identity.studentNo());
+                        row.put("studentName", identity.studentName());
+                        return row;
+                    })
+                    .toList();
+            return ResponseEntity.ok(ApiResponse.of(result));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.status(404).body(Map.of("message", e.getMessage()));
         }

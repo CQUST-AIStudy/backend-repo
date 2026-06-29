@@ -140,6 +140,25 @@ public class GradingSubmissionController {
         }
     }
 
+    @PutMapping("/{id}/student-match")
+    public ResponseEntity<?> confirmStudentMatch(
+            @PathVariable Long id,
+            @AuthenticationPrincipal UserPrincipal principal,
+            @RequestBody Map<String, Long> body
+    ) {
+        Long teacherId = teacherPrincipalResolver.requireTeacherId(principal);
+        Long studentId = body.get("studentId");
+        if (studentId == null) {
+            return ResponseEntity.badRequest().body(Map.of("message", "studentId is required"));
+        }
+        try {
+            var result = submissionService.confirmStudentMatch(id, studentId, teacherId);
+            return ResponseEntity.ok(ApiResponse.of(result));
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+        }
+    }
+
     public record OverrideRequest(
             Long dimensionId,
             BigDecimal newScore,

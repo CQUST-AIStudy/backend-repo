@@ -138,7 +138,8 @@ public class GradingUnifiedLinkService {
     }
 
     protected List<SubmissionIdentity> loadRosterByClassId(Long classId) {
-        return jdbcTemplate.query(
+        // First try student_profile + class_member (analytics system)
+        List<SubmissionIdentity> fromMembers = jdbcTemplate.query(
                 """
                 SELECT DISTINCT sp.id, sp.student_no, sp.real_name, tc.name AS class_name, tu.username
                 FROM teaching_class tc
@@ -147,6 +148,32 @@ public class GradingUnifiedLinkService {
                 LEFT JOIN tap_user tu ON tu.id = sp.user_id
                 WHERE tc.id = ?
                 ORDER BY sp.student_no, sp.id
+                """,
+                (rs, rowNum) -> new SubmissionIdentity(
+                        rs.getLong("id"),
+                        normalizeStudentNo(rs.getString("student_no")),
+                        normalizeText(rs.getString("real_name")),
+                        normalizeText(rs.getString("class_name")),
+                        normalizeText(rs.getString("username")),
+                        parseLegacyStudentId(normalizeStudentNo(rs.getString("student_no")))
+                ),
+                classId
+        );
+
+        if (!fromMembers.isEmpty()) {
+            return fromMembers;
+        }
+
+        // Fallback: query class_student table (grading system's own student roster)
+        return jdbcTemplate.query(
+                """
+                SELECT cs.id, cs.student_num AS student_no, cs.student_name AS real_name,
+                       tc.name AS class_name, tu.username
+                FROM class_student cs
+                JOIN teaching_class tc ON tc.id = cs.class_id
+                LEFT JOIN tap_user tu ON tu.id = cs.user_id
+                WHERE tc.id = ?
+                ORDER BY cs.student_num, cs.id
                 """,
                 (rs, rowNum) -> new SubmissionIdentity(
                         rs.getLong("id"),

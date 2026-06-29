@@ -21,6 +21,7 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -839,7 +840,18 @@ public class AnnotatedStudentReportService {
                 : box.getUpperRightX() - 60f;
         Map<String, BigDecimal> maxScoreByLabel = extractCourseObjectiveMaxScores(firstPageLines, anchors, scoreColumnCenterX);
         Map<String, BigDecimal> scoreByLabel = normalizeCourseObjectiveScores(rawScoreByLabel, maxScoreByLabel, totalScore);
-        BigDecimal objectiveTableTotal = scoreByLabel.values().stream()
+        Map<String, RowAnchor> visibleObjectiveAnchors = new LinkedHashMap<>();
+        for (RowAnchor anchor : anchors) {
+            if ("成绩".equals(anchor.label())) {
+                continue;
+            }
+            if (scoreByLabel.get(anchor.label()) == null) {
+                continue;
+            }
+            visibleObjectiveAnchors.putIfAbsent(anchor.label(), anchor);
+        }
+        BigDecimal objectiveTableTotal = visibleObjectiveAnchors.keySet().stream()
+                .map(scoreByLabel::get)
                 .filter(Objects::nonNull)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
@@ -848,7 +860,13 @@ public class AnnotatedStudentReportService {
             if ("成绩".equals(anchor.label())) {
                 score = objectiveTableTotal.compareTo(BigDecimal.ZERO) > 0 ? objectiveTableTotal : totalScore;
             } else {
+                if (!Objects.equals(visibleObjectiveAnchors.get(anchor.label()), anchor)) {
+                    continue;
+                }
                 score = scoreByLabel.get(anchor.label());
+                if (score == null) {
+                    continue;
+                }
             }
             String scoreText = normalizeForFont(fontSelection,
                     formatScore(score) + "\u5206",
@@ -966,6 +984,10 @@ public class AnnotatedStudentReportService {
             if (!text.contains("目标")) {
                 continue;
             }
+            boolean hasDirectTargetNumber = Pattern.compile("目标\\s*\\d+").matcher(text).find();
+            if (!hasDirectTargetNumber && compactText.contains("课程目标")) {
+                continue;
+            }
 
             // Gather all text fragments that belong to the same table row.
             List<TextLine> rowLines = new ArrayList<>();
@@ -1008,6 +1030,9 @@ public class AnnotatedStudentReportService {
             float anchorY = line.baselineY();
             float anchorStartX = line.startX();
             float anchorEndX = line.endX();
+            if (anchors.stream().anyMatch(anchor -> anchor.label().equals(label))) {
+                continue;
+            }
             anchors.add(new RowAnchor(label, anchorY, anchorStartX, anchorEndX));
         }
         return anchors;

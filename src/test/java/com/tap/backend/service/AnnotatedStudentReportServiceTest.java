@@ -519,6 +519,49 @@ class AnnotatedStudentReportServiceTest {
     }
 
     @Test
+    void renderCourseObjectiveTableUsesOnlyVisibleObjectiveRowsForTotal() throws Exception {
+        Path sample = Path.of("D:\\文档存放\\物联网\\2025520912_王科焮_实训报告.pdf");
+        if (!Files.exists(sample)) {
+            return;
+        }
+
+        byte[] source = Files.readAllBytes(sample);
+        AnnotatedStudentReportService.RenderedReport rendered = service.render(
+                sample.getFileName().toString(),
+                source,
+                "王科焮",
+                new BigDecimal("86"),
+                "报告整体完成度尚可，目标表格中的成绩应以可见课程目标分项为准。",
+                List.of("目标1完成较好", "目标2仍需补足实现与分析"),
+                "张老师",
+                List.of(),
+                List.of(
+                        new AnnotatedStudentReportService.DimensionScore("目标1", new BigDecimal("18")),
+                        new AnnotatedStudentReportService.DimensionScore("目标2", new BigDecimal("12")),
+                        new AnnotatedStudentReportService.DimensionScore("目标3", new BigDecimal("56"))
+                )
+        );
+
+        Path artifactsDir = Path.of("target", "test-artifacts");
+        Files.createDirectories(artifactsDir);
+        Files.write(artifactsDir.resolve("wang-objective-visible-total.pdf"), rendered.bytes());
+
+        try (PDDocument pdf = PDDocument.load(rendered.bytes())) {
+            PDFTextStripper stripper = new PDFTextStripper();
+            stripper.setStartPage(1);
+            stripper.setEndPage(1);
+            String firstPageText = stripper.getText(pdf);
+
+            assertTrue(firstPageText.contains("18分"), "Expected 目标1 score on cover table");
+            assertTrue(firstPageText.contains("12分"), "Expected 目标2 score on cover table");
+            assertTrue(firstPageText.contains("30分"), "Visible objective-table total should be 18 + 12");
+            assertFalse(firstPageText.contains("待评"), "Header rows must not be annotated as pending score rows");
+            assertFalse(firstPageText.contains("56分"), "Hidden dimensions must not be written into the cover table");
+            assertFalse(firstPageText.contains("86分"), "Cover-table total must not use normalized task total when visible rows are 60-point rubric rows");
+        }
+    }
+
+    @Test
     void longDocumentSimulationSkipsCoverTableOfContentsAndReferences() {
         List<String> pageTexts = List.of(
                 "重庆科技大学 实验报告 课程名称 人工智能",
