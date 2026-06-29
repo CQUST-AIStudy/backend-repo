@@ -878,7 +878,7 @@ public class GradingSubmissionService {
             return false;
         }
         int hits = 0;
-        for (String keyword : List.of("实验报告", "课程名称", "学生姓名", "学号", "指导教师", "重庆科技大学")) {
+        for (String keyword : List.of("实验报告", "课程名称", "学生姓名", "学号", "指导教师", "AI大学")) {
             if (compact.contains(keyword)) {
                 hits++;
             }

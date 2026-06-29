@@ -199,7 +199,7 @@ drawPdfMarginNote(stream, fontSelection, box, containingLine, anchor.endX() + 8f
 模仿 `"D:\Downloads\2023440415邹名格人工智能实验2 (1).pdf"` 的格式，包含：
 
 #### 封面页
-- 学校名称：重庆科技大学
+- 学校名称：AI大学
 - 课程名称、实验名称
 - 学生姓名、学号、班级、指导教师
 - 实验成绩（用于测试分数定位）
@@ -418,7 +418,7 @@ public boolean isTaskFullyCompleted() {
 以下内容可用于快速生成测试 PDF：
 
 ```
-重庆科技大学
+AI大学
 实验报告
 
 课程名称：人工智能导论
