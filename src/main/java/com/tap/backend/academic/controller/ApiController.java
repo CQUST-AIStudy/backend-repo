@@ -347,6 +347,39 @@ public class ApiController {
         return builder.toString();
     }
 
+    /**
+     * 构造结构化题目列表，供前端按题展示题目（题号/标题/题面）+ 代码。
+     * number 的递增规则与 {@link #buildUnifiedSubmissionCode} 严格一致：
+     * 仅对有代码的题目递增序号，空代码题 number 为 null 且不递增，
+     * 保证与"完整源码"合并字符串中的"第N题如下"及前端正则兜底解析序号对齐。
+     */
+    private List<Map<String, Object>> buildSubmissionProblems(List<TeacherSubmissionProblemRow> problemRows) {
+        List<Map<String, Object>> problems = new ArrayList<>();
+        if (problemRows == null || problemRows.isEmpty()) {
+            return problems;
+        }
+        int displayIndex = 1;
+        for (TeacherSubmissionProblemRow row : problemRows) {
+            if (row == null) {
+                continue;
+            }
+            String rowCode = row.getCode();
+            String trimmedCode = rowCode == null ? "" : rowCode.trim();
+            boolean hasCode = !trimmedCode.isEmpty();
+            Map<String, Object> p = new LinkedHashMap<>();
+            p.put("number", hasCode ? displayIndex : null);
+            p.put("problemNo", row.getProblemNo());
+            p.put("problemTitle", row.getProblemTitle());
+            p.put("statementMd", row.getStatementMd());
+            p.put("code", trimmedCode);
+            if (hasCode) {
+                displayIndex++;
+            }
+            problems.add(p);
+        }
+        return problems;
+    }
+
     private boolean isMoreCompleteCode(String candidateCode, String currentCode) {
         if (candidateCode == null || candidateCode.isBlank()) {
             return false;
@@ -823,9 +856,12 @@ public class ApiController {
 
                 if (!offeringIds.isEmpty()) {
                     StringBuilder codeSql = new StringBuilder(
-                            "SELECT sps.offering_id, a.text_content " +
+                            "SELECT sps.offering_id, ap.problem_no, ap.title, apd.content, " +
+                                    "CAST(ap.sort_order AS SIGNED) AS sort_order, a.text_content " +
                                     "FROM student_problem_state sps " +
                                     "JOIN student_profile sp ON sp.id = sps.student_id " +
+                                    "JOIN assignment_problem ap ON ap.id = sps.problem_id " +
+                                    "LEFT JOIN pta_problem_detail apd ON apd.problem_set_problem_id = ap.problem_no " +
                                     "LEFT JOIN artifact a ON a.id = sps.latest_code_artifact_id " +
                                     "WHERE sp.student_no = ?1 AND sps.offering_id IN ("
                     );
@@ -833,7 +869,7 @@ public class ApiController {
                         if (i > 0) codeSql.append(",");
                         codeSql.append("?").append(i + 2);
                     }
-                    codeSql.append(") AND a.text_content IS NOT NULL ORDER BY sps.offering_id, sps.id");
+                    codeSql.append(") ORDER BY sps.offering_id, ap.sort_order, ap.id");
 
                     jakarta.persistence.Query codeQuery = em.createNativeQuery(codeSql.toString());
                     codeQuery.setParameter(1, studentNo);
@@ -844,18 +880,44 @@ public class ApiController {
                     @SuppressWarnings("unchecked")
                     List<Object[]> codeRows = codeQuery.getResultList();
 
-                    // Group codes by offering_id
+                    // 按题分组：每题一个结构化对象（题号/标题/题面/代码），同时保留合并 code 字符串兼容旧逻辑
+                    Map<Long, List<Map<String, Object>>> problemsMap = new LinkedHashMap<>();
                     Map<Long, StringBuilder> codeMap = new LinkedHashMap<>();
                     for (Object[] cr : codeRows) {
                         Long oid = toLong(cr[0]);
-                        String codeText = cr[1] != null ? cr[1].toString() : "";
-                        codeMap.computeIfAbsent(oid, k -> new StringBuilder())
-                                .append(codeText).append("\n\n");
+                        String problemNo = cr[1] != null ? cr[1].toString() : null;
+                        String title = cr[2] != null ? cr[2].toString() : null;
+                        String statementMd = cr[3] != null ? cr[3].toString() : null;
+                        String codeText = cr[5] != null ? cr[5].toString() : "";
+
+                        Map<String, Object> p = new LinkedHashMap<>();
+                        p.put("problemNo", problemNo);
+                        p.put("problemTitle", title);
+                        p.put("statementMd", statementMd);
+                        p.put("code", codeText.trim());
+                        problemsMap.computeIfAbsent(oid, k -> new ArrayList<>()).add(p);
+
+                        // 兼容：仅非空代码拼入合并 code 字符串
+                        if (!codeText.isBlank()) {
+                            codeMap.computeIfAbsent(oid, k -> new StringBuilder())
+                                    .append(codeText).append("\n\n");
+                        }
                     }
 
-                    // Merge codes into experiments
+                    // 合并代码与题目列表到每个实验
                     for (Map<String, Object> exp : experiments) {
                         Long oid = (Long) exp.get("offeringId");
+                        List<Map<String, Object>> probs = problemsMap.get(oid);
+                        if (probs != null) {
+                            // 补展示序号（按 sort_order 顺序）
+                            int idx = 1;
+                            for (Map<String, Object> p : probs) {
+                                p.put("number", idx++);
+                            }
+                            exp.put("problems", probs);
+                        } else {
+                            exp.put("problems", new ArrayList<>());
+                        }
                         StringBuilder sb = codeMap.get(oid);
                         if (sb != null && sb.length() > 0) {
                             exp.put("code", sb.toString().trim());
@@ -867,7 +929,10 @@ public class ApiController {
                 List<Long> stillEmpty = experiments.stream()
                         .filter(e -> {
                             Object code = e.get("code");
-                            return code == null || code.toString().isEmpty();
+                            Object probs = e.get("problems");
+                            boolean noCode = code == null || code.toString().isEmpty();
+                            boolean noProblems = probs == null || ((List<?>) probs).isEmpty();
+                            return noCode && noProblems;
                         })
                         .map(e -> (Long) e.get("offeringId"))
                         .filter(Objects::nonNull)
@@ -897,6 +962,19 @@ public class ApiController {
                         for (Map<String, Object> exp : experiments) {
                             if (expId.equals(exp.get("offeringId")) && code.length() > 0) {
                                 exp.put("code", code);
+                                // 兜底：若该实验无结构化题目，把 legacy 代码包成单题，保证前端按题渲染不落空
+                                Object existingProblems = exp.get("problems");
+                                if (existingProblems == null || ((List<?>) existingProblems).isEmpty()) {
+                                    Map<String, Object> fallbackProblem = new LinkedHashMap<>();
+                                    fallbackProblem.put("number", 1);
+                                    fallbackProblem.put("problemNo", null);
+                                    fallbackProblem.put("problemTitle", null);
+                                    fallbackProblem.put("statementMd", null);
+                                    fallbackProblem.put("code", code);
+                                    List<Map<String, Object>> list = new ArrayList<>();
+                                    list.add(fallbackProblem);
+                                    exp.put("problems", list);
+                                }
                                 break;
                             }
                         }
@@ -1671,6 +1749,8 @@ public class ApiController {
                 response.put("submitTime", resolvedSubmitTime);
                 response.put("class", assignment.getClassName());
                 response.put("code", resolvedCode != null ? resolvedCode : "");
+                // 结构化题目数据（题号/标题/题面/代码），供前端按题展示题目信息
+                response.put("problems", buildSubmissionProblems(resolvedProblemRows));
                 response.put("date", resolvedSubmitTime);
                 response.put("report", resolvedReport);
                 response.put("teacherComment", extractTeacherComment(resolvedReport));
@@ -1738,6 +1818,8 @@ public class ApiController {
             response.put("submitTime", mergedSubmitTime);
             response.put("class", assignment.getClassName());
             response.put("code", mergedCode != null ? mergedCode : "");
+            // 结构化题目数据（题号/标题/题面/代码），供前端按题展示题目信息
+            response.put("problems", buildSubmissionProblems(problemRows));
             response.put("date", mergedSubmitTime);
 //            Map<String, Object> submissionData = new HashMap<>();
 //            submissionData.put("submissionId", submissionId);

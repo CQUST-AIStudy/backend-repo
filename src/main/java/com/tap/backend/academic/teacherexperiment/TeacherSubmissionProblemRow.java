@@ -7,6 +7,7 @@ public class TeacherSubmissionProblemRow {
     private Integer sortOrder;
     private String problemNo;
     private String problemTitle;
+    private String statementMd;
     private String latestStatus;
     private Double bestScore;
     private Integer attemptCount;
@@ -35,6 +36,14 @@ public class TeacherSubmissionProblemRow {
 
     public void setProblemTitle(String problemTitle) {
         this.problemTitle = problemTitle;
+    }
+
+    public String getStatementMd() {
+        return statementMd;
+    }
+
+    public void setStatementMd(String statementMd) {
+        this.statementMd = statementMd;
     }
 
     public String getLatestStatus() {
