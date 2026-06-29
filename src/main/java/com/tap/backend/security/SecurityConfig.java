@@ -128,6 +128,8 @@ public class SecurityConfig {
         .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll()
         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
         .requestMatchers(HttpMethod.POST, "/api/login", "/api/register", "/logout", "/api/logout").permitAll()
+        .requestMatchers(HttpMethod.GET, "/rag/**").authenticated()
+        .requestMatchers("/rag/**").hasAnyRole(UserRole.TEACHER.name(), UserRole.ADMIN.name())
         .anyRequest().authenticated()
     );
     http.addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
