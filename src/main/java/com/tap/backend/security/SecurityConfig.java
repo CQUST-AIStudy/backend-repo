@@ -129,6 +129,14 @@ public class SecurityConfig {
         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
         .requestMatchers(HttpMethod.POST, "/api/login", "/api/register", "/logout", "/api/logout").permitAll()
         .requestMatchers(HttpMethod.GET, "/rag/**").authenticated()
+        .requestMatchers(
+            HttpMethod.POST,
+            "/rag/assistant/stream",
+            "/rag/chat",
+            "/rag/chat/stream",
+            "/rag/chat/legacy-stream",
+            "/rag/retrieve")
+        .authenticated()
         .requestMatchers("/rag/**").hasAnyRole(UserRole.TEACHER.name(), UserRole.ADMIN.name())
         .anyRequest().authenticated()
     );
