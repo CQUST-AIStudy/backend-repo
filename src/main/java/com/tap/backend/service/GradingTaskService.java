@@ -7,6 +7,7 @@ import com.tap.backend.infra.storage.ObjectStorageService;
 import com.tap.backend.repo.*;
 import com.tap.backend.service.grading.GradingBatchReviewService;
 import com.tap.backend.service.grading.GradingFinalizeService;
+import com.tap.backend.service.grading.GradingProgressService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -53,6 +54,7 @@ public class GradingTaskService {
     private final OfficeDocumentConversionService officeDocumentConversionService;
     private final GradingBatchReviewService gradingBatchReviewService;
     private final GradingFinalizeService gradingFinalizeService;
+    private final GradingProgressService gradingProgressService;
 
     @Value("${tap.grading.stuck-scan-enabled:true}")
     private boolean stuckScanEnabled;
@@ -75,7 +77,8 @@ public class GradingTaskService {
                               GradingTraceRepository traceRepo,
                               OfficeDocumentConversionService officeDocumentConversionService,
                               GradingBatchReviewService gradingBatchReviewService,
-                              GradingFinalizeService gradingFinalizeService) {
+                              GradingFinalizeService gradingFinalizeService,
+                              GradingProgressService gradingProgressService) {
         this.taskRepo = taskRepo;
         this.batchRepo = batchRepo;
         this.submissionRepo = submissionRepo;
@@ -90,6 +93,7 @@ public class GradingTaskService {
         this.officeDocumentConversionService = officeDocumentConversionService;
         this.gradingBatchReviewService = gradingBatchReviewService;
         this.gradingFinalizeService = gradingFinalizeService;
+        this.gradingProgressService = gradingProgressService;
     }
 
     @Transactional
@@ -242,23 +246,97 @@ public class GradingTaskService {
         return result;
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public Page<GradingTaskEntity> getTaskList(Long teacherId, GradingTaskStatus status, Pageable pageable) {
-        if (status != null) {
-            return taskRepo.findAllByTeacherIdAndStatus(teacherId, status, pageable);
+        Page<GradingTaskEntity> page = (status != null)
+                ? taskRepo.findAllByTeacherIdAndStatus(teacherId, status, pageable)
+                : taskRepo.findAllByTeacherId(teacherId, pageable);
+        // 读取时自愈：如果某个任务的所有提交其实都已评分完成，但任务计数/状态因结果通知丢失
+        // 而卡在 PENDING/PROCESSING（进度显示 0%），在这里根据真实提交状态对账并推进。
+        for (GradingTaskEntity task : page.getContent()) {
+            reconcileTaskInline(task, teacherId);
         }
-        return taskRepo.findAllByTeacherId(teacherId, pageable);
+        return page;
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public GradingTaskEntity getTaskDetail(Long taskId, Long teacherId) {
-        return requireOwnedTask(taskId, teacherId);
+        GradingTaskEntity task = requireOwnedTask(taskId, teacherId);
+        reconcileTaskInline(task, teacherId);
+        return task;
     }
 
     @Transactional(readOnly = true)
     public List<GradingSubmissionEntity> getTaskSubmissions(Long taskId, Long teacherId) {
         requireOwnedTask(taskId, teacherId);
         return submissionRepo.findAllByTaskId(taskId);
+    }
+
+    /**
+     * 根据真实提交状态对账任务计数与状态。仅对仍在进行中的任务（PENDING/PROCESSING）生效：
+     * 当不再有 PENDING/PROCESSING 的提交时，说明评分阶段已结束——若全部失败则标记 FAILED，
+     * 否则进入 FINALIZING 并异步生成批注报告/总评，最终收敛为 COMPLETED。
+     * 这样即便 worker 的结果通知（grading:results）丢失，也不会再卡在 0%。
+     */
+    private boolean reconcileTaskInline(GradingTaskEntity task, Long teacherId) {
+        if (task == null) {
+            return false;
+        }
+        GradingTaskStatus status = task.getStatus();
+        if (status != GradingTaskStatus.PENDING && status != GradingTaskStatus.PROCESSING) {
+            return false;
+        }
+        Long taskId = task.getId();
+        int scored = submissionRepo.countByTaskIdAndStatus(taskId, SubmissionStatus.SCORED);
+        int needMore = submissionRepo.countByTaskIdAndStatus(taskId, SubmissionStatus.NEED_MORE_EVIDENCE);
+        int failed = submissionRepo.countByTaskIdAndStatus(taskId, SubmissionStatus.FAILED);
+        int pending = submissionRepo.countByTaskIdAndStatus(taskId, SubmissionStatus.PENDING);
+        int processing = submissionRepo.countByTaskIdAndStatus(taskId, SubmissionStatus.PROCESSING);
+        int completed = scored + needMore;
+        int total = task.getTotalCount();
+
+        boolean changed = false;
+        Integer curCompleted = task.getCompletedCount();
+        if (curCompleted == null || curCompleted != completed) {
+            task.setCompletedCount(completed);
+            changed = true;
+        }
+        Integer curFailed = task.getFailedCount();
+        if (curFailed == null || curFailed != failed) {
+            task.setFailedCount(failed);
+            changed = true;
+        }
+
+        boolean allTerminal = pending == 0 && processing == 0 && total > 0 && (completed + failed) >= total;
+        boolean triggerFinalize = false;
+        if (allTerminal) {
+            if (failed > 0 && completed == 0) {
+                task.setStatus(GradingTaskStatus.FAILED);
+                changed = true;
+            } else {
+                task.setStatus(GradingTaskStatus.FINALIZING);
+                changed = true;
+                triggerFinalize = true;
+            }
+        }
+
+        if (changed) {
+            taskRepo.save(task);
+            gradingProgressService.broadcastTaskSnapshot(task.getId(), task.getStatus().name(),
+                    task.getTotalCount(), task.getCompletedCount(), task.getFailedCount());
+        }
+        if (triggerFinalize) {
+            final Long taskIdFinal = task.getId();
+            final Long teacherIdFinal = teacherId;
+            // 等当前事务提交（FINALIZING 已落库）后再触发，避免 finalize 提前读到旧状态而无法收敛为 COMPLETED。
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    gradingFinalizeService.finalizeTaskAsync(taskIdFinal, teacherIdFinal);
+                }
+            });
+        }
+        return changed;
     }
 
     @Transactional
@@ -503,6 +581,9 @@ public class GradingTaskService {
             task.setStatus(GradingTaskStatus.PROCESSING);
             taskRepo.save(task);
         }
+
+        gradingProgressService.broadcastTaskSnapshot(task.getId(), task.getStatus().name(),
+                task.getTotalCount(), task.getCompletedCount(), task.getFailedCount());
 
         if (subStatus == SubmissionStatus.SCORED || subStatus == SubmissionStatus.NEED_MORE_EVIDENCE) {
             // 单个提交评分完成后，先将其资源状态重置为 PENDING，等待任务级批量 finalize。

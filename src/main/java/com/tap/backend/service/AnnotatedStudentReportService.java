@@ -28,7 +28,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
 import java.util.Set;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -153,7 +152,17 @@ public class AnnotatedStudentReportService {
     /**
      * A score for a single course-objective / dimension row on the cover table.
      */
-    public record DimensionScore(String label, BigDecimal score) {}
+    public record DimensionScore(String label, BigDecimal score, BigDecimal maxScore, BigDecimal coverMax) {
+        /** Backward-compatible constructor when the AI dimension max is unknown. */
+        public DimensionScore(String label, BigDecimal score) {
+            this(label, score, null, null);
+        }
+
+        /** Constructor when the AI dimension max is known but the cover-table max is not. */
+        public DimensionScore(String label, BigDecimal score, BigDecimal maxScore) {
+            this(label, score, maxScore, null);
+        }
+    }
 
     // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
     //  Public entry point
@@ -819,6 +828,24 @@ public class AnnotatedStudentReportService {
                         DimensionScore::score,
                         (a, b) -> a));
 
+        // The AI score is on each dimension's own max scale, which may differ from the
+        // cover table's per-objective max.  Keep the AI max so we can rescale by ratio.
+        Map<String, BigDecimal> aiMaxByLabel = dimensionScores.stream()
+                .filter(ds -> ds.label() != null && ds.score() != null && ds.maxScore() != null)
+                .collect(Collectors.toMap(
+                        ds -> normalizePdfText(ds.label()).replaceAll("\\s+", ""),
+                        DimensionScore::maxScore,
+                        (a, b) -> a));
+
+        // VLM-recognized authoritative cover-table max per objective (优先于几何解析).
+        Map<String, BigDecimal> vlmCoverMaxByLabel = dimensionScores.stream()
+                .filter(ds -> ds.label() != null && ds.coverMax() != null
+                        && ds.coverMax().compareTo(BigDecimal.ZERO) > 0)
+                .collect(Collectors.toMap(
+                        ds -> normalizePdfText(ds.label()).replaceAll("\\s+", ""),
+                        DimensionScore::coverMax,
+                        (a, b) -> a));
+
         // Find anchor lines that start a table row.  Because labels like "目标"
         // and "1" may be extracted on separate lines, we collect nearby lines
         // within a generous vertical band to form the full row text.
@@ -840,7 +867,11 @@ public class AnnotatedStudentReportService {
                 ? (scoreColumnHeader.startX() + scoreColumnHeader.endX()) / 2f
                 : box.getUpperRightX() - 60f;
         Map<String, BigDecimal> maxScoreByLabel = extractCourseObjectiveMaxScores(firstPageLines, anchors, scoreColumnCenterX);
-        Map<String, BigDecimal> scoreByLabel = normalizeCourseObjectiveScores(rawScoreByLabel, maxScoreByLabel, totalScore);
+        // Prefer the VLM-recognized cover max; fall back to the geometry-parsed value.
+        for (Map.Entry<String, BigDecimal> entry : vlmCoverMaxByLabel.entrySet()) {
+            maxScoreByLabel.put(entry.getKey(), entry.getValue());
+        }
+        Map<String, BigDecimal> scoreByLabel = normalizeCourseObjectiveScores(rawScoreByLabel, aiMaxByLabel, maxScoreByLabel, totalScore);
         Map<String, RowAnchor> visibleObjectiveAnchors = new LinkedHashMap<>();
         for (RowAnchor anchor : anchors) {
             if ("成绩".equals(anchor.label())) {
@@ -943,87 +974,57 @@ public class AnnotatedStudentReportService {
         return result;
     }
 
+    /**
+     * Map each AI dimension score onto its course-objective row on the cover table.
+     *
+     * <p>The AI scores every rubric dimension on that dimension's own max scale
+     * (e.g. 8/10), while the cover-page table has its own per-objective max
+     * (e.g. 目标1 满分 20). We rescale by the real performance ratio so the filled
+     * score reflects what the student actually earned:
+     * {@code filled = round(aiScore / aiMax * coverMax)}.
+     *
+     * <p>This is fully deterministic — the same submission always yields the same
+     * cover-page scores. When the AI max is unknown we fall back to clamping the raw
+     * score into the cover-page max range.
+     */
     private Map<String, BigDecimal> normalizeCourseObjectiveScores(Map<String, BigDecimal> rawScoreByLabel,
+                                                                   Map<String, BigDecimal> aiMaxByLabel,
                                                                    Map<String, BigDecimal> maxScoreByLabel,
                                                                    BigDecimal totalScore) {
         Map<String, BigDecimal> raw = rawScoreByLabel == null ? Map.of() : rawScoreByLabel;
+        Map<String, BigDecimal> aiMax = aiMaxByLabel == null ? Map.of() : aiMaxByLabel;
         Map<String, BigDecimal> normalized = new HashMap<>();
         for (Map.Entry<String, BigDecimal> entry : raw.entrySet()) {
             String label = entry.getKey();
             BigDecimal rawScore = entry.getValue();
-            BigDecimal max = maxScoreByLabel.get(label);
-            if (rawScore == null || max == null || max.compareTo(BigDecimal.ZERO) <= 0) {
-                normalized.put(label, rawScore);
+            if (rawScore == null) {
                 continue;
             }
-            normalized.put(label, rawScore.max(BigDecimal.ZERO).min(max));
-        }
-        return allocateSplitReportScores(normalized, maxScoreByLabel, totalScore);
-    }
+            BigDecimal coverMax = maxScoreByLabel.get(label);
+            BigDecimal dimMax = aiMax.get(label);
 
-    /**
-     * Temporary fallback for split-score reports (e.g. 目标1=20 + 目标2=40 = 60).
-     * If the AI total is on a 100-point scale but the cover table max is not 100,
-     * interpret the AI total as a percentage of the cover-table max and randomly
-     * allocate integer scores to every visible objective row.
-     */
-    Map<String, BigDecimal> allocateSplitReportScores(Map<String, BigDecimal> normalized,
-                                                       Map<String, BigDecimal> maxScoreByLabel,
-                                                       BigDecimal totalScore) {
-        if (totalScore == null || maxScoreByLabel == null || maxScoreByLabel.size() < 2) {
-            return normalized;
-        }
-        BigDecimal visibleMax = maxScoreByLabel.values().stream()
-                .filter(Objects::nonNull)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-        if (visibleMax.compareTo(BigDecimal.ZERO) <= 0
-                || visibleMax.compareTo(BigDecimal.valueOf(100)) == 0
-                || totalScore.compareTo(visibleMax) <= 0) {
-            return normalized;
-        }
-        int targetTotal = totalScore.multiply(visibleMax)
-                .divide(BigDecimal.valueOf(100), 0, RoundingMode.HALF_UP)
-                .max(BigDecimal.ZERO)
-                .min(visibleMax)
-                .intValue();
-        if (targetTotal <= 0) {
-            return normalized;
-        }
-        List<String> labels = maxScoreByLabel.keySet().stream()
-                .filter(l -> maxScoreByLabel.get(l) != null && maxScoreByLabel.get(l).compareTo(BigDecimal.ZERO) > 0)
-                .sorted(Comparator.naturalOrder())
-                .toList();
-        if (labels.size() < 2) {
-            return normalized;
-        }
-        int n = labels.size();
-        int[] maxScores = new int[n];
-        for (int i = 0; i < n; i++) {
-            maxScores[i] = maxScoreByLabel.get(labels.get(i)).intValue();
-        }
-        int[] allocated = new int[n];
-        int remaining = targetTotal;
-        Random rnd = ThreadLocalRandom.current();
-        for (int i = 0; i < n - 1; i++) {
-            int futureMax = 0;
-            for (int j = i + 1; j < n; j++) {
-                futureMax += maxScores[j];
+            // No cover-table max detected for this row: keep the raw score as-is
+            // (clamped to be non-negative).
+            if (coverMax == null || coverMax.compareTo(BigDecimal.ZERO) <= 0) {
+                normalized.put(label, rawScore.max(BigDecimal.ZERO));
+                continue;
             }
-            int lower = Math.max(0, remaining - futureMax);
-            int upper = Math.min(maxScores[i], remaining);
-            if (lower > upper) {
-                allocated[i] = 0;
+
+            BigDecimal scaled;
+            if (dimMax != null && dimMax.compareTo(BigDecimal.ZERO) > 0) {
+                // Rescale by the real performance ratio onto the cover-table max.
+                scaled = rawScore
+                        .divide(dimMax, 6, RoundingMode.HALF_UP)
+                        .multiply(coverMax)
+                        .setScale(0, RoundingMode.HALF_UP);
             } else {
-                allocated[i] = lower + rnd.nextInt(upper - lower + 1);
+                // AI max unknown: clamp the raw score into the cover-table range.
+                scaled = rawScore.setScale(0, RoundingMode.HALF_UP);
             }
-            remaining -= allocated[i];
+            scaled = scaled.max(BigDecimal.ZERO).min(coverMax);
+            normalized.put(label, scaled);
         }
-        allocated[n - 1] = Math.max(0, Math.min(maxScores[n - 1], remaining));
-        Map<String, BigDecimal> result = new HashMap<>();
-        for (int i = 0; i < n; i++) {
-            result.put(labels.get(i), BigDecimal.valueOf(allocated[i]));
-        }
-        return result;
+        return normalized;
     }
 
     private BigDecimal parseDecimal(String text) {
