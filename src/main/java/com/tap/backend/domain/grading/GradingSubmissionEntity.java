@@ -62,6 +62,9 @@ public class GradingSubmissionEntity {
     @Column(name = "error_demonstrations_json", columnDefinition = "longtext")
     private String errorDemonstrationsJson;
 
+    @Column(name = "cover_objectives_json", columnDefinition = "longtext")
+    private String coverObjectivesJson;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "annotated_report_status", nullable = false, length = 24)
     private AnnotatedReportStatus annotatedReportStatus = AnnotatedReportStatus.PENDING;
@@ -120,6 +123,8 @@ public class GradingSubmissionEntity {
     public Instant getUpdatedAt() { return updatedAt; }
     public String getErrorDemonstrationsJson() { return errorDemonstrationsJson; }
     public void setErrorDemonstrationsJson(String errorDemonstrationsJson) { this.errorDemonstrationsJson = errorDemonstrationsJson; }
+    public String getCoverObjectivesJson() { return coverObjectivesJson; }
+    public void setCoverObjectivesJson(String coverObjectivesJson) { this.coverObjectivesJson = coverObjectivesJson; }
     public AnnotatedReportStatus getAnnotatedReportStatus() { return annotatedReportStatus; }
     public void setAnnotatedReportStatus(AnnotatedReportStatus annotatedReportStatus) { this.annotatedReportStatus = annotatedReportStatus; }
     public ErrorDemonstrationStatus getErrorDemonstrationsStatus() { return errorDemonstrationsStatus; }

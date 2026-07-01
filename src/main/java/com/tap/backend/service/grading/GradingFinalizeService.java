@@ -32,17 +32,20 @@ public class GradingFinalizeService {
     private final GradingTaskRepository taskRepo;
     private final GradingSubmissionRepository submissionRepo;
     private final Executor aiExecutor;
+    private final GradingProgressService gradingProgressService;
 
     public GradingFinalizeService(GradingSubmissionService submissionService,
                                   GradingBatchReviewService batchReviewService,
                                   GradingTaskRepository taskRepo,
                                   GradingSubmissionRepository submissionRepo,
-                                  @Qualifier("aiExecutor") Executor aiExecutor) {
+                                  @Qualifier("aiExecutor") Executor aiExecutor,
+                                  GradingProgressService gradingProgressService) {
         this.submissionService = submissionService;
         this.batchReviewService = batchReviewService;
         this.taskRepo = taskRepo;
         this.submissionRepo = submissionRepo;
         this.aiExecutor = aiExecutor;
+        this.gradingProgressService = gradingProgressService;
     }
 
     /**
@@ -97,6 +100,8 @@ public class GradingFinalizeService {
                 task.setStatus(GradingTaskStatus.COMPLETED);
                 taskRepo.save(task);
             }
+            gradingProgressService.broadcastTaskSnapshot(task.getId(), task.getStatus().name(),
+                    task.getTotalCount(), task.getCompletedCount(), task.getFailedCount());
         });
     }
 
@@ -107,6 +112,8 @@ public class GradingFinalizeService {
                 task.setStatus(GradingTaskStatus.FAILED);
                 taskRepo.save(task);
             }
+            gradingProgressService.broadcastTaskSnapshot(task.getId(), task.getStatus().name(),
+                    task.getTotalCount(), task.getCompletedCount(), task.getFailedCount());
         });
     }
 

@@ -665,7 +665,8 @@ public class GradingSubmissionService {
         List<AnnotatedStudentReportService.AnnotationEntry> annotations = new ArrayList<>(scoreAnnotations);
         annotations.addAll(aiPageAnnotations);
 
-        List<AnnotatedStudentReportService.DimensionScore> dimensionScores = buildDimensionScores(scores);
+        List<AnnotatedStudentReportService.DimensionScore> dimensionScores =
+                buildDimensionScores(scores, submission.getCoverObjectivesJson());
 
         AnnotatedStudentReportService.RenderedReport rendered = annotatedStudentReportService.render(
                 submission.getOriginalFilename(),
@@ -1762,19 +1763,97 @@ public class GradingSubmissionService {
     }
 
     private List<AnnotatedStudentReportService.DimensionScore> buildDimensionScores(List<ScoreItemEntity> scores) {
+        return buildDimensionScores(scores, null);
+    }
+
+    /**
+     * Build the per-objective scores used to fill the cover-page 课程目标 table.
+     *
+     * <p>When the worker has recognized the cover table with a VLM
+     * ({@code coverObjectivesJson}), each rubric dimension (ordered by sortOrder) is mapped
+     * onto the corresponding recognized objective row, carrying that row's authoritative
+     * label and max score. This replaces the fragile "guess 目标N by order" heuristic and
+     * keeps the dimension↔objective alignment reliable even when counts or labels differ.
+     *
+     * <p>When no cover recognition is available, it falls back to deterministic order-based
+     * labelling (目标1, 目标2, ...) with the dimension's own max score.
+     */
+    private List<AnnotatedStudentReportService.DimensionScore> buildDimensionScores(
+            List<ScoreItemEntity> scores, String coverObjectivesJson) {
         if (scores == null) {
             return List.of();
         }
-        return scores.stream()
+        List<ScoreItemEntity> ordered = scores.stream()
                 .filter(score -> score.getScore() != null && score.getDimension() != null)
                 .sorted(Comparator.comparingInt(score -> {
                     Integer order = score.getDimension().getSortOrder();
                     return order == null ? Integer.MAX_VALUE : order;
                 }))
-                .map(score -> new AnnotatedStudentReportService.DimensionScore(
-                        "\u76ee\u6807" + score.getDimension().getSortOrder(),
-                        score.getScore()))
                 .toList();
+
+        List<CoverObjective> coverObjectives = parseCoverObjectives(coverObjectivesJson);
+
+        List<AnnotatedStudentReportService.DimensionScore> result = new ArrayList<>();
+        for (int i = 0; i < ordered.size(); i++) {
+            ScoreItemEntity score = ordered.get(i);
+            BigDecimal dimMax = score.getMaxScore() != null
+                    ? score.getMaxScore()
+                    : score.getDimension().getMaxScore();
+
+            String label;
+            BigDecimal coverMax = null;
+            if (i < coverObjectives.size()) {
+                // Map the i-th dimension onto the i-th recognized cover objective.
+                CoverObjective objective = coverObjectives.get(i);
+                label = objective.label() != null ? objective.label() : ("\u76ee\u6807" + (i + 1));
+                coverMax = objective.maxScore();
+            } else {
+                // No recognized objective for this dimension: fall back to 目标N by order.
+                label = "\u76ee\u6807" + (i + 1);
+            }
+
+            result.add(new AnnotatedStudentReportService.DimensionScore(
+                    label, score.getScore(), dimMax, coverMax));
+        }
+        return result;
+    }
+
+    private record CoverObjective(String label, BigDecimal maxScore) {}
+
+    private List<CoverObjective> parseCoverObjectives(String coverObjectivesJson) {
+        if (coverObjectivesJson == null || coverObjectivesJson.isBlank()) {
+            return List.of();
+        }
+        try {
+            JsonNode root = objectMapper.readTree(coverObjectivesJson);
+            JsonNode objectivesNode = root.get("objectives");
+            if (objectivesNode == null || !objectivesNode.isArray()) {
+                return List.of();
+            }
+            List<CoverObjective> objectives = new ArrayList<>();
+            for (JsonNode node : objectivesNode) {
+                String label = node.hasNonNull("label") ? node.get("label").asText() : null;
+                BigDecimal maxScore = null;
+                JsonNode maxNode = node.hasNonNull("maxScore") ? node.get("maxScore")
+                        : (node.hasNonNull("max_score") ? node.get("max_score") : null);
+                if (maxNode != null && maxNode.isNumber()) {
+                    maxScore = maxNode.decimalValue();
+                } else if (maxNode != null && maxNode.isTextual()) {
+                    try {
+                        maxScore = new BigDecimal(maxNode.asText().trim());
+                    } catch (RuntimeException ignored) {
+                        maxScore = null;
+                    }
+                }
+                if (label != null && !label.isBlank()) {
+                    objectives.add(new CoverObjective(label.trim(), maxScore));
+                }
+            }
+            return objectives;
+        } catch (Exception e) {
+            log.warn("Failed to parse cover objectives json: {}", e.getMessage());
+            return List.of();
+        }
     }
 
     private List<DimensionInsight> buildRankedInsights(List<ScoreItemEntity> scores, Map<Long, String> dimensionNames) {

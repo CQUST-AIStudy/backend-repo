@@ -32,6 +32,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 @RestController
 @RequestMapping("/api/grading/tasks")
@@ -44,6 +45,7 @@ public class GradingTaskController {
     private final TeacherPrincipalResolver teacherPrincipalResolver;
     private final TeacherSignatureService signatureService;
     private final GradingUnifiedLinkService gradingUnifiedLinkService;
+    private final com.tap.backend.service.grading.GradingProgressService gradingProgressService;
 
     public GradingTaskController(
             GradingTaskService taskService,
@@ -52,7 +54,8 @@ public class GradingTaskController {
             com.tap.backend.repo.GradingBatchRepository batchRepo,
             TeacherPrincipalResolver teacherPrincipalResolver,
             TeacherSignatureService signatureService,
-            GradingUnifiedLinkService gradingUnifiedLinkService
+            GradingUnifiedLinkService gradingUnifiedLinkService,
+            com.tap.backend.service.grading.GradingProgressService gradingProgressService
     ) {
         this.taskService = taskService;
         this.gradingSubmissionService = gradingSubmissionService;
@@ -61,6 +64,7 @@ public class GradingTaskController {
         this.teacherPrincipalResolver = teacherPrincipalResolver;
         this.signatureService = signatureService;
         this.gradingUnifiedLinkService = gradingUnifiedLinkService;
+        this.gradingProgressService = gradingProgressService;
     }
 
     @PostMapping
@@ -152,6 +156,25 @@ public class GradingTaskController {
         } catch (IllegalArgumentException e) {
             return ResponseEntity.status(404).body(Map.of("message", e.getMessage()));
         }
+    }
+
+    /**
+     * 实时进度 SSE 流。前端用 fetch + Bearer 订阅（参考 rag.js 的 readSse），
+     * 后端把 worker 推送的单份阶段进度（event: progress）与任务级状态（event: task）实时转发。
+     */
+    @GetMapping("/{id}/progress/stream")
+    public SseEmitter streamProgress(
+            @PathVariable Long id,
+            @AuthenticationPrincipal UserPrincipal principal
+    ) {
+        Long teacherId = teacherPrincipalResolver.requireTeacherId(principal);
+        // 所有权校验：非本人任务直接 404。
+        GradingTaskEntity task = taskService.getTaskDetail(id, teacherId);
+        SseEmitter emitter = gradingProgressService.subscribe(id);
+        // 立即推送一次任务级快照，便于前端在订阅瞬间同步当前状态。
+        gradingProgressService.broadcastTaskSnapshot(task.getId(), task.getStatus().name(),
+                task.getTotalCount(), task.getCompletedCount(), task.getFailedCount());
+        return emitter;
     }
 
     @GetMapping("/{id}/match-candidates")
