@@ -160,7 +160,7 @@ public class RubricDraftService {
         String customPrompt = firstNonBlank(
                 draft.customPrompt(),
                 buildCustomPromptFromSections(sections),
-                "评分时优先关注任务完成度、结果分析质量与报告规范性；证据不足时应明确指出缺失点。");
+                "本报告为物联网终端实训报告，按以下标准评分：实训内容5%、需求分析10%、总体方案设计15%、硬件设计15%、软件设计15%、系统测试15%、报告完整性10%、排版15%。评分时必须结合学生实际完成内容和证据，证据不足时应明确指出缺失点。");
 
         List<DraftDimension> normalized = normalizeDimensions(draft.dimensions());
         if (normalized.isEmpty()) {
@@ -195,7 +195,7 @@ public class RubricDraftService {
                         dim.maxScore() == null || dim.maxScore().signum() <= 0 ? BigDecimal.TEN : dim.maxScore(),
                         dim.weight() == null ? 0 : dim.weight()))
                 .filter(dim -> !dim.name().isBlank())
-                .limit(6)
+                .limit(8)
                 .toList();
         if (cleaned.isEmpty()) {
             return List.of();
@@ -238,44 +238,67 @@ public class RubricDraftService {
     }
 
     private List<DraftDimension> heuristicDimensions(Map<String, String> sections) {
-        boolean hasTask = containsAny(sections.get("task"), "内容", "任务", "步骤", "要求");
-        boolean hasResult = containsAny(sections.get("result"), "结果", "分析", "运行", "输出", "截图");
-
+        // 物联网终端实训报告默认评分标准（8 个维度，权重总和 100）
         List<DraftDimension> dims = new ArrayList<>();
         dims.add(new DraftDimension(
-                "任务完成度",
-                hasTask
-                        ? "根据实验任务和具体要求，评估学生是否完成核心操作、关键步骤与规定内容。"
-                        : "评估学生是否完成实验核心任务与基本要求。",
-                new BigDecimal("30"),
-                40));
+                "实训内容",
+                "陈述本次实训的任务要求，根据正确性给分。评估报告是否清晰陈述了实训的任务要求和目标。",
+                new BigDecimal("5"),
+                5));
         dims.add(new DraftDimension(
-                "结果与分析",
-                hasResult
-                        ? "结合实验结果、现象说明与原因分析，评估结论是否准确、分析是否充分。"
-                        : "评估实验结果说明、问题分析与总结是否完整、合理。",
-                new BigDecimal("25"),
-                30));
-        dims.add(new DraftDimension(
-                "报告规范性",
-                "评估报告结构、文字表达、代码或截图呈现是否清晰规范。",
-                new BigDecimal("20"),
-                20));
-        dims.add(new DraftDimension(
-                "独立思考与改进",
-                "评估是否体现调试过程、问题定位、优化尝试或额外分析。",
+                "需求分析",
+                "物联网终端功能性需求、非功能性需求，符合物联网终端需求分析的相关描述。根据正确性给分。",
                 new BigDecimal("10"),
                 10));
+        dims.add(new DraftDimension(
+                "总体方案设计",
+                "总体架构图、方案分析和比较。根据正确性给分。",
+                new BigDecimal("15"),
+                15));
+        dims.add(new DraftDimension(
+                "硬件设计",
+                "终端硬件组成框图、每个模块的设计介绍和电路图。根据正确性给分。",
+                new BigDecimal("15"),
+                15));
+        dims.add(new DraftDimension(
+                "软件设计",
+                "终端各模块设计描述和流程图。根据正确性给分。",
+                new BigDecimal("15"),
+                15));
+        dims.add(new DraftDimension(
+                "系统测试",
+                "终端整体图和功能测试图以及介绍。根据正确性给分。",
+                new BigDecimal("15"),
+                15));
+        dims.add(new DraftDimension(
+                "报告完整性",
+                "报告完整，有目录、需求分析、总体方案、硬件设计、软件设计、系统测试、结论、参考文献。",
+                new BigDecimal("10"),
+                10));
+        dims.add(new DraftDimension(
+                "排版",
+                "排版符合毕业论文的要求。根据符合性给分。",
+                new BigDecimal("15"),
+                15));
         return dims;
     }
 
     private String buildDraftPrompt(String focusedContext, String subjectHint, String nameHint) {
         StringBuilder builder = new StringBuilder();
-        builder.append("请根据教师上传的空白实验报告模板，生成一份实验报告评分标准草案。\n")
+        builder.append("请根据教师上传的空白实验报告模板，生成一份物联网终端实训报告评分标准草案。\n")
+                .append("默认评分标准（8 个维度，权重总和 100），请尽量遵循：\n")
+                .append("1. 实训内容（5%）：陈述本次实训的任务要求，根据正确性给分。\n")
+                .append("2. 需求分析（10%）：物联网终端功能性需求、非功能性需求，符合物联网终端需求分析的相关描述。\n")
+                .append("3. 总体方案设计（15%）：总体架构图、方案分析和比较。\n")
+                .append("4. 硬件设计（15%）：终端硬件组成框图、每个模块的设计介绍和电路图。\n")
+                .append("5. 软件设计（15%）：终端各模块设计描述和流程图。\n")
+                .append("6. 系统测试（15%）：终端整体图和功能测试图以及介绍。\n")
+                .append("7. 报告完整性（10%）：报告完整，有目录、需求分析、总体方案、硬件设计、软件设计、系统测试、结论、参考文献。\n")
+                .append("8. 排版（15%）：排版符合毕业论文的要求。\n")
                 .append("只能依据模板中的实验目的、要求、任务和结果分析要求来设计评分维度。\n")
                 .append("输出必须是 JSON，不要输出 Markdown。\n")
                 .append("要求：\n")
-                .append("1. dimensions 生成 4 到 6 个。\n")
+                .append("1. dimensions 生成 4 到 8 个。\n")
                 .append("2. weight 总和必须等于 100。\n")
                 .append("3. maxScore 必须为正数。\n")
                 .append("4. customPrompt 要提醒评分模型基于学生实际完成内容和证据评分，不要无依据臆断。\n")
@@ -286,7 +309,7 @@ public class RubricDraftService {
                 .append("  \"description\": \"评分标准说明\",\n")
                 .append("  \"customPrompt\": \"AI 评分补充要求\",\n")
                 .append("  \"dimensions\": [\n")
-                .append("    {\"name\":\"任务完成度\",\"description\":\"...\",\"maxScore\":30,\"weight\":40}\n")
+                .append("    {\"name\":\"实训内容\",\"description\":\"...\",\"maxScore\":5,\"weight\":5}\n")
                 .append("  ]\n")
                 .append("}\n");
 
@@ -448,9 +471,18 @@ public class RubricDraftService {
     private String buildCustomPromptFromSections(Map<String, String> sections) {
         String objective = safe(sections.get("objective"), 260);
         String task = safe(sections.get("task"), 320);
-        StringBuilder builder = new StringBuilder("评分时必须结合学生实际完成内容、结果说明与分析过程，避免仅凭模板内容给高分。");
+        StringBuilder builder = new StringBuilder("本报告为物联网终端实训报告，按以下标准评分：\n");
+        builder.append("1. 实训内容（5%）：是否陈述了本次实训的任务要求。\n");
+        builder.append("2. 需求分析（10%）：是否包含物联网终端功能性需求和非功能性需求，是否符合物联网终端需求分析的相关描述。\n");
+        builder.append("3. 总体方案设计（15%）：是否有总体架构图、方案分析和比较。\n");
+        builder.append("4. 硬件设计（15%）：是否有终端硬件组成框图、每个模块的设计介绍和电路图。\n");
+        builder.append("5. 软件设计（15%）：是否有终端各模块设计描述和流程图。\n");
+        builder.append("6. 系统测试（15%）：是否有终端整体图和功能测试图以及介绍。\n");
+        builder.append("7. 报告完整性（10%）：是否有目录、需求分析、总体方案、硬件设计、软件设计、系统测试、结论、参考文献。\n");
+        builder.append("8. 排版（15%）：排版是否符合毕业论文的要求。\n");
+        builder.append("评分时必须结合学生实际完成内容和证据，避免仅凭模板内容给高分。");
         if (!objective.isBlank()) {
-            builder.append(" 重点核对实验目标与要求：").append(objective);
+            builder.append(" 重点核对实训目标与要求：").append(objective);
         }
         if (!task.isBlank()) {
             builder.append(" 重点核对具体任务：").append(task);

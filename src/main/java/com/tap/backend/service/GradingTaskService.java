@@ -684,9 +684,22 @@ public class GradingTaskService {
         String rubricPrompt = rubric != null && rubric.getCustomPrompt() != null
                 ? rubric.getCustomPrompt().trim()
                 : "";
+        String defaultIotPrompt = """
+                本报告为物联网终端实训报告，默认按以下 8 个维度评分（权重总和 100）：
+                1. 实训内容（5%）：陈述了本次实训的任务要求。根据正确性给分。
+                2. 需求分析（10%）：物联网终端功能性需求、非功能性需求，符合物联网终端需求分析的相关描述。根据正确性给分。
+                3. 总体方案设计（15%）：总体架构图、方案分析和比较。根据正确性给分。
+                4. 硬件设计（15%）：终端硬件组成框图、每个模块的设计介绍和电路图。根据正确性给分。
+                5. 软件设计（15%）：终端各模块设计描述和流程图。根据正确性给分。
+                6. 系统测试（15%）：终端整体图和功能测试图以及介绍。根据正确性给分。
+                7. 报告完整性（10%）：报告完整，有目录、需求分析、总体方案、硬件设计、软件设计、系统测试、结论、参考文献。
+                8. 排版（15%）：排版符合毕业论文的要求。根据符合性给分。""";
         String detailPrompt = """
-                批改反馈要求：每个评分维度的 comment 必须写成有证据的具体分析，不要只写“较好”“不够深入”等短语。请结合学生报告中的实验目的、步骤、结果、数据、代码或图表内容，说明为什么做得好、为什么存在不足、具体原因是什么，以及下一步应如何修改。每个维度建议不少于 2 句中文；如果扣分，请明确扣分依据和对应改进点。""";
-        return rubricPrompt.isBlank() ? detailPrompt : rubricPrompt + "\n\n" + detailPrompt;
+                批改反馈要求：每个评分维度的 comment 必须写成有证据的具体分析，不要只写"较好""不够深入"等短语。请结合学生报告中的实验目的、步骤、结果、数据、代码或图表内容，说明为什么做得好、为什么存在不足、具体原因是什么，以及下一步应如何修改。每个维度建议不少于 2 句中文；如果扣分，请明确扣分依据和对应改进点。""";
+        if (rubricPrompt.isBlank()) {
+            return defaultIotPrompt + "\n\n" + detailPrompt;
+        }
+        return rubricPrompt + "\n\n" + detailPrompt;
     }
 
     private boolean isSupportedDocument(MultipartFile file) {

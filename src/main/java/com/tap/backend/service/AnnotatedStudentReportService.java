@@ -134,8 +134,8 @@ public class AnnotatedStudentReportService {
             "code"
     );
 
-    /** Pages above this threshold use simulated checkmarks on main content pages. */
-    private static final int LONG_DOCUMENT_PAGE_THRESHOLD = 10;
+/** Pages above this threshold use simulated checkmarks on main content pages. */
+private static final int LONG_DOCUMENT_PAGE_THRESHOLD = 15;
     /** Number of leading pages to skip when simulating marks on long documents. */
     private static final int LONG_DOCUMENT_LEADING_PAGES_TO_SKIP = 3;
 
@@ -524,25 +524,9 @@ public class AnnotatedStudentReportService {
         separator.setAlignment(ParagraphAlignment.CENTER);
         XWPFRun sepRun = separator.createRun();
         styleDocxRun(sepRun, 11, false);
-        sepRun.setText("\u002d\u002d\u002d\u002d\u002d\u002d\u002d\u002d \u6559\u5e08\u6279\u6ce8 \u002d\u002d\u002d\u002d\u002d\u002d\u002d\u002d");
+        sepRun.setText("\u002d\u002d\u002d\u002d\u002d\u002d\u002d\u002d \u6559\u5e08\u7b7e\u540d \u002d\u002d\u002d\u002d\u002d\u002d\u002d\u002d");
 
-        XWPFParagraph titleParagraph = insertDocxParagraphAfterAnchor(document, separator);
-        titleParagraph.setAlignment(ParagraphAlignment.LEFT);
-        titleParagraph.setSpacingBefore(100);
-        titleParagraph.setSpacingAfter(30);
-        appendDocxMixedText(titleParagraph, "\u6559\u5e08\u6279\u6ce8\uff1a", 17, true);
-
-        List<String> reviewLines = buildReviewLines(teacherComment, dimensionComments);
-        XWPFParagraph lastParagraph = titleParagraph;
-        for (String line : reviewLines) {
-            XWPFParagraph paragraph = insertDocxParagraphAfterAnchor(document, lastParagraph);
-            paragraph.setSpacingBefore(12);
-            paragraph.setSpacingAfter(12);
-            appendDocxMixedText(paragraph, line, 12, false);
-            lastParagraph = paragraph;
-        }
-
-        XWPFParagraph sigPara = insertDocxParagraphAfterAnchor(document, lastParagraph);
+        XWPFParagraph sigPara = insertDocxParagraphAfterAnchor(document, separator);
         sigPara.setAlignment(ParagraphAlignment.RIGHT);
         sigPara.setSpacingBefore(140);
         appendDocxMixedText(sigPara, resolveTeacherSignature(teacherSignature), 14, true);
@@ -689,7 +673,7 @@ public class AnnotatedStudentReportService {
                 // Older workers may return scores and detailed comments without the
                 // structured annotations field. Recover only text fragments that
                 // really occur in the report, so the fallback stays deterministic.
-                if (renderedAnnotationCount < 2) {
+                if (renderedAnnotationCount < 5) {
                     List<AnnotationEntry> derivedAnnotations = derivePdfAnnotationsFromComments(
                             document, dimensionComments, annotations);
                     renderedAnnotationCount += drawPdfAnnotationMarks(
@@ -703,10 +687,9 @@ public class AnnotatedStudentReportService {
                 }
             }
 
-            // 3) Draw review on last page
+            // 3) Draw teacher signature — prefer the cover page near 指导教师/签字
             if (!documentContainsGeneratedReview(document)) {
-                drawPdfReviewOnLastPage(document, pages.get(pages.size() - 1), fontSelection,
-                        teacherComment, dimensionComments, teacherSignature);
+                drawPdfTeacherSignature(document, pages, fontSelection, teacherSignature);
             }
 
             document.save(outputStream);
@@ -1378,6 +1361,7 @@ public class AnnotatedStudentReportService {
         Map<Integer, Float> bodyStartByPage = findBodyStartYByPage(collectPdfLines(document));
         Map<Integer, List<MarkRect>> placedMarksByPage = new HashMap<>();
         int renderedCount = 0;
+        int textAnnotationCount = 0;
         for (AnnotationEntry ann : annotations) {
             if (ann.anchorText() == null || ann.anchorText().isBlank()) {
                 continue;
@@ -1431,7 +1415,12 @@ public class AnnotatedStudentReportService {
 
             try (PDPageContentStream stream = new PDPageContentStream(document, page, AppendMode.APPEND, true, true)) {
                 if (ann.wavy() || "WAVE".equals(type)) {
+                    // Wavy underline for problems/warnings
                     drawPdfWavyUnderline(stream, anchor);
+                } else {
+                    // Straight underline for positive (CHECK) annotations so the
+                    // margin note always has a visual anchor on the text.
+                    drawPdfStraightUnderline(stream, anchor.startX(), anchor.endX(), anchor.baselineY() - 3f);
                 }
                 switch (type) {
                     case "CROSS" -> drawPdfCrossStroke(stream, markX, markY, size, angle);
@@ -1449,8 +1438,11 @@ public class AnnotatedStudentReportService {
                 }
             }
             renderedCount++;
+                if (ann.note() != null && !ann.note().isBlank()) {
+                    textAnnotationCount++;
+                }
         }
-        return renderedCount;
+        return textAnnotationCount;
     }
 
     private List<AnnotationEntry> derivePdfAnnotationsFromComments(PDDocument document,
@@ -1488,13 +1480,15 @@ public class AnnotatedStudentReportService {
                     continue;
                 }
                 String clause = annotationClause(value, fragment);
-                boolean positive = containsAny(clause, "正确", "预期", "清楚", "完整", "合理")
-                        && !containsAny(clause, "错误", "异常", "越界", "未初始化", "矛盾", "不足", "缺少");
-                boolean severe = containsAny(clause, "错误", "异常", "越界", "未初始化", "崩溃", "终止", "矛盾");
-                String type = positive ? "CHECK" : severe ? "CROSS" : "WAVE";
+                boolean severe = containsAny(clause, "错误", "异常", "越界", "未初始化", "崩溃", "终止", "矛盾", "缺少", "不足", "未", "缺");
+                boolean stronglyPositive = containsAny(clause, "正确", "预期", "清楚", "完整", "合理")
+                        && !containsAny(clause, "错误", "异常", "不足", "缺少", "未");
+                // Default to WAVE (wavy underline + text note) for most annotations.
+                // Only use CHECK for clearly positive items, CROSS for severe issues.
+                String type = severe ? "CROSS" : stronglyPositive ? "CHECK" : "WAVE";
                 String note = compactAnnotationNote(clause);
                 derived.add(new AnnotationEntry(
-                        "derived-" + derived.size(), type, note, fragment, !positive));
+                        "derived-" + derived.size(), type, note, fragment, !"CHECK".equals(type)));
                 if (derived.size() >= 6) {
                     return derived;
                 }
@@ -1859,6 +1853,19 @@ public class AnnotatedStudentReportService {
         stream.stroke();
     }
 
+    /** Straight underline for positive annotations, like a teacher's straight line. */
+    private void drawPdfStraightUnderline(PDPageContentStream stream,
+                                          float startX, float endX, float y) throws IOException {
+        if (endX - startX < 12f) {
+            return;
+        }
+        stream.setStrokingColor(RED_LIGHT);
+        stream.setLineWidth(1.0f);
+        stream.moveTo(startX, y);
+        stream.lineTo(endX, y);
+        stream.stroke();
+    }
+
     /** Evenly spread {@code count} indices over {@code size} elements with jitter. */
     private List<Integer> pickSpreadIndices(int size, int count, Random random) {
         if (size <= 0 || count <= 0) {
@@ -1926,67 +1933,55 @@ public class AnnotatedStudentReportService {
         };
     }
 
-    private void drawPdfReviewOnLastPage(PDDocument document,
-                                         PDPage page,
-                                         FontSelection fontSelection,
-                                         String teacherComment,
-                                         List<String> dimensionComments,
-                                         String teacherSignature) throws IOException {
-        List<StyledLine> styledLines = new ArrayList<>();
-        styledLines.add(new StyledLine(normalizeForFont(fontSelection,
-                "教师批注", "Teacher Review"), 16f));
-        for (String line : buildReviewLines(teacherComment, dimensionComments)) {
-            styledLines.add(new StyledLine(normalizeForFont(fontSelection, line, line), 11f));
-        }
+    /**
+     * Draw the teacher signature on the PDF.  First tries to find "指导教师" or "签字"
+     * on the first page and places the signature right after it.  If not found, falls
+     * back to a dedicated signature page.
+     */
+    private void drawPdfTeacherSignature(PDDocument document,
+                                          List<PDPage> pages,
+                                          FontSelection fontSelection,
+                                          String teacherSignature) throws IOException {
         String signatureLine = normalizeForFont(fontSelection, resolveTeacherSignature(teacherSignature), "Teacher");
+        float sigFontSize = 12f;
+        float sigWidth = measurePdfTextWidth(fontSelection, signatureLine, sigFontSize);
 
-        PDRectangle templateBox = page.getMediaBox();
+        // Try to find 指导教师 or 签字 on the first page
+        if (!pages.isEmpty()) {
+            List<TextLine> firstPageLines = collectPdfLines(document).stream()
+                    .filter(line -> line.pageIndex() == 0)
+                    .toList();
+            for (TextLine line : firstPageLines) {
+                String text = normalizePdfText(line.text());
+                String compact = text.replaceAll("\\s+", "");
+                if (compact.contains("指导教师") || compact.contains("签字")) {
+                    PDPage page = pages.get(0);
+                    PDRectangle box = page.getMediaBox();
+                    // Place signature just to the right of the keyword
+                    float x = Math.min(line.endX() + 8f, box.getUpperRightX() - sigWidth - 12f);
+                    float y = line.baselineY() - 2f;
+                    try (PDPageContentStream stream = new PDPageContentStream(document, page, AppendMode.APPEND, true, true)) {
+                        stream.setNonStrokingColor(RED_COLOR);
+                        drawPdfText(stream, fontSelection, sigFontSize, x, y, signatureLine);
+                    }
+                    return;
+                }
+            }
+        }
+
+        // Fallback: draw on a dedicated page
+        PDPage lastPage = pages.get(pages.size() - 1);
+        PDRectangle templateBox = lastPage.getMediaBox();
         float margin = 44f;
-        float maxWidth = templateBox.getWidth() - margin * 2;
-        // Always put the teacher review on a dedicated page.  Report pages vary
-        // wildly in layout, and estimating "remaining blank space" can place
-        // handwriting over the student's original text.
         PDPage currentPage = new PDPage(templateBox);
         document.addPage(currentPage);
         float initialStartY = templateBox.getHeight() - 72f;
-        float y;
 
         PDPageContentStream stream = new PDPageContentStream(document, currentPage, AppendMode.APPEND, true, true);
         try {
             stream.setNonStrokingColor(RED_COLOR);
-            y = startPdfReviewSection(stream, templateBox, margin, fontSelection, false, initialStartY);
-            for (StyledLine styledLine : styledLines) {
-                List<String> wrapped = wrapPdfText(
-                        fontSelection,
-                        styledLine.text(),
-                        styledLine.fontSize(),
-                        maxWidth
-                );
-                for (String line : wrapped) {
-                    float nextLineHeight = styledLine.fontSize() + 6f;
-                    if (y - nextLineHeight < 40f) {
-                        stream.close();
-                        currentPage = new PDPage(templateBox);
-                        document.addPage(currentPage);
-                        stream = new PDPageContentStream(document, currentPage, AppendMode.APPEND, true, true);
-                        stream.setNonStrokingColor(RED_COLOR);
-                        y = startPdfReviewSection(stream, templateBox, margin, fontSelection, true, templateBox.getHeight() - 72f);
-                    }
-                    drawPdfText(stream, fontSelection, styledLine.fontSize(), margin, y, line);
-                    y -= nextLineHeight;
-                }
-                y -= 4f;
-            }
-            if (y - 20f < 40f) {
-                stream.close();
-                currentPage = new PDPage(templateBox);
-                document.addPage(currentPage);
-                stream = new PDPageContentStream(document, currentPage, AppendMode.APPEND, true, true);
-                stream.setNonStrokingColor(RED_COLOR);
-                y = startPdfReviewSection(stream, templateBox, margin, fontSelection, true, templateBox.getHeight() - 72f);
-            }
-            float sigWidth = measurePdfTextWidth(fontSelection, signatureLine, 12f);
-            drawPdfText(stream, fontSelection, 12f, templateBox.getWidth() - margin - sigWidth, y - 8f, signatureLine);
+            float y = startPdfReviewSection(stream, templateBox, margin, fontSelection, false, initialStartY);
+            drawPdfText(stream, fontSelection, sigFontSize, templateBox.getWidth() - margin - sigWidth, y - 8f, signatureLine);
         } finally {
             stream.close();
         }
@@ -2353,17 +2348,8 @@ public class AnnotatedStudentReportService {
     }
 
     private List<String> buildReviewLines(String teacherComment, List<String> dimensionComments) {
-        // 不再输出教师评语内容，只保留维度批注摘要；教师签名单独渲染
-        List<String> lines = new ArrayList<>();
-        if (dimensionComments != null) {
-            for (String line : dimensionComments) {
-                String trimmed = line == null ? "" : line.trim();
-                if (!trimmed.isBlank()) {
-                    lines.add(trimmed);
-                }
-            }
-        }
-        return lines.size() > 18 ? lines.subList(0, 18) : lines;
+        // 批改报告中不再输出维度批注文字，只保留教师签名
+        return List.of();
     }
 
     private String resolveTeacherSignature(String teacherSignature) {

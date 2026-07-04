@@ -460,7 +460,11 @@ public class GradingSubmissionService {
 
         AnnotatedReportArtifact artifact = null;
         try {
-            // 不再生成教师评语，直接生成批注报告
+            // 先生成教师评语（如果需要）
+            if (needsReview) {
+                generateFinalReview(submissionId, teacherId);
+                submission = requireOwnedSubmission(submissionId, teacherId);
+            }
             if (needsAnnotatedReport) {
                 List<ScoreItemEntity> scores = scoreItemRepo.findAllBySubmissionId(submissionId);
                 Map<Long, String> dimensionNames = buildDimensionNameMap(submission);
@@ -510,7 +514,8 @@ public class GradingSubmissionService {
         if (submission.getTotalScore() == null) {
             throw new IllegalStateException("Submission has not been scored yet");
         }
-        // 不再生成教师评语，直接生成批注报告
+        // 重新生成教师评语
+        generateFinalReview(submissionId, teacherId);
         submission = requireOwnedSubmission(submissionId, teacherId);
         List<ScoreItemEntity> scores = scoreItemRepo.findAllBySubmissionId(submissionId);
         Map<Long, String> dimensionNames = buildDimensionNameMap(submission);
@@ -660,7 +665,7 @@ public class GradingSubmissionService {
         annotations.addAll(aiPageAnnotations);
 
         List<AnnotatedStudentReportService.DimensionScore> dimensionScores =
-                buildDimensionScores(scores, submission.getCoverObjectivesJson());
+                buildDimensionScores(scores, submission.getCoverObjectivesJson(), originalBytes);
 
         AnnotatedStudentReportService.RenderedReport rendered = annotatedStudentReportService.render(
                 submission.getOriginalFilename(),
@@ -727,8 +732,8 @@ public class GradingSubmissionService {
         return result;
     }
 
-    /**
-     * Ask the AI to read up to the first 10 pages page by page and return inline
+        /**
+     * Ask the AI to read up to the first 15 pages page by page and return inline
      * annotations. Each page's prompt includes the text of the pages already read,
      * so the model can relate later conclusions to earlier methods.
      */
@@ -751,7 +756,7 @@ public class GradingSubmissionService {
                 return result;
             }
 
-            int pagesToAnalyze = Math.min(totalPages, 10);
+            int pagesToAnalyze = Math.min(totalPages, 15);
             PDFTextStripper stripper = new PDFTextStripper();
             List<String> pageTexts = new ArrayList<>();
             for (int i = 1; i <= pagesToAnalyze; i++) {
@@ -834,18 +839,19 @@ public class GradingSubmissionService {
                 1. 只返回 JSON 数组，不要任何额外说明文字。
                 2. 每个元素必须包含：
                    - anchor_text：当前页文本中真实存在的连续短片段（最多 30 个字符），代码会用它在 PDF 中定位。
-                   - note：简短评语，最多 50 个汉字，像老师写在旁边的批注。
-                   - type：CHECK（正确/优点）、CROSS（错误/缺失）、WAVE（警告/建议）三者之一。
-                   - wavy：布尔值，表示是否在该 anchor_text 行下方画波浪线。重要：只有 CROSS 和 WAVE 类型才能设为 true，CHECK 类型必须设为 false（好的地方只打勾，不画波浪线）。
+                   - note：简短评语，最多 50 个汉字，像老师写在旁边的批注。每个标注都必须有 note，不能为空。
+                   - type：WAVE（警告/建议/需改进，画波浪线）、CROSS（错误/缺失，画叉）、CHECK（正确/优点，打勾）三者之一。
+                   - wavy：布尔值，表示是否在该 anchor_text 行下方画波浪线。WAVE 和 CROSS 类型设为 true，CHECK 类型设为 false。
                 3. 如果当前页没有值得标注的地方，返回空数组 []。
                 4. 评语要具体、自然，尽量引用学生实际写到的内容，避免套话。
                 5. 标注应优先关注实验原理、方法步骤、结果分析、结论依据等实质性内容，不要因排版、字体、环境版本等细节给出大量标注。
                 6. 不要选择页眉、页脚、页面最顶部的标题行、学校名、报告题目、目录条目、摘要页、参考资料页作为 anchor_text；这些页面通常返回 []。
                 7. anchor_text 尽量选择正文中部的句子、代码行、实验结果或分析句，不要选择一页开头的第一行文字，避免批注遮挡版面。
-                8. 每页最多给 1 到 2 个最有价值的标注，不要在同一页密集标注。
+                8. 每页最多给 2 到 3 个有价值的标注，不要在同一页密集标注。整份报告累计至少 5-6 处带文字评语的标注。
+                9. 重要：优先使用 WAVE 类型（波浪线+文字说明），这是最主要的标注方式。CHECK 类型（打勾）尽量少用，整份报告最多 1-2 个即可。CROSS 类型用于明显错误。大多数标注都应该是波浪线加文字说明的形式。
 
                 输出示例：
-                [{"anchor_text":"系统采用 MQTT 协议上传数据","note":"协议选型合理，说明清晰","type":"CHECK","wavy":false}]
+                [{"anchor_text":"滤波策略采用均值滤波","note":"建议对比不同滤波效果，补充原始与滤波后曲线图","type":"WAVE","wavy":true}]
                 """.formatted(
                 previousContext.toString(),
                 currentPage,
@@ -1765,7 +1771,7 @@ public class GradingSubmissionService {
     }
 
     private List<AnnotatedStudentReportService.DimensionScore> buildDimensionScores(List<ScoreItemEntity> scores) {
-        return buildDimensionScores(scores, null);
+        return buildDimensionScores(scores, null, null);
     }
 
     /**
@@ -1781,7 +1787,7 @@ public class GradingSubmissionService {
      * labelling (目标1, 目标2, ...) with the dimension's own max score.
      */
     private List<AnnotatedStudentReportService.DimensionScore> buildDimensionScores(
-            List<ScoreItemEntity> scores, String coverObjectivesJson) {
+            List<ScoreItemEntity> scores, String coverObjectivesJson, byte[] pdfBytes) {
         if (scores == null) {
             return List.of();
         }
@@ -1795,6 +1801,49 @@ public class GradingSubmissionService {
 
         List<CoverObjective> coverObjectives = parseCoverObjectives(coverObjectivesJson);
 
+        // When cover objectives are recognized, always use AI to score each
+        // objective based on the dimension scores, comments, and the cover-page
+        // text.  The rubric dimensions (e.g. "代码正确性", "实验分析") never
+        // correspond 1:1 to cover objectives (e.g. "目标1", "目标2"), so a
+        // direct mapping is always wrong.  Falls back to a proportional
+        // algorithm if the AI call fails or pdfBytes is unavailable.
+        if (!coverObjectives.isEmpty() && !ordered.isEmpty()) {
+            List<AnnotatedStudentReportService.DimensionScore> aiResult =
+                    aiScoreCoverObjectives(pdfBytes, coverObjectives, ordered);
+            if (aiResult != null) {
+                return aiResult;
+            }
+            // Fallback: proportional algorithm
+            BigDecimal totalEarned = BigDecimal.ZERO;
+            BigDecimal totalMax = BigDecimal.ZERO;
+            for (ScoreItemEntity score : ordered) {
+                BigDecimal dimMax = score.getMaxScore() != null
+                        ? score.getMaxScore()
+                        : score.getDimension().getMaxScore();
+                if (dimMax != null && dimMax.compareTo(BigDecimal.ZERO) > 0) {
+                    totalEarned = totalEarned.add(score.getScore() != null ? score.getScore() : BigDecimal.ZERO);
+                    totalMax = totalMax.add(dimMax);
+                }
+            }
+            BigDecimal overallRatio = totalMax.compareTo(BigDecimal.ZERO) > 0
+                    ? totalEarned.divide(totalMax, 6, RoundingMode.HALF_UP)
+                    : BigDecimal.ZERO;
+
+            List<AnnotatedStudentReportService.DimensionScore> result = new ArrayList<>();
+            for (CoverObjective objective : coverObjectives) {
+                String label = objective.label() != null ? objective.label() : "\u76ee\u6807";
+                BigDecimal coverMax = objective.maxScore();
+                BigDecimal scaledScore = coverMax != null && coverMax.compareTo(BigDecimal.ZERO) > 0
+                        ? overallRatio.multiply(coverMax).setScale(0, RoundingMode.HALF_UP)
+                        : BigDecimal.ZERO;
+                result.add(new AnnotatedStudentReportService.DimensionScore(
+                        label, scaledScore, coverMax, coverMax));
+            }
+            return result;
+        }
+
+        // No cover objectives recognized: fall back to sequential labelling
+        // (目标1, 目标2, ...) with the dimension's own max score.
         List<AnnotatedStudentReportService.DimensionScore> result = new ArrayList<>();
         for (int i = 0; i < ordered.size(); i++) {
             ScoreItemEntity score = ordered.get(i);
@@ -1805,12 +1854,10 @@ public class GradingSubmissionService {
             String label;
             BigDecimal coverMax = null;
             if (i < coverObjectives.size()) {
-                // Map the i-th dimension onto the i-th recognized cover objective.
                 CoverObjective objective = coverObjectives.get(i);
                 label = objective.label() != null ? objective.label() : ("\u76ee\u6807" + (i + 1));
                 coverMax = objective.maxScore();
             } else {
-                // No recognized objective for this dimension: fall back to 目标N by order.
                 label = "\u76ee\u6807" + (i + 1);
             }
 
@@ -1855,6 +1902,205 @@ public class GradingSubmissionService {
         } catch (Exception e) {
             log.warn("Failed to parse cover objectives json: {}", e.getMessage());
             return List.of();
+        }
+    }
+
+    /**
+     * Ask the AI to directly score each cover-page course objective based on
+     * the dimension scores, comments, and the cover-page text (which contains
+     * the objective descriptions).  Returns {@code null} on any failure so the
+     * caller can fall back to the proportional algorithm.
+     */
+    private List<AnnotatedStudentReportService.DimensionScore> aiScoreCoverObjectives(
+            byte[] pdfBytes,
+            List<CoverObjective> coverObjectives,
+            List<ScoreItemEntity> orderedScores) {
+
+        if (pdfBytes == null || pdfBytes.length == 0 || coverObjectives.isEmpty()) {
+            return null;
+        }
+        AiEndpoint endpoint = resolveAiEndpoint();
+        if (endpoint == null) {
+            return null;
+        }
+
+        // Extract the first page text so the AI can read the objective descriptions.
+        String coverText = extractFirstPageText(pdfBytes);
+        if (coverText == null || coverText.isBlank()) {
+            return null;
+        }
+
+        try {
+            StringBuilder prompt = new StringBuilder();
+            prompt.append("你是高校实验课任课教师，正在为学生实验报告封面\u201c课程目标\u201d表格评定得分。\n\n");
+            prompt.append("以下是学生报告封面第一页的文本内容（包含各课程目标的描述和分值）：\n");
+            prompt.append("---\n");
+            // Truncate to avoid excessive token usage
+            String snippet = coverText.length() > 2000 ? coverText.substring(0, 2000) : coverText;
+            prompt.append(snippet);
+            prompt.append("\n---\n\n");
+
+            prompt.append("以下是AI按照评分标准各维度给出的评分结果：\n");
+            for (ScoreItemEntity score : orderedScores) {
+                String dimName = score.getDimension() != null ? score.getDimension().getName() : "未知维度";
+                BigDecimal dimMax = score.getMaxScore() != null
+                        ? score.getMaxScore()
+                        : (score.getDimension() != null ? score.getDimension().getMaxScore() : BigDecimal.ZERO);
+                BigDecimal dimScore = score.getScore() != null ? score.getScore() : BigDecimal.ZERO;
+                String comment = score.getComment();
+                if (comment != null && comment.length() > 200) {
+                    comment = comment.substring(0, 200) + "...";
+                }
+                prompt.append(String.format("- 维度\u201c%s\u201d（满分%.1f分）：得分%.1f分", dimName, dimMax, dimScore));
+                if (comment != null && !comment.isBlank()) {
+                    prompt.append("，评语：").append(comment);
+                }
+                prompt.append("\n");
+            }
+
+            prompt.append("\n封面课程目标表格有以下目标行：\n");
+            for (CoverObjective obj : coverObjectives) {
+                prompt.append(String.format("- %s（满分%s分）\n",
+                        obj.label(),
+                        obj.maxScore() != null ? obj.maxScore().toPlainString() : "?"));
+            }
+
+            prompt.append("\n请根据封面文本中各课程目标的描述内容，结合上述各维度的评分和评语，");
+            prompt.append("为每个课程目标给出合理的得分。不同目标应根据其描述侧重点不同而有所区分，");
+            prompt.append("不要简单地用同一个比例分配分数。\n\n");
+            prompt.append("输出格式（严格JSON数组，不要解释，不要markdown代码块）：\n");
+            prompt.append("[\n");
+            for (int i = 0; i < coverObjectives.size(); i++) {
+                CoverObjective obj = coverObjectives.get(i);
+                prompt.append(String.format("  {\"label\": \"%s\", \"score\": 数字}", obj.label()));
+                if (i < coverObjectives.size() - 1) prompt.append(",");
+                prompt.append("\n");
+            }
+            prompt.append("]");
+
+            ObjectNode body = objectMapper.createObjectNode();
+            body.put("model", endpoint.model());
+            body.set("messages", objectMapper.valueToTree(List.of(
+                    chatMessage("system", "你是高校实验课任课教师。根据学生报告各维度的评分结果和封面课程目标描述，为每个课程目标评定得分。只输出严格JSON数组，不要解释。"),
+                    chatMessage("user", prompt.toString())
+            )));
+            body.put("temperature", 0.3);
+            body.put("max_tokens", 600);
+
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(endpoint.baseUrl() + "/chat/completions"))
+                    .header("Authorization", "Bearer " + endpoint.apiKey())
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body), StandardCharsets.UTF_8))
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            if (response.statusCode() != 200) {
+                log.warn("AI cover-objective scoring returned status {}", response.statusCode());
+                return null;
+            }
+
+            JsonNode root = objectMapper.readTree(response.body());
+            String content = root.path("choices").path(0).path("message").path("content").asText("");
+            return parseAiCoverObjectiveScores(content, coverObjectives);
+
+        } catch (Exception e) {
+            log.warn("AI cover-objective scoring failed: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Extract text from the first page of a PDF document.
+     */
+    private String extractFirstPageText(byte[] pdfBytes) {
+        try (PDDocument document = PDDocument.load(pdfBytes)) {
+            if (document.getNumberOfPages() == 0) {
+                return null;
+            }
+            PDFTextStripper stripper = new PDFTextStripper();
+            stripper.setStartPage(1);
+            stripper.setEndPage(1);
+            return stripper.getText(document);
+        } catch (Exception e) {
+            log.warn("Failed to extract first page text: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Parse the AI's JSON response into DimensionScore list.
+     * Expected format: [{"label": "目标1", "score": 18}, {"label": "目标2", "score": 32}]
+     */
+    private List<AnnotatedStudentReportService.DimensionScore> parseAiCoverObjectiveScores(
+            String content, List<CoverObjective> coverObjectives) {
+        if (content == null || content.isBlank()) {
+            return null;
+        }
+
+        try {
+            // Strip markdown code fences if present
+            String json = content.trim();
+            if (json.startsWith("```")) {
+                int start = json.indexOf('\n');
+                int end = json.lastIndexOf("```");
+                if (start > 0 && end > start) {
+                    json = json.substring(start + 1, end).trim();
+                }
+            }
+
+            JsonNode array = objectMapper.readTree(json);
+            if (!array.isArray() || array.isEmpty()) {
+                return null;
+            }
+
+            List<AnnotatedStudentReportService.DimensionScore> result = new ArrayList<>();
+            for (JsonNode node : array) {
+                String label = node.hasNonNull("label") ? node.get("label").asText() : null;
+                if (label == null || label.isBlank()) {
+                    continue;
+                }
+                BigDecimal score = null;
+                if (node.hasNonNull("score") && node.get("score").isNumber()) {
+                    score = node.get("score").decimalValue();
+                }
+                if (score == null) {
+                    continue;
+                }
+
+                // Match to cover objective by label (case-insensitive, trimmed)
+                CoverObjective matched = null;
+                for (CoverObjective obj : coverObjectives) {
+                    if (obj.label() != null && obj.label().equalsIgnoreCase(label.trim())) {
+                        matched = obj;
+                        break;
+                    }
+                }
+                BigDecimal coverMax = matched != null ? matched.maxScore() : null;
+
+                // Clamp score to [0, coverMax] if coverMax is known
+                if (coverMax != null && coverMax.compareTo(BigDecimal.ZERO) > 0) {
+                    if (score.compareTo(coverMax) > 0) {
+                        score = coverMax;
+                    }
+                    if (score.compareTo(BigDecimal.ZERO) < 0) {
+                        score = BigDecimal.ZERO;
+                    }
+                }
+
+                result.add(new AnnotatedStudentReportService.DimensionScore(
+                        label.trim(), score, coverMax, coverMax));
+            }
+
+            // Ensure we have at least one score
+            if (result.isEmpty()) {
+                return null;
+            }
+            return result;
+
+        } catch (Exception e) {
+            log.warn("Failed to parse AI cover objective scores: {}", e.getMessage());
+            return null;
         }
     }
 
