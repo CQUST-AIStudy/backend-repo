@@ -524,13 +524,13 @@ public class AnnotatedStudentReportService {
         separator.setAlignment(ParagraphAlignment.CENTER);
         XWPFRun sepRun = separator.createRun();
         styleDocxRun(sepRun, 11, false);
-        sepRun.setText("\u002d\u002d\u002d\u002d\u002d\u002d\u002d\u002d \u6559\u5e08\u8bc4\u8bed \u002d\u002d\u002d\u002d\u002d\u002d\u002d\u002d");
+        sepRun.setText("\u002d\u002d\u002d\u002d\u002d\u002d\u002d\u002d \u6559\u5e08\u6279\u6ce8 \u002d\u002d\u002d\u002d\u002d\u002d\u002d\u002d");
 
         XWPFParagraph titleParagraph = insertDocxParagraphAfterAnchor(document, separator);
         titleParagraph.setAlignment(ParagraphAlignment.LEFT);
         titleParagraph.setSpacingBefore(100);
         titleParagraph.setSpacingAfter(30);
-        appendDocxMixedText(titleParagraph, "\u6559\u5e08\u8bc4\u8bed\uff1a", 17, true);
+        appendDocxMixedText(titleParagraph, "\u6559\u5e08\u6279\u6ce8\uff1a", 17, true);
 
         List<String> reviewLines = buildReviewLines(teacherComment, dimensionComments);
         XWPFParagraph lastParagraph = titleParagraph;
@@ -778,7 +778,8 @@ public class AnnotatedStudentReportService {
         }
         String compact = normalizedText.replace(" ", "");
         return normalizedText.contains("teacher review")
-                || compact.contains("教师评语");
+                || compact.contains("教师评语")
+                || compact.contains("教师批注");
     }
 
     private boolean documentContainsGeneratedReview(PDDocument document) throws IOException {
@@ -1933,7 +1934,7 @@ public class AnnotatedStudentReportService {
                                          String teacherSignature) throws IOException {
         List<StyledLine> styledLines = new ArrayList<>();
         styledLines.add(new StyledLine(normalizeForFont(fontSelection,
-                "教师评语", "Teacher Review"), 16f));
+                "教师批注", "Teacher Review"), 16f));
         for (String line : buildReviewLines(teacherComment, dimensionComments)) {
             styledLines.add(new StyledLine(normalizeForFont(fontSelection, line, line), 11f));
         }
@@ -2352,17 +2353,15 @@ public class AnnotatedStudentReportService {
     }
 
     private List<String> buildReviewLines(String teacherComment, List<String> dimensionComments) {
+        // 不再输出教师评语内容，只保留维度批注摘要；教师签名单独渲染
         List<String> lines = new ArrayList<>();
-        if (teacherComment != null && !teacherComment.isBlank()) {
-            for (String line : teacherComment.replace("\r", "").split("\n")) {
-                String trimmed = line.trim();
+        if (dimensionComments != null) {
+            for (String line : dimensionComments) {
+                String trimmed = line == null ? "" : line.trim();
                 if (!trimmed.isBlank()) {
                     lines.add(trimmed);
                 }
             }
-        }
-        if (lines.isEmpty()) {
-            lines.add("批阅完成，请继续围绕实验任务、原理理解、结果分析与总结反思进一步完善报告。");
         }
         return lines.size() > 18 ? lines.subList(0, 18) : lines;
     }

@@ -30,6 +30,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 @Service
 public class GradingTaskService {
@@ -119,14 +121,24 @@ public class GradingTaskService {
             throw new IllegalArgumentException("Rubric not found");
         }
 
-        // Separate valid documents from invalid files
+        // Separate valid documents from invalid files; expand ZIP archives into individual PDFs
         List<MultipartFile> validPdfs = new ArrayList<>();
         List<String> rejectedFiles = new ArrayList<>();
         for (MultipartFile file : files) {
-            if (isSupportedDocument(file)) {
+            String filename = file.getOriginalFilename();
+            String lower = filename == null ? "" : filename.toLowerCase(Locale.ROOT);
+            if (lower.endsWith(".zip")) {
+                // Extract PDFs from ZIP archive
+                List<MultipartFile> extracted = extractPdfsFromZip(file);
+                if (extracted.isEmpty()) {
+                    rejectedFiles.add(filename + " (no PDF found in zip)");
+                } else {
+                    validPdfs.addAll(extracted);
+                }
+            } else if (isSupportedDocument(file)) {
                 validPdfs.add(file);
             } else {
-                rejectedFiles.add(file.getOriginalFilename());
+                rejectedFiles.add(filename);
             }
         }
 
@@ -273,19 +285,31 @@ public class GradingTaskService {
     }
 
     /**
-     * 根据真实提交状态对账任务计数与状态。仅对仍在进行中的任务（PENDING/PROCESSING）生效：
-     * 当不再有 PENDING/PROCESSING 的提交时，说明评分阶段已结束——若全部失败则标记 FAILED，
-     * 否则进入 FINALIZING 并异步生成批注报告/总评，最终收敛为 COMPLETED。
-     * 这样即便 worker 的结果通知（grading:results）丢失，也不会再卡在 0%。
+     * 根据真实提交状态对账任务计数与状态。对仍在进行中的任务（PENDING/PROCESSING/FINALIZING）生效：
+     * <ul>
+     *   <li>PENDING/PROCESSING：当不再有 PENDING/PROCESSING 的提交时，说明评分阶段已结束——若全部失败则标记 FAILED，
+     *       否则进入 FINALIZING 并异步生成批注报告/总评，最终收敛为 COMPLETED。</li>
+     *   <li>FINALIZING：如果任务在 FINALIZING 状态停留超过一定时间（说明 finalizeTaskAsync 可能失败或未执行），
+     *       重新触发 finalize，避免任务永远卡在 FINALIZING。</li>
+     * </ul>
+     * 这样即便 worker 的结果通知（grading:results）丢失或 finalize 异步任务失败，也不会再卡在 0% 或 FINALIZING。
      */
     private boolean reconcileTaskInline(GradingTaskEntity task, Long teacherId) {
         if (task == null) {
             return false;
         }
         GradingTaskStatus status = task.getStatus();
-        if (status != GradingTaskStatus.PENDING && status != GradingTaskStatus.PROCESSING) {
+        if (status != GradingTaskStatus.PENDING
+                && status != GradingTaskStatus.PROCESSING
+                && status != GradingTaskStatus.FINALIZING) {
             return false;
         }
+
+        // FINALIZING 状态：检查是否需要重新触发 finalize
+        if (status == GradingTaskStatus.FINALIZING) {
+            return reconcileFinalizingTask(task, teacherId);
+        }
+
         Long taskId = task.getId();
         int scored = submissionRepo.countByTaskIdAndStatus(taskId, SubmissionStatus.SCORED);
         int needMore = submissionRepo.countByTaskIdAndStatus(taskId, SubmissionStatus.NEED_MORE_EVIDENCE);
@@ -296,13 +320,13 @@ public class GradingTaskService {
         int total = task.getTotalCount();
 
         boolean changed = false;
-        Integer curCompleted = task.getCompletedCount();
-        if (curCompleted == null || curCompleted != completed) {
+        int curCompleted = task.getCompletedCount();
+        if (curCompleted != completed) {
             task.setCompletedCount(completed);
             changed = true;
         }
-        Integer curFailed = task.getFailedCount();
-        if (curFailed == null || curFailed != failed) {
+        int curFailed = task.getFailedCount();
+        if (curFailed != failed) {
             task.setFailedCount(failed);
             changed = true;
         }
@@ -337,6 +361,33 @@ public class GradingTaskService {
             });
         }
         return changed;
+    }
+
+    /**
+     * 对卡在 FINALIZING 的任务进行对账：如果超过 {@code stuckTimeoutMinutes} 分钟仍未变为 COMPLETED/FAILED，
+     * 说明 finalizeTaskAsync 可能失败或未执行，重新触发一次 finalize。
+     */
+    private boolean reconcileFinalizingTask(GradingTaskEntity task, Long teacherId) {
+        Instant updatedAt = task.getUpdatedAt();
+        if (updatedAt == null) {
+            return false;
+        }
+        long minutesStuck = Duration.between(updatedAt, Instant.now()).toMinutes();
+        if (minutesStuck < stuckTimeoutMinutes) {
+            // 还在合理时间内，不干预
+            return false;
+        }
+
+        log.warn("Task {} has been in FINALIZING for {} minutes, re-triggering finalize", task.getId(), minutesStuck);
+        final Long taskIdFinal = task.getId();
+        final Long teacherIdFinal = teacherId;
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                gradingFinalizeService.finalizeTaskAsync(taskIdFinal, teacherIdFinal);
+            }
+        });
+        return true;
     }
 
     @Transactional
@@ -646,6 +697,9 @@ public class GradingTaskService {
             if (lower.endsWith(".docx") || lower.endsWith(".doc")) {
                 return true;
             }
+            if (lower.endsWith(".zip")) {
+                return true;
+            }
             try (InputStream is = file.getInputStream()) {
                 byte[] header = new byte[4];
                 if (is.read(header) < 4) return false;
@@ -939,4 +993,77 @@ public class GradingTaskService {
 
     /** Helper record for parallel file storage. */
     private record FilePrep(String originalFilename, byte[] bytes, String contentType, String objectKey) {}
+
+    /**
+     * Extracts all PDF files from a ZIP archive, returning them as in-memory MultipartFile wrappers.
+     * Supports nested directories within the ZIP. Non-PDF files are silently skipped.
+     * Each extracted file is named by its path within the ZIP (e.g. "子目录/张三.pdf").
+     */
+    private List<MultipartFile> extractPdfsFromZip(MultipartFile zipFile) {
+        List<MultipartFile> result = new ArrayList<>();
+        try (ZipInputStream zis = new ZipInputStream(zipFile.getInputStream())) {
+            ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                if (entry.isDirectory()) {
+                    continue;
+                }
+                String entryName = entry.getName();
+                String lower = entryName.toLowerCase(Locale.ROOT);
+                if (!lower.endsWith(".pdf")) {
+                    continue;
+                }
+                // Read the entry into memory
+                ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                byte[] buffer = new byte[8192];
+                int len;
+                while ((len = zis.read(buffer)) > 0) {
+                    baos.write(buffer, 0, len);
+                }
+                byte[] pdfBytes = baos.toByteArray();
+                // Validate it's actually a PDF by checking magic bytes
+                if (pdfBytes.length < 4
+                        || pdfBytes[0] != PDF_MAGIC[0] || pdfBytes[1] != PDF_MAGIC[1]
+                        || pdfBytes[2] != PDF_MAGIC[2] || pdfBytes[3] != PDF_MAGIC[3]) {
+                    log.warn("Skipping non-PDF entry in zip: {}", entryName);
+                    continue;
+                }
+                // Use only the file name (not full path) as the original filename
+                String displayName = entryName;
+                int lastSlash = entryName.lastIndexOf('/');
+                if (lastSlash >= 0 && lastSlash < entryName.length() - 1) {
+                    displayName = entryName.substring(lastSlash + 1);
+                }
+                result.add(new InMemoryMultipartFile(displayName, pdfBytes, "application/pdf"));
+            }
+        } catch (Exception e) {
+            log.error("Failed to extract PDFs from ZIP: {}", zipFile.getOriginalFilename(), e);
+        }
+        return result;
+    }
+
+    /** Lightweight in-memory MultipartFile implementation for ZIP-extracted files. */
+    private static class InMemoryMultipartFile implements MultipartFile {
+        private final String filename;
+        private final byte[] content;
+        private final String contentType;
+
+        InMemoryMultipartFile(String filename, byte[] content, String contentType) {
+            this.filename = filename;
+            this.content = content;
+            this.contentType = contentType;
+        }
+
+        @Override public String getName() { return "files"; }
+        @Override public String getOriginalFilename() { return filename; }
+        @Override public String getContentType() { return contentType; }
+        @Override public boolean isEmpty() { return content == null || content.length == 0; }
+        @Override public long getSize() { return content.length; }
+        @Override public byte[] getBytes() { return content; }
+        @Override public InputStream getInputStream() { return new java.io.ByteArrayInputStream(content); }
+        @Override public void transferTo(java.io.File dest) throws java.io.IOException {
+            try (var fos = new java.io.FileOutputStream(dest)) {
+                fos.write(content);
+            }
+        }
+    }
 }

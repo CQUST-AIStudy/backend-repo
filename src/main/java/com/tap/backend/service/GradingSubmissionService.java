@@ -460,12 +460,8 @@ public class GradingSubmissionService {
 
         AnnotatedReportArtifact artifact = null;
         try {
-            if (needsReview) {
-                generateFinalReview(submissionId, teacherId);
-                submission = requireOwnedSubmission(submissionId, teacherId);
-            }
-
-            if (needsAnnotatedReport || needsReview) {
+            // 不再生成教师评语，直接生成批注报告
+            if (needsAnnotatedReport) {
                 List<ScoreItemEntity> scores = scoreItemRepo.findAllBySubmissionId(submissionId);
                 Map<Long, String> dimensionNames = buildDimensionNameMap(submission);
                 ExperimentContext experimentContext = extractExperimentContext(submissionId);
@@ -474,7 +470,7 @@ public class GradingSubmissionService {
                 // Generate and persist error demonstrations alongside the annotated report
                 persistErrorDemonstrations(submission, scores);
             } else {
-                // Even if review and report already exist, ensure error demonstrations are persisted
+                // Even if report already exists, ensure error demonstrations are persisted
                 persistErrorDemonstrationsIfNeeded(submissionId);
             }
 
@@ -514,9 +510,7 @@ public class GradingSubmissionService {
         if (submission.getTotalScore() == null) {
             throw new IllegalStateException("Submission has not been scored yet");
         }
-        if (submission.getFinalReviewComment() == null || submission.getFinalReviewComment().isBlank()) {
-            generateFinalReview(submissionId, teacherId);
-        }
+        // 不再生成教师评语，直接生成批注报告
         submission = requireOwnedSubmission(submissionId, teacherId);
         List<ScoreItemEntity> scores = scoreItemRepo.findAllBySubmissionId(submissionId);
         Map<Long, String> dimensionNames = buildDimensionNameMap(submission);
@@ -714,10 +708,14 @@ public class GradingSubmissionService {
                         continue;
                     }
                     String evidenceId = node.has("evidence_id") ? node.get("evidence_id").asText("") : "";
-                    String type = node.has("type") ? node.get("type").asText("CHECK") : "CHECK";
+                    String type = node.has("type") ? node.get("type").asText("CHECK").toUpperCase(Locale.ROOT) : "CHECK";
                     String note = node.has("note") ? node.get("note").asText("") : "";
                     String anchorText = node.has("anchor_text") ? node.get("anchor_text").asText("") : "";
                     boolean wavy = node.has("wavy") && node.get("wavy").asBoolean(false);
+                    // CHECK 类型（优点/正确）不画波浪线，只有 CROSS/WAVE 才画
+                    if ("CHECK".equals(type)) {
+                        wavy = false;
+                    }
                     if (!note.isBlank() || !anchorText.isBlank()) {
                         result.add(new AnnotatedStudentReportService.AnnotationEntry(evidenceId, type, note, anchorText, wavy));
                     }
@@ -838,7 +836,7 @@ public class GradingSubmissionService {
                    - anchor_text：当前页文本中真实存在的连续短片段（最多 30 个字符），代码会用它在 PDF 中定位。
                    - note：简短评语，最多 50 个汉字，像老师写在旁边的批注。
                    - type：CHECK（正确/优点）、CROSS（错误/缺失）、WAVE（警告/建议）三者之一。
-                   - wavy：布尔值，表示是否在该 anchor_text 行下方画波浪线。
+                   - wavy：布尔值，表示是否在该 anchor_text 行下方画波浪线。重要：只有 CROSS 和 WAVE 类型才能设为 true，CHECK 类型必须设为 false（好的地方只打勾，不画波浪线）。
                 3. 如果当前页没有值得标注的地方，返回空数组 []。
                 4. 评语要具体、自然，尽量引用学生实际写到的内容，避免套话。
                 5. 标注应优先关注实验原理、方法步骤、结果分析、结论依据等实质性内容，不要因排版、字体、环境版本等细节给出大量标注。
@@ -924,6 +922,10 @@ public class GradingSubmissionService {
                 }
                 String note = node.has("note") ? node.get("note").asText("").strip() : "";
                 boolean wavy = node.has("wavy") && node.get("wavy").asBoolean(false);
+                // CHECK 类型（优点/正确）不画波浪线，只有 CROSS/WAVE 才画
+                if ("CHECK".equals(type)) {
+                    wavy = false;
+                }
                 result.add(new AnnotatedStudentReportService.AnnotationEntry(
                         "ai-page-" + System.nanoTime(), type, note, anchorText, wavy));
             }
