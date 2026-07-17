@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tap.backend.academic.dao.StudentAiReportQueryDao">
+
+    <select id="findContext" resultType="com.tap.backend.academic.teacherexperiment.AiReportContext">
+        SELECT
+            sp.id AS studentProfileId,
+            sp.student_no AS studentNo,
+            sp.real_name AS studentName,
+            ao.id AS offeringId,
+            COALESCE(NULLIF(TRIM(ao.title_override), ''), at.title) AS name,
+            at.description_md AS description,
+            sa.submission_status AS status,
+            COALESCE(sa.best_total_score, sa.latest_total_score) AS score,
+            COALESCE(sa.last_submit_at, sa.first_submit_at) AS submitTime
+        FROM student_profile sp
+        JOIN class_student cs
+          ON cs.student_num COLLATE utf8mb4_unicode_ci = sp.student_no COLLATE utf8mb4_unicode_ci
+        JOIN teaching_class tc
+          ON tc.id = cs.class_id
+         AND (tc.status IS NULL OR tc.status = 'ACTIVE')
+        JOIN assignment_offering ao ON ao.class_id = tc.id
+        JOIN assignment_template at ON at.id = ao.template_id
+        JOIN student_assignment sa
+          ON sa.offering_id = ao.id
+         AND sa.student_id = sp.id
+        WHERE sp.student_no COLLATE utf8mb4_unicode_ci = #{studentNo} COLLATE utf8mb4_unicode_ci
+          AND sp.status &lt;&gt; 'DELETED'
+          AND ao.id = #{offeringId}
+          AND ao.status &lt;&gt; 'ARCHIVED'
+    </select>
+
+    <select id="findProblemRows" resultType="com.tap.backend.academic.teacherexperiment.TeacherSubmissionProblemRow">
+        SELECT
+            ap.sort_order AS sortOrder,
+            ap.problem_no AS problemNo,
+            ap.title AS problemTitle,
+            ap.statement_md AS statementMd,
+            sps.latest_status AS latestStatus,
+            sps.best_score AS bestScore,
+            sps.attempt_count AS attemptCount,
+            latest_attempt.submitted_at AS submitTime,
+            code_artifact.text_content AS code
+        FROM student_profile sp
+        JOIN student_problem_state sps
+          ON sps.student_id = sp.id
+         AND sps.offering_id = #{offeringId}
+        JOIN assignment_problem ap
+          ON ap.id = sps.problem_id
+         AND ap.offering_id = sps.offering_id
+        LEFT JOIN student_problem_attempt latest_attempt ON latest_attempt.id = sps.latest_attempt_id
+        LEFT JOIN artifact code_artifact ON code_artifact.id = sps.latest_code_artifact_id
+        WHERE sp.student_no COLLATE utf8mb4_unicode_ci = #{studentNo} COLLATE utf8mb4_unicode_ci
+          AND sp.status &lt;&gt; 'DELETED'
+        ORDER BY ap.sort_order, ap.id
+    </select>
+
+</mapper>
