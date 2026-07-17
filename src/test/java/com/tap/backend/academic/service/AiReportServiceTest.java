@@ -4,8 +4,11 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 import com.tap.backend.academic.dao.SubmissionDao;
+import com.tap.backend.academic.dao.teacherexperiment.TeacherExperimentQueryDao;
 import com.tap.backend.academic.entity.Experiment;
 import com.tap.backend.academic.entity.Submission;
+import com.tap.backend.academic.teacherexperiment.TeacherSubmissionProblemRow;
+import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -18,11 +21,12 @@ class AiReportServiceTest {
     @Mock SubmissionDao submissionDao;
     @Mock ExperimentService experimentService;
     @Mock AiReportGenerator generator;
+    @Mock TeacherExperimentQueryDao teacherExperimentQueryDao;
     private AiReportService service;
 
     @BeforeEach
     void setUp() {
-        service = new AiReportService(submissionDao, experimentService, generator);
+        service = new AiReportService(submissionDao, experimentService, generator, teacherExperimentQueryDao);
     }
 
     @Test
@@ -74,6 +78,25 @@ class AiReportServiceTest {
         assertEquals("saved report", result.report());
         verify(submissionDao).findByUsernameAndExperimentId("2026001", 7);
         verifyNoMoreInteractions(submissionDao);
+    }
+
+    @Test
+    void generateUsesUnifiedArtifactCodeWhenLegacySubmissionIsMissing() throws Exception {
+        Experiment experiment = experiment(7);
+        TeacherSubmissionProblemRow problem = new TeacherSubmissionProblemRow();
+        problem.setProblemTitle("反转链表");
+        problem.setCode("int main(){return 0;}");
+        when(experimentService.findExperimentById(7)).thenReturn(experiment);
+        when(teacherExperimentQueryDao.findSubmissionProblemRows("2026001", 7)).thenReturn(List.of(problem));
+        when(generator.generate(eq(experiment), any(Submission.class), eq(Map.of("studentName", "张三"))))
+                .thenReturn("# 报告\n## 实验目的\n学习链表");
+        when(submissionDao.saveSubmission(any(Submission.class))).thenReturn(1);
+
+        AiReportResult result = service.generate("2026001", 7, Map.of("studentName", "张三"));
+
+        assertTrue(result.success());
+        verify(generator).generate(eq(experiment), argThat(s -> s.getCode().contains("int main")), anyMap());
+        verify(submissionDao).saveSubmission(argThat(s -> "# 报告\n## 实验目的\n学习链表".equals(s.getReport())));
     }
 
     private Experiment experiment(int id) {
