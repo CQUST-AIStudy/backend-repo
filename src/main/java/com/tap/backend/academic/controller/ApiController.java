@@ -63,6 +63,9 @@ public class ApiController {
     private ExperimentService experimentService;
 
     @Autowired
+    private AiReportService aiReportService;
+
+    @Autowired
     private StudentService studentService;
 
     @Autowired
@@ -132,6 +135,36 @@ public class ApiController {
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
             .build();
+
+    @PostMapping("/api/experiments/{id}/report/generate")
+    public ResponseEntity<Map<String, Object>> generateExperimentReport(
+            @PathVariable int id,
+            @RequestBody(required = false) Map<String, Object> userData,
+            HttpServletRequest request) {
+        String studentNo = studentSessionResolver.requireStudentId(request);
+        AiReportResult result = aiReportService.generate(
+                studentNo,
+                id,
+                userData == null ? Collections.emptyMap() : userData);
+        return ResponseEntity.ok(toReportResponse(result));
+    }
+
+    @GetMapping("/api/experiments/{id}/report")
+    public ResponseEntity<Map<String, Object>> getExperimentReport(
+            @PathVariable int id,
+            HttpServletRequest request) {
+        String studentNo = studentSessionResolver.requireStudentId(request);
+        return ResponseEntity.ok(toReportResponse(aiReportService.get(studentNo, id)));
+    }
+
+    private Map<String, Object> toReportResponse(AiReportResult result) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("success", result.success());
+        response.put("message", result.message());
+        response.put("report", result.report());
+        response.put("data", result.data());
+        return response;
+    }
 
     /**
      * 将Markdown格式的文本转换为HTML
