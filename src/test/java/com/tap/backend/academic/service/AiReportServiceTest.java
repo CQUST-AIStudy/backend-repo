@@ -1,0 +1,95 @@
+package com.tap.backend.academic.service;
+
+import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.*;
+
+import com.tap.backend.academic.dao.SubmissionDao;
+import com.tap.backend.academic.entity.Experiment;
+import com.tap.backend.academic.entity.Submission;
+import java.util.Map;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+
+@ExtendWith(MockitoExtension.class)
+class AiReportServiceTest {
+    @Mock SubmissionDao submissionDao;
+    @Mock ExperimentService experimentService;
+    @Mock AiReportGenerator generator;
+    private AiReportService service;
+
+    @BeforeEach
+    void setUp() {
+        service = new AiReportService(submissionDao, experimentService, generator);
+    }
+
+    @Test
+    void generateRejectsMissingExperiment() {
+        AiReportResult result = service.generate("2026001", 7, Map.of());
+        assertFalse(result.success());
+        assertEquals("实验不存在", result.message());
+        verifyNoInteractions(submissionDao, generator);
+    }
+
+    @Test
+    void generateRejectsSubmissionWithoutCode() {
+        when(experimentService.findExperimentById(7)).thenReturn(experiment(7));
+        when(submissionDao.findByUsernameAndExperimentId("2026001", 7))
+                .thenReturn(submission(11, " ", null));
+        AiReportResult result = service.generate("2026001", 7, Map.of());
+        assertFalse(result.success());
+        assertEquals("该实验暂无代码提交，无法生成报告", result.message());
+        verifyNoInteractions(generator);
+    }
+
+    @Test
+    void generatePersistsAndReturnsReport() throws Exception {
+        Experiment experiment = experiment(7);
+        Submission submission = submission(11, "int main(){}", null);
+        when(experimentService.findExperimentById(7)).thenReturn(experiment);
+        when(submissionDao.findByUsernameAndExperimentId("2026001", 7)).thenReturn(submission);
+        when(generator.generate(experiment, submission, Map.of("studentName", "张三")))
+                .thenReturn("# 报告\n## 实验目的\n学习链表");
+        when(submissionDao.updateReport(11, "# 报告\n## 实验目的\n学习链表")).thenReturn(1);
+
+        AiReportResult result = service.generate("2026001", 7, Map.of("studentName", "张三"));
+
+        assertTrue(result.success());
+        assertEquals("# 报告\n## 实验目的\n学习链表", result.report());
+        assertEquals("张三", result.data().get("studentName"));
+        assertEquals("2026001", result.data().get("studentId"));
+    }
+
+    @Test
+    void getReturnsOnlyRequestedStudentsSavedReport() {
+        when(experimentService.findExperimentById(7)).thenReturn(experiment(7));
+        when(submissionDao.findByUsernameAndExperimentId("2026001", 7))
+                .thenReturn(submission(11, "code", "saved report"));
+
+        AiReportResult result = service.get("2026001", 7);
+
+        assertTrue(result.success());
+        assertEquals("saved report", result.report());
+        verify(submissionDao).findByUsernameAndExperimentId("2026001", 7);
+        verifyNoMoreInteractions(submissionDao);
+    }
+
+    private Experiment experiment(int id) {
+        Experiment value = new Experiment();
+        value.setExperiment_id(id);
+        value.setName("链表实验");
+        return value;
+    }
+
+    private Submission submission(int id, String code, String report) {
+        Submission value = new Submission();
+        value.setSubmission_id(id);
+        value.setUsername("2026001");
+        value.setExperiment_id(7);
+        value.setCode(code);
+        value.setReport(report);
+        return value;
+    }
+}
