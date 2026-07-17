@@ -18,6 +18,12 @@
         VALUES (#{username}, #{experiment_id}, #{code}, #{report}, #{submit_time})
     </insert>
 
+    <update id="updateReport">
+        UPDATE submission
+        SET report = #{report}
+        WHERE submission_id = #{submissionId}
+    </update>
+
     <!-- 根据ID查找提交记录 -->
     <select id="findSubmissionById" parameterType="int" resultMap="submissionResultMap">
         SELECT * FROM submission WHERE submission_id = #{id}

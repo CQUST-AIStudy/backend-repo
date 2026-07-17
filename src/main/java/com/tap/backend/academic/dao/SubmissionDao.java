@@ -2,6 +2,7 @@ package com.tap.backend.academic.dao;
 
 import com.tap.backend.academic.entity.Submission;
 import com.tap.backend.academic.entity.SubmissionDetailEntity;
+import org.apache.ibatis.annotations.Param;
 
 import java.util.List;
 
@@ -13,6 +14,8 @@ public interface SubmissionDao {
      * @return 影响的行数
      */
     int saveSubmission(Submission submission);
+
+    int updateReport(@Param("submissionId") int submissionId, @Param("report") String report);
 
     /**
      * 根据ID查找提交记录
