@@ -44,7 +44,7 @@ public class AiReportService {
             }
             int affectedRows = reportDao.upsert(
                     context.getOfferingId(), context.getStudentProfileId(), report);
-            if (affectedRows != 1) {
+            if (affectedRows <= 0) {
                 return AiReportResult.failure("报告保存失败");
             }
             return success(report, studentNo, safeUserData);
