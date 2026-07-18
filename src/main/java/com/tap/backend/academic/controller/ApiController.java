@@ -828,13 +828,20 @@ public class ApiController {
                             "ao.deadline_at, at.description_md, ao.status, " +
                             "sa.submission_status, sa.first_submit_at, sa.last_submit_at, " +
                             "sa.accepted_problem_count, sa.submitted_problem_count, sa.problem_count, " +
-                            "sa.best_total_score, sa.latest_total_score, sp.student_no, sp.real_name, sp.id " +
+                            "sa.best_total_score, sa.latest_total_score, sp.student_no, sp.real_name, sp.id, " +
+                            "latest_attempt.latest_submit_at " +
                             "FROM student_profile sp " +
                             "JOIN class_student cs ON cs.student_num = sp.student_no COLLATE utf8mb4_unicode_ci " +
                             "JOIN teaching_class tc ON tc.id = cs.class_id " +
                             "JOIN assignment_offering ao ON ao.class_id = cs.class_id " +
                             "JOIN assignment_template at ON at.id = ao.template_id " +
                             "LEFT JOIN student_assignment sa ON sa.offering_id = ao.id AND sa.student_id = sp.id " +
+                            "LEFT JOIN (" +
+                            "SELECT spa.offering_id, spa.student_id, MAX(spa.submitted_at) AS latest_submit_at " +
+                            "FROM student_problem_attempt spa " +
+                            "GROUP BY spa.offering_id, spa.student_id" +
+                            ") latest_attempt ON latest_attempt.offering_id = ao.id " +
+                            "AND latest_attempt.student_id = sp.id " +
                             "WHERE sp.student_no = ?1 " +
                             "AND (tc.status IS NULL OR tc.status = 'ACTIVE') " +
                             "AND ao.status <> 'ARCHIVED' " +
@@ -870,7 +877,8 @@ public class ApiController {
                 experimentData.put("report", "");
                 experimentData.put("teacherComment", null);
                 experimentData.put("status", mapStudentAssignmentStatus(submissionStatus, submittedProblemCount, score));
-                experimentData.put("submitTime", formatDateTime(row[11] != null ? row[11] : row[10]));
+                experimentData.put("submitTime", formatDateTime(
+                        row[20] != null ? row[20] : (row[11] != null ? row[11] : row[10])));
                 experimentData.put("score", roundTwoDecimals(score));
                 experimentData.put("plagiarismRate", 0.0);
                 experimentData.put("acceptedProblemCount", toInt(row[12]));
