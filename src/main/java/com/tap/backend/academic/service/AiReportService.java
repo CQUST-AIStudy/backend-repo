@@ -31,13 +31,13 @@ public class AiReportService {
             return AiReportResult.failure("实验不存在或无权访问");
         }
 
-        String code = resolveCode(queryDao.findProblemRows(studentNo, offeringId));
+        Map<String, Object> safeUserData = userData == null ? Map.of() : userData;
+        String code = resolveCode(queryDao.findProblemRows(studentNo, offeringId), safeUserData);
         if (code.isBlank()) {
             return AiReportResult.failure("该实验暂无代码提交，无法生成报告");
         }
 
         try {
-            Map<String, Object> safeUserData = userData == null ? Map.of() : userData;
             String report = generator.generate(context, code, safeUserData);
             if (report == null || report.isBlank()) {
                 return AiReportResult.failure("AI报告生成失败，请稍后重试");
@@ -53,7 +53,9 @@ public class AiReportService {
         }
     }
 
-    private String resolveCode(List<TeacherSubmissionProblemRow> problemRows) {
+    private String resolveCode(
+            List<TeacherSubmissionProblemRow> problemRows,
+            Map<String, Object> userData) {
         StringBuilder code = new StringBuilder();
         int displayIndex = 1;
         if (problemRows != null) {
@@ -67,7 +69,11 @@ public class AiReportService {
                 code.append(row.getCode().trim());
             }
         }
-        return code.toString();
+        if (!code.isEmpty()) {
+            return code.toString();
+        }
+        Object requestCode = userData.get("code");
+        return requestCode == null ? "" : requestCode.toString().trim();
     }
 
     public AiReportResult get(String studentNo, int offeringId) {
