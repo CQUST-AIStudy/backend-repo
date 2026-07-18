@@ -116,7 +116,7 @@ class AiReportServiceTest {
         when(queryDao.findProblemRows("2026001", 7)).thenReturn(List.of(problem("链表", "code")));
         when(generator.generate(context, "第1题如下：\n// 链表\ncode", Map.of()))
                 .thenReturn("regenerated report");
-        when(reportDao.upsert(7, 101, "regenerated report")).thenReturn(1);
+        when(reportDao.upsert(7, 101, "regenerated report")).thenReturn(2);
 
         AiReportResult result = service.generate("2026001", 7, null);
 
