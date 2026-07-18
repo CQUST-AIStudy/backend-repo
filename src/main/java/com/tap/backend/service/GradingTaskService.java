@@ -403,6 +403,32 @@ public class GradingTaskService {
         return resolved;
     }
 
+    /**
+     * Binds (or clears) the legacy experiment associated with a grading task and, when possible,
+     * resolves the matching {@code assignment_offering} so the unified student experiment list and
+     * the published-grade lookup share one id space. Passing {@code experimentId == null} clears
+     * both bindings.
+     */
+    @Transactional
+    public Map<String, Object> bindExperiment(Long taskId, Long teacherId, Long experimentId) {
+        GradingTaskEntity task = requireOwnedTask(taskId, teacherId);
+        task.setExperimentId(experimentId);
+        Long offeringId = experimentId == null
+                ? null
+                : gradingUnifiedLinkService.resolveAssignmentOfferingId(experimentId, task.getClassId(), teacherId);
+        task.setAssignmentOfferingId(offeringId);
+        taskRepo.save(task);
+        if (experimentId != null && offeringId == null) {
+            log.warn("bindExperiment resolved no assignment_offering_id. taskId={}, experimentId={}, classId={}",
+                    taskId, experimentId, task.getClassId());
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("taskId", taskId);
+        result.put("experimentId", task.getExperimentId());
+        result.put("assignmentOfferingId", task.getAssignmentOfferingId());
+        return result;
+    }
+
     @Transactional
     public void deleteTask(Long taskId, Long teacherId) {
         GradingTaskEntity task = taskRepo.findById(taskId)

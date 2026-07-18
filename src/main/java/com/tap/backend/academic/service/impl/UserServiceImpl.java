@@ -76,6 +76,27 @@ public class UserServiceImpl implements UserService {
     }
 
     @Override
+    public String getRealNameByUsernum(String usernum) {
+        if (usernum == null || usernum.isBlank()) {
+            return null;
+        }
+        try {
+            @SuppressWarnings("unchecked")
+            List<String> names = em.createNativeQuery(
+                    "SELECT real_name FROM student_profile WHERE student_no = ?1 LIMIT 1",
+                    String.class)
+                    .setParameter(1, usernum)
+                    .getResultList();
+            if (!names.isEmpty() && names.get(0) != null && !names.get(0).isBlank()) {
+                return names.get(0);
+            }
+        } catch (Exception e) {
+            log.warn("getRealNameByUsernum failed for usernum {}: {}", usernum, e.getMessage());
+        }
+        return null;
+    }
+
+    @Override
     public void bindStudentByUsernum(String username, String usernum, String classname) {
         // 尝试通过学号查找已有学生
         Student existing = studentDao.findByStudentId(Integer.parseInt(usernum));
