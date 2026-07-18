@@ -58,6 +58,8 @@ class GradingSubmission(Base):
     status = Column(String(24), nullable=False, default="PENDING")
     total_score = Column(DECIMAL(6, 2))
     error_message = Column(Text)
+    code_analysis_json = Column(Text)
+    improvement_plan_json = Column(Text)
     updated_at = Column(TIMESTAMP(3), server_default=func.now(), onupdate=func.now())
 
 

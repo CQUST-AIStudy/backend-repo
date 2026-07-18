@@ -201,6 +201,32 @@ public class GradingTaskController {
         }
     }
 
+    @PostMapping("/{id}/publish-confirmed")
+    public ResponseEntity<?> publishConfirmed(
+            @PathVariable Long id,
+            @AuthenticationPrincipal UserPrincipal principal
+    ) {
+        Long teacherId = teacherPrincipalResolver.requireTeacherId(principal);
+        try {
+            return ResponseEntity.ok(ApiResponse.of(gradingSubmissionService.publishConfirmedTask(id, teacherId)));
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+        }
+    }
+
+    @DeleteMapping("/{id}/publish")
+    public ResponseEntity<?> revokeTaskPublications(
+            @PathVariable Long id,
+            @AuthenticationPrincipal UserPrincipal principal
+    ) {
+        Long teacherId = teacherPrincipalResolver.requireTeacherId(principal);
+        try {
+            return ResponseEntity.ok(ApiResponse.of(gradingSubmissionService.revokeTaskPublications(id, teacherId)));
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+        }
+    }
+
     @PostMapping("/{id}/retry")
     public ResponseEntity<?> retry(
             @PathVariable Long id,
@@ -225,6 +251,21 @@ public class GradingTaskController {
         try {
             String signature = taskService.updateTeacherSignature(id, teacherId, request.teacherSignature());
             return ResponseEntity.ok(ApiResponse.of(Map.of("teacherSignature", signature)));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+        }
+    }
+
+    @org.springframework.web.bind.annotation.PutMapping("/{id}/experiment")
+    public ResponseEntity<?> bindExperiment(
+            @PathVariable Long id,
+            @AuthenticationPrincipal UserPrincipal principal,
+            @RequestBody ExperimentBindingRequest request
+    ) {
+        Long teacherId = teacherPrincipalResolver.requireTeacherId(principal);
+        try {
+            return ResponseEntity.ok(ApiResponse.of(
+                    taskService.bindExperiment(id, teacherId, request == null ? null : request.experimentId())));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
         }
@@ -280,6 +321,7 @@ public class GradingTaskController {
 
     public record ExcelExportRequest(List<Long> submissionIds, boolean includeComments) {}
     public record TeacherSignatureRequest(String teacherSignature) {}
+    public record ExperimentBindingRequest(Long experimentId) {}
 
     private void attachBatchNames(List<Map<String, Object>> taskDtos) {
         List<Long> batchIds = taskDtos.stream()
@@ -313,6 +355,7 @@ public class GradingTaskController {
         dto.put("failedCount", task.getFailedCount());
         dto.put("rubricId", task.getRubricId());
         dto.put("experimentId", task.getExperimentId());
+        dto.put("assignmentOfferingId", task.getAssignmentOfferingId());
         dto.put("teacherSignature", task.getTeacherSignature());
         dto.put("createdAt", task.getCreatedAt().toString());
         return dto;

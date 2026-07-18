@@ -43,4 +43,11 @@ public interface UserService {
      * 绑定学生学号：在 student 表中关联 username
      */
     void bindStudentByUsernum(String username, String usernum, String classname);
+
+    /**
+     * 根据学号查询学生真实姓名
+     * @param usernum 学号
+     * @return 真实姓名，未找到时返回 null
+     */
+    String getRealNameByUsernum(String usernum);
 }

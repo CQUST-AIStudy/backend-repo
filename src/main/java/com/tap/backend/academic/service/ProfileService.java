@@ -40,6 +40,9 @@ public class ProfileService {
     private UserDao userDao;
 
     @Autowired
+    private UserService userService;
+
+    @Autowired
     private SkillTreeConfig skillTreeConfig;
 
     @Value("${tap.ai.openai.api-key:}")
@@ -762,6 +765,8 @@ public class ProfileService {
         result.put("id", user.getId());
         result.put("name", user.getUsername());
         result.put("username", user.getUsername());
+        String realName = userService.getRealNameByUsernum(user.getUsernum());
+        result.put("realName", realName != null ? realName : user.getUsername());
         result.put("role", role);
         result.put("email", emptyIfNull(user.getEmail()));
         result.put("phone", emptyIfNull(user.getPhone()));
