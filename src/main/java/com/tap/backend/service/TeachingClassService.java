@@ -205,6 +205,13 @@ public class TeachingClassService {
         return studentRepo.findAllByClassId(classId);
     }
 
+    @Transactional(readOnly = true)
+    public ClassStudentEntity getStudentForTeacher(Long classId, Long studentId, Long teacherId) {
+        requireOwnedClass(classId, teacherId);
+        return studentRepo.findByIdAndClassId(studentId, classId)
+                .orElseThrow(() -> new NoSuchElementException("student not found"));
+    }
+
     @Transactional
     public ClassStudentEntity addStudent(Long classId, String studentName, String studentNum, Long userId) {
         String normalizedStudentName = blankToNull(studentName);
