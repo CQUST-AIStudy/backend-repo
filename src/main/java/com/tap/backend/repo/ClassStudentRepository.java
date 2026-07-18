@@ -9,6 +9,7 @@ public interface ClassStudentRepository extends JpaRepository<ClassStudentEntity
     List<ClassStudentEntity> findAllByClassId(Long classId);
     boolean existsByClassIdAndStudentNum(Long classId, String studentNum);
     Optional<ClassStudentEntity> findByClassIdAndStudentNum(Long classId, String studentNum);
+    Optional<ClassStudentEntity> findByIdAndClassId(Long id, Long classId);
     List<ClassStudentEntity> findAllByUserId(Long userId);
     List<ClassStudentEntity> findAllByStudentNum(String studentNum);
 }
