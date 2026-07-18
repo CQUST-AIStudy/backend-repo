@@ -47,6 +47,8 @@ from config import (
 
     USE_VLM_UNIFIED_ANALYSIS,
     COVER_RECOGNITION_ENABLED,
+    CODE_ANALYSIS_ENABLED,
+    IMPROVEMENT_PLAN_ENABLED,
 
 )
 
@@ -71,6 +73,10 @@ from models.pipeline_models import EvidenceBlock, ImageKind, TaskMessage
 from pipeline.document_parser import parse_document
 
 from pipeline.evidence_builder import build_evidence_packs
+
+from pipeline.code_analyzer import analyze_code
+
+from pipeline.improvement_planner import build_plan
 
 from pipeline.image_classifier import classify_image
 
@@ -985,6 +991,32 @@ def process_submission(self, task_message_json: str):
 
 
 
+        code_analysis_result = None
+        code_findings = []
+        if CODE_ANALYSIS_ENABLED:
+            publish_progress(r, msg.taskId, msg.submissionId, "code_analysis", student_name=sub.student_name)
+            try:
+                with trace_step(msg.submissionId, "code_analysis") as info:
+                    code_analysis_result = analyze_code(
+                        evidence_blocks, dimensions, getattr(rubric, "subject", "") or ""
+                    )
+                if code_analysis_result:
+                    code_findings = code_analysis_result.get("findings", []) or []
+                    summary_text = (code_analysis_result.get("code_summary") or "").strip()
+                    if summary_text:
+                        # 把代码正确性概述作为一条证据回喂 scorer,让代码/实现类维度参考逻辑正确性。
+                        ev_counter += 1
+                        evidence_blocks.append(EvidenceBlock(
+                            evidence_id=_next_evidence_id(msg.submissionId, run_tag, ev_counter),
+                            kind="code_analysis",
+                            page=0,
+                            content=f"[代码逻辑分析] {summary_text}",
+                            metadata={"synthetic": True, "source": "code_analyzer"},
+                        ))
+            except Exception:
+                code_analysis_result = None
+                code_findings = []
+
         with trace_step(msg.submissionId, "evidence_build") as info:
 
             packs = build_evidence_packs(evidence_blocks, dimensions)
@@ -1231,6 +1263,38 @@ def process_submission(self, task_message_json: str):
 
 
 
+        improvement_plan = None
+        if IMPROVEMENT_PLAN_ENABLED:
+            publish_progress(r, msg.taskId, msg.submissionId, "planning", student_name=sub.student_name)
+            try:
+                with trace_step(msg.submissionId, "improvement_plan") as info:
+                    improvement_plan = build_plan(score_dicts, dimensions, code_findings, float(total))
+            except Exception:
+                improvement_plan = None
+
+        # 用原生 UPDATE 写入两个旁路增量结果列(同 cover_objectives_json 的降级策略:
+        # 迁移未应用时不因 ORM 映射导致 SELECT 依赖新列)。
+        try:
+            if code_analysis_result is not None or improvement_plan is not None:
+                session.execute(
+                    text(
+                        "UPDATE grading_submission SET code_analysis_json = :ca, "
+                        "improvement_plan_json = :ip WHERE id = :id"
+                    ),
+                    {
+                        "ca": json.dumps(code_analysis_result, ensure_ascii=False)
+                        if code_analysis_result is not None else None,
+                        "ip": json.dumps(improvement_plan, ensure_ascii=False)
+                        if improvement_plan is not None else None,
+                        "id": msg.submissionId,
+                    },
+                )
+                session.commit()
+        except Exception:
+            session.rollback()
+
+
+
         publish_progress(r, msg.taskId, msg.submissionId, "report", student_name=sub.student_name)
 
         with trace_step(msg.submissionId, "report_generate") as info:
@@ -1281,6 +1345,8 @@ def process_submission(self, task_message_json: str):
 
                     for eb in evidence_blocks
 
+                    if eb.kind != "code_analysis"
+
                 ]
 
 
@@ -1294,6 +1360,10 @@ def process_submission(self, task_message_json: str):
                     report_evidence,
 
                     float(total),
+
+                    code_analysis=code_analysis_result,
+
+                    improvement_plan=improvement_plan,
 
                 )
 

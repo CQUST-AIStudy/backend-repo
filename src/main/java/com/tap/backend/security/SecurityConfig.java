@@ -99,6 +99,8 @@ public class SecurityConfig {
         .requestMatchers("/api/classes/**").hasAnyRole(UserRole.TEACHER.name(), UserRole.ADMIN.name())
         .requestMatchers("/api/analytics/student/**").hasRole(UserRole.STUDENT.name())
         .requestMatchers("/api/student/animation-explain/**").hasRole(UserRole.STUDENT.name())
+        .requestMatchers("/api/student/grading-results/**").hasRole(UserRole.STUDENT.name())
+        .requestMatchers("/api/student/notifications/**").hasRole(UserRole.STUDENT.name())
         .requestMatchers("/api/analytics/**").hasAnyRole(UserRole.TEACHER.name(), UserRole.ADMIN.name())
         .anyRequest().authenticated()
     );

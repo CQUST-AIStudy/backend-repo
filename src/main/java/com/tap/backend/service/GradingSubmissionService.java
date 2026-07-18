@@ -91,6 +91,7 @@ public class GradingSubmissionService {
     private final GradingUnifiedLinkService gradingUnifiedLinkService;
     private final GradingPublicationPolicy publicationPolicy;
     private final GradingErrorDemonstrationService errorDemonstrationService;
+    private final NotificationService notificationService;
     private final HttpClient httpClient;
 
     public GradingSubmissionService(GradingSubmissionRepository submissionRepo,
@@ -113,7 +114,8 @@ public class GradingSubmissionService {
                                     ScoreDao scoreDao,
                                     GradingUnifiedLinkService gradingUnifiedLinkService,
                                     GradingPublicationPolicy publicationPolicy,
-                                    GradingErrorDemonstrationService errorDemonstrationService) {
+                                    GradingErrorDemonstrationService errorDemonstrationService,
+                                    NotificationService notificationService) {
         this.submissionRepo = submissionRepo;
         this.taskRepo = taskRepo;
         this.scoreItemRepo = scoreItemRepo;
@@ -135,6 +137,7 @@ public class GradingSubmissionService {
         this.gradingUnifiedLinkService = gradingUnifiedLinkService;
         this.publicationPolicy = publicationPolicy;
         this.errorDemonstrationService = errorDemonstrationService;
+        this.notificationService = notificationService;
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(java.time.Duration.ofSeconds(15))
                 .build();
@@ -177,7 +180,22 @@ public class GradingSubmissionService {
         result.put("preferredReportFileType", preferredReport != null ? preferredReport.getFileType() : null);
         result.put("annotatedReportStatus", submission.getAnnotatedReportStatus() != null ? submission.getAnnotatedReportStatus().name() : AnnotatedReportStatus.PENDING.name());
         result.put("errorDemonstrationsStatus", submission.getErrorDemonstrationsStatus() != null ? submission.getErrorDemonstrationsStatus().name() : ErrorDemonstrationStatus.PENDING.name());
+        result.put("codeAnalysis", parseJsonOrNull(submission.getCodeAnalysisJson()));
+        result.put("improvementPlan", parseJsonOrNull(submission.getImprovementPlanJson()));
         return result;
+    }
+
+    /** 把旁路增量结果 JSON 字符串解析为结构化对象透出;为空或非法时返回 null。 */
+    private Object parseJsonOrNull(String json) {
+        if (json == null || json.isBlank()) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(json, Object.class);
+        } catch (Exception e) {
+            log.warn("Failed to parse side-channel JSON: {}", e.getMessage());
+            return null;
+        }
     }
 
     @Transactional
@@ -355,6 +373,28 @@ public class GradingSubmissionService {
         submission.setPublishedAt(Instant.now());
         submission.setPublishedBy(teacherId);
         submissionRepo.save(submission);
+
+        // 站内通知：以学生列表暴露的 id（优先 assignment_offering.id，回退 legacy experiment_id）作为跳转目标，
+        // 与学生端已发布成绩读路径口径一致。通知写入失败不应影响发布主流程。
+        try {
+            GradingTaskEntity publishedTask = submission.getTask();
+            Long linkId = publishedTask == null ? null : publishedTask.getAssignmentOfferingId();
+            if (linkId == null && publishedTask != null) {
+                linkId = publishedTask.getExperimentId();
+            }
+            String scoreText = submission.getTotalScore() == null
+                    ? ""
+                    : "，得分 " + submission.getTotalScore().stripTrailingZeros().toPlainString();
+            notificationService.createGradePublished(
+                    submission.getStudentNo(),
+                    linkId,
+                    "实验成绩已发布",
+                    "你的实验批改结果已发布" + scoreText + "，点击查看详情与教师批注报告。");
+        } catch (Exception e) {
+            log.warn("Failed to create grade-published notification for submission {}: {}",
+                    submissionId, e.getMessage());
+        }
+
         result.put("published", true);
         result.put("publishedAt", submission.getPublishedAt().toString());
         return result;

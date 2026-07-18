@@ -228,6 +228,21 @@ COVER_RECOGNITION_ENABLED = (
     os.getenv("COVER_RECOGNITION_ENABLED", "true").strip().lower() == "true"
 )
 
+# 是否启用代码逻辑分析 Agent(AI 阅读代码证据定位逻辑/边界问题)。
+CODE_ANALYSIS_ENABLED = (
+    os.getenv("CODE_ANALYSIS_ENABLED", "true").strip().lower() == "true"
+)
+
+# 是否启用分层改进建议 Agent(打分后按薄弱程度聚合)。
+IMPROVEMENT_PLAN_ENABLED = (
+    os.getenv("IMPROVEMENT_PLAN_ENABLED", "true").strip().lower() == "true"
+)
+
+# 是否在沙箱内实际执行学生代码(默认关闭,后期增强预留)。
+CODE_EXEC_ENABLED = (
+    os.getenv("CODE_EXEC_ENABLED", "false").strip().lower() == "true"
+)
+
 
 
 # Milvus

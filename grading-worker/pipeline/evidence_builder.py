@@ -7,7 +7,7 @@ from models.pipeline_models import EvidenceBlock, EvidencePack
 
 MIN_EVIDENCE = 3
 MAX_EVIDENCE = 8
-USABLE_KINDS = {"text", "ocr", "vlm", "image"}
+USABLE_KINDS = {"text", "ocr", "vlm", "image", "code_analysis"}
 
 
 class CodeLineSplitter:

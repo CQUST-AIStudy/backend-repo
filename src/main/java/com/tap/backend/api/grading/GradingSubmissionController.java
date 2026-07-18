@@ -9,6 +9,7 @@ import java.math.BigDecimal;
 import java.util.Map;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -122,6 +123,32 @@ public class GradingSubmissionController {
         try {
             return ResponseEntity.ok(ApiResponse.of(submissionService.refreshReviewAndAnnotatedReport(id, teacherId)));
         } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/{id}/publish")
+    public ResponseEntity<?> publish(
+            @PathVariable Long id,
+            @AuthenticationPrincipal UserPrincipal principal
+    ) {
+        Long teacherId = teacherPrincipalResolver.requireTeacherId(principal);
+        try {
+            return ResponseEntity.ok(ApiResponse.of(submissionService.publishToStudentReport(id, teacherId)));
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+        }
+    }
+
+    @DeleteMapping("/{id}/publish")
+    public ResponseEntity<?> revoke(
+            @PathVariable Long id,
+            @AuthenticationPrincipal UserPrincipal principal
+    ) {
+        Long teacherId = teacherPrincipalResolver.requireTeacherId(principal);
+        try {
+            return ResponseEntity.ok(ApiResponse.of(submissionService.revokePublication(id, teacherId)));
+        } catch (IllegalArgumentException | IllegalStateException e) {
             return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
         }
     }
