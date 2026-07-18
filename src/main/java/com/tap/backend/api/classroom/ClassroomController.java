@@ -21,6 +21,7 @@ import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.ss.usermodel.WorkbookFactory;
 import org.springframework.http.MediaType;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -40,15 +41,18 @@ public class ClassroomController {
     private final TeachingClassService classService;
     private final UserRepository userRepo;
     private final TeacherPrincipalResolver teacherPrincipalResolver;
+    private final PasswordEncoder passwordEncoder;
 
     public ClassroomController(
             TeachingClassService classService,
             UserRepository userRepo,
-            TeacherPrincipalResolver teacherPrincipalResolver
+            TeacherPrincipalResolver teacherPrincipalResolver,
+            PasswordEncoder passwordEncoder
     ) {
         this.classService = classService;
         this.userRepo = userRepo;
         this.teacherPrincipalResolver = teacherPrincipalResolver;
+        this.passwordEncoder = passwordEncoder;
     }
 
     private UserEntity requireUser(UserPrincipal principal) {
@@ -169,9 +173,51 @@ public class ClassroomController {
             row.put("studentNum", student.getStudentNum());
             row.put("userId", student.getUserId());
             row.put("joinedAt", student.getJoinedAt());
+            UserEntity tapUser = findTapUserForStudent(student);
+            row.put("username", tapUser != null ? tapUser.getUsername() : null);
+            row.put("hasPassword", tapUser != null && tapUser.getPasswordHash() != null && !tapUser.getPasswordHash().isBlank());
             result.add(row);
         }
         return ApiResponse.of(result);
+    }
+
+    private UserEntity findTapUserForStudent(ClassStudentEntity student) {
+        if (student.getUserId() != null) {
+            UserEntity byId = userRepo.findById(student.getUserId()).orElse(null);
+            if (byId != null) {
+                return byId;
+            }
+        }
+        if (student.getStudentNum() != null && !student.getStudentNum().isBlank()) {
+            return userRepo.findByUsernum(student.getStudentNum()).orElse(null);
+        }
+        return null;
+    }
+
+    record ResetStudentPasswordRequest(String newPassword) {}
+
+    @PostMapping("/{classId}/students/{studentId}/reset-password")
+    public ApiResponse<Void> resetStudentPassword(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @PathVariable Long classId,
+            @PathVariable Long studentId,
+            @RequestBody ResetStudentPasswordRequest req
+    ) {
+        UserEntity user = requireUser(principal);
+        if (req == null || req.newPassword() == null || req.newPassword().isBlank()) {
+            throw new IllegalArgumentException("新密码不能为空");
+        }
+        if (req.newPassword().length() < 6) {
+            throw new IllegalArgumentException("新密码长度不能少于6位");
+        }
+        ClassStudentEntity student = classService.getStudentForTeacher(classId, studentId, user.getId());
+        UserEntity tapUser = findTapUserForStudent(student);
+        if (tapUser == null) {
+            throw new IllegalStateException("该学生尚未创建登录账号，无法重置密码");
+        }
+        tapUser.setPasswordHash(passwordEncoder.encode(req.newPassword()));
+        userRepo.save(tapUser);
+        return ApiResponse.of(null);
     }
 
     record AddStudentRequest(String studentName, String studentNum) {}
