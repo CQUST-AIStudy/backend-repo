@@ -84,6 +84,22 @@ class AiReportServiceTest {
     }
 
     @Test
+    void generateUsesCodeLoadedByExperimentListWhenUnifiedRowsAreEmpty() throws Exception {
+        AiReportContext context = context();
+        Map<String, Object> userData = Map.of("code", "int main() { return 0; }");
+        when(queryDao.findContext("2026001", 7)).thenReturn(context);
+        when(queryDao.findProblemRows("2026001", 7)).thenReturn(List.of());
+        when(generator.generate(context, "int main() { return 0; }", userData))
+                .thenReturn("generated report");
+        when(reportDao.upsert(7, 101, "generated report")).thenReturn(1);
+
+        AiReportResult result = service.generate("2026001", 7, userData);
+
+        assertTrue(result.success());
+        verify(reportDao).upsert(7, 101, "generated report");
+    }
+
+    @Test
     void getRejectsMissingReport() {
         when(queryDao.findContext("2026001", 7)).thenReturn(context());
         when(reportDao.findByOfferingAndStudent(7, 101)).thenReturn(null);
