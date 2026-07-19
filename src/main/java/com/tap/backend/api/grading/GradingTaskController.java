@@ -214,6 +214,19 @@ public class GradingTaskController {
         }
     }
 
+    @GetMapping("/{id}/publish-progress")
+    public ResponseEntity<?> getPublishProgress(
+            @PathVariable Long id,
+            @AuthenticationPrincipal UserPrincipal principal
+    ) {
+        Long teacherId = teacherPrincipalResolver.requireTeacherId(principal);
+        try {
+            return ResponseEntity.ok(ApiResponse.of(GradingSubmissionService.getPublishProgress(id)));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+        }
+    }
+
     @DeleteMapping("/{id}/publish")
     public ResponseEntity<?> revokeTaskPublications(
             @PathVariable Long id,

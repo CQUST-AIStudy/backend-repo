@@ -423,6 +423,17 @@ public class GradingSubmissionService {
         return publicationResult(submission, false, List.of());
     }
 
+    private static final Map<Long, Map<String, Object>> PUBLISH_PROGRESS = new java.util.concurrent.ConcurrentHashMap<>();
+
+    public static Map<String, Object> getPublishProgress(Long taskId) {
+        return PUBLISH_PROGRESS.getOrDefault(taskId, Map.of(
+                "status", "IDLE",
+                "publishedCount", 0,
+                "skippedCount", 0,
+                "totalCount", 0
+        ));
+    }
+
     @Transactional
     public Map<String, Object> publishConfirmedTask(Long taskId, Long teacherId) {
         requireOwnedTask(taskId, teacherId);
@@ -433,22 +444,44 @@ public class GradingSubmissionService {
         if (hasUnconfirmed) {
             throw new IllegalStateException("请先确认学生匹配");
         }
-        int publishedCount = 0;
-        int skippedCount = 0;
-        for (GradingSubmissionEntity submission : submissions) {
-            if (submission.getStatus() != com.tap.backend.domain.grading.SubmissionStatus.SCORED
-                    || submission.getTotalScore() == null) {
-                skippedCount++;
-                continue;
+
+        Map<String, Object> progress = new LinkedHashMap<>();
+        progress.put("status", "PUBLISHING");
+        progress.put("publishedCount", 0);
+        progress.put("skippedCount", 0);
+        progress.put("totalCount", submissions.size());
+        PUBLISH_PROGRESS.put(taskId, progress);
+
+        // 异步执行批量发布，避免前端长时间等待
+        java.util.concurrent.CompletableFuture.runAsync(() -> {
+            int publishedCount = 0;
+            int skippedCount = 0;
+            for (GradingSubmissionEntity submission : submissions) {
+                if (submission.getStatus() != com.tap.backend.domain.grading.SubmissionStatus.SCORED
+                        || submission.getTotalScore() == null) {
+                    skippedCount++;
+                    continue;
+                }
+                try {
+                    publishToStudentReport(submission.getId(), teacherId);
+                    publishedCount++;
+                    progress.put("publishedCount", publishedCount);
+                } catch (Exception e) {
+                    log.error("Failed to publish submission {} for task {}: {}", submission.getId(), taskId, e.getMessage(), e);
+                    skippedCount++;
+                    progress.put("skippedCount", skippedCount);
+                }
             }
-            publishToStudentReport(submission.getId(), teacherId);
-            publishedCount++;
-        }
+            progress.put("status", "COMPLETED");
+            progress.put("publishedCount", publishedCount);
+            progress.put("skippedCount", skippedCount);
+        });
+
         return Map.of(
                 "taskId", taskId,
-                "publishedCount", publishedCount,
-                "skippedCount", skippedCount,
-                "allPublished", skippedCount == 0 && publishedCount == submissions.size()
+                "status", "PUBLISHING",
+                "totalCount", submissions.size(),
+                "message", "批量发布已开始，请稍后刷新查看进度"
         );
     }
 
