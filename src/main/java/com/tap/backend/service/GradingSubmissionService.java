@@ -434,6 +434,13 @@ public class GradingSubmissionService {
         ));
     }
 
+    private org.springframework.beans.factory.ObjectProvider<GradingSubmissionService> selfProvider;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public void setSelfProvider(org.springframework.beans.factory.ObjectProvider<GradingSubmissionService> selfProvider) {
+        this.selfProvider = selfProvider;
+    }
+
     @Transactional
     public Map<String, Object> publishConfirmedTask(Long taskId, Long teacherId) {
         requireOwnedTask(taskId, teacherId);
@@ -456,6 +463,7 @@ public class GradingSubmissionService {
         java.util.concurrent.CompletableFuture.runAsync(() -> {
             int publishedCount = 0;
             int skippedCount = 0;
+            GradingSubmissionService self = selfProvider.getObject();
             for (GradingSubmissionEntity submission : submissions) {
                 if (submission.getStatus() != com.tap.backend.domain.grading.SubmissionStatus.SCORED
                         || submission.getTotalScore() == null) {
@@ -463,7 +471,7 @@ public class GradingSubmissionService {
                     continue;
                 }
                 try {
-                    publishToStudentReport(submission.getId(), teacherId);
+                    self.publishToStudentReport(submission.getId(), teacherId);
                     publishedCount++;
                     progress.put("publishedCount", publishedCount);
                 } catch (Exception e) {
