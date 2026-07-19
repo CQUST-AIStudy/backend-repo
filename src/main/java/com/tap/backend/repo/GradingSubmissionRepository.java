@@ -11,6 +11,7 @@ import java.util.Collection;
 import java.util.List;
 
 public interface GradingSubmissionRepository extends JpaRepository<GradingSubmissionEntity, Long> {
+    @org.springframework.data.jpa.repository.EntityGraph(attributePaths = {"task"})
     List<GradingSubmissionEntity> findAllByTaskId(Long taskId);
     List<GradingSubmissionEntity> findAllByTaskIdAndStatus(Long taskId, SubmissionStatus status);
     List<GradingSubmissionEntity> findAllByTaskIdAndIdIn(Long taskId, Collection<Long> submissionIds);
