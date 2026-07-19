@@ -49,6 +49,11 @@ services:
       DEEPL_API_KEY: ${DEEPL_API_KEY:-}
       VOLCANO_API_KEY: ${VOLCANO_API_KEY:-}
       ARK_API_KEY: ${ARK_API_KEY:-}
+      TAP_MAIL_HOST: ${TAP_MAIL_HOST:-smtp.163.com}
+      TAP_MAIL_PORT: ${TAP_MAIL_PORT:-465}
+      TAP_MAIL_USERNAME: ${TAP_MAIL_USERNAME:-}
+      TAP_MAIL_PASSWORD: ${TAP_MAIL_PASSWORD:-}
+      TAP_FRONTEND_BASE_URL: ${TAP_FRONTEND_BASE_URL:-http://localhost:5173}
 
       RAG_SERVICE_BASE_URL: ${RAG_SERVICE_BASE_URL:-http://host.docker.internal:8001}
       PTA_SPIDER_URL: ${PTA_SPIDER_URL:-http://host.docker.internal:8100}

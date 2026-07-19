@@ -1003,7 +1003,6 @@ public class ApiController {
                         for (Map<String, Object> exp : experiments) {
                             if (expId.equals(exp.get("offeringId")) && code.length() > 0) {
                                 exp.put("code", code);
-                                // 兜底：若该实验无结构化题目，把 legacy 代码包成单题，保证前端按题渲染不落空
                                 Object existingProblems = exp.get("problems");
                                 if (existingProblems == null || ((List<?>) existingProblems).isEmpty()) {
                                     Map<String, Object> fallbackProblem = new LinkedHashMap<>();
@@ -1021,6 +1020,13 @@ public class ApiController {
                         }
                     }
                 }
+            }
+
+            for (Map<String, Object> exp : experiments) {
+                String code = Objects.toString(exp.get("code"), "").trim();
+                boolean eligible = !code.isBlank();
+                exp.put("aiReportEligible", eligible);
+                exp.put("aiReportIneligibleReason", eligible ? "" : "该实验尚无平台 OJ 代码提交，暂不能生成 AI 报告");
             }
 
             response.put("success", true);

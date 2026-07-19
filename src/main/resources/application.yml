@@ -171,6 +171,8 @@ leetcode:
       recommendation-ttl-minutes: 30
       skill-profile-ttl-minutes: 60
 tap:
+  frontend:
+    base-url: ${TAP_FRONTEND_BASE_URL:http://localhost:5173}
   security:
     jwt:
       issuer: ${JWT_ISSUER:tap}

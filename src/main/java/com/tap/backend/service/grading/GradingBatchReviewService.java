@@ -18,6 +18,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -35,19 +36,22 @@ public class GradingBatchReviewService {
     private final GradingAgentConfigService configService;
     private final AiProvider aiProvider;
     private final ObjectMapper objectMapper;
+    private final JdbcTemplate jdbcTemplate;
 
     public GradingBatchReviewService(GradingTaskRepository taskRepository,
                                      GradingSubmissionRepository submissionRepository,
                                      ScoreItemRepository scoreItemRepository,
                                      GradingAgentConfigService configService,
                                      AiProvider aiProvider,
-                                     ObjectMapper objectMapper) {
+                                     ObjectMapper objectMapper,
+                                     JdbcTemplate jdbcTemplate) {
         this.taskRepository = taskRepository;
         this.submissionRepository = submissionRepository;
         this.scoreItemRepository = scoreItemRepository;
         this.configService = configService;
         this.aiProvider = aiProvider;
         this.objectMapper = objectMapper;
+        this.jdbcTemplate = jdbcTemplate;
     }
 
     @Transactional(readOnly = true)
@@ -137,14 +141,16 @@ public class GradingBatchReviewService {
 
     private AgentConfigDto fallbackConfig() {
         return new AgentConfigDto(null, DEFAULT_CONFIG_CODE, "default",
-                "你是一位高校实验课主讲教师。请根据下面的学生成绩和分项得分，给出批次总结。\n" +
+                "你是一位实验课主讲教师。请根据下面的真实学生成绩和分项得分，详细分析本次作业的学生表现、共性问题及教师可执行的教学建议。\n" +
                 "必须严格返回 JSON：{\"summary\":\"...\",\"commonIssues\":[\"...\"],\"strengths\":[\"...\"],\"teachingAdvice\":\"...\"}\n",
                 aiProvider.model(), new BigDecimal("0.30"), 1600, true);
     }
 
     private String buildPrompt(GradingTaskEntity task, List<GradingSubmissionEntity> submissions, String template) {
+        String experimentName = resolveExperimentName(task);
         StringBuilder sb = new StringBuilder();
-        sb.append("批改任务：").append(task.getRubric() != null ? task.getRubric().getName() : "").append("\n");
+        sb.append("实验名称：").append(experimentName).append("\n");
+        sb.append("评分标准：").append(task.getRubric() != null ? task.getRubric().getName() : "未命名评分标准").append("\n");
         if (task.getRubric() != null && task.getRubric().getCustomPrompt() != null) {
             sb.append("任务要求：").append(task.getRubric().getCustomPrompt()).append("\n");
         }
@@ -167,13 +173,35 @@ public class GradingBatchReviewService {
         }
         sb.append("\n得分分布：\n").append(renderDistribution(submissions)).append("\n");
 
-        return template
+        String rendered = template
                 .replace("{{task}}", task.getRubric() != null ? task.getRubric().getName() : "")
-                .replace("{{experimentName}}", task.getRubric() != null ? task.getRubric().getName() : "")
+                .replace("{{experimentName}}", experimentName)
                 .replace("{{maxScore}}", String.valueOf(task.getScoreRangeMax() != null ? task.getScoreRangeMax() : 100))
                 .replace("{{studentCount}}", String.valueOf(submissions.size()))
                 .replace("{{submissionsSummary}}", sb.toString())
                 .replace("{{dimensions}}", renderDimensions(task));
+        if (!template.contains("{{submissionsSummary}}")) {
+            rendered += "\n\n# 本次作业真实数据\n" + sb;
+        }
+        return rendered + "\n\n分析要求：结论必须引用上述人数、分数或分项证据；明确说明学生整体情况、至少2项共性问题，并给教师3至5条可直接执行的教学建议。不得猜测未提供的学校信息。";
+    }
+
+    private String resolveExperimentName(GradingTaskEntity task) {
+        if (task.getAssignmentOfferingId() != null) {
+            List<String> names = jdbcTemplate.query(
+                    "SELECT COALESCE(NULLIF(TRIM(ao.title_override), ''), at.title) " +
+                            "FROM assignment_offering ao JOIN assignment_template at ON at.id = ao.template_id " +
+                            "WHERE ao.id = ? LIMIT 1",
+                    (rs, rowNum) -> rs.getString(1), task.getAssignmentOfferingId());
+            if (!names.isEmpty() && names.get(0) != null && !names.get(0).isBlank()) return names.get(0).trim();
+        }
+        if (task.getExperimentId() != null) {
+            List<String> names = jdbcTemplate.query(
+                    "SELECT experiment_name FROM experiment WHERE experiment_id = ? LIMIT 1",
+                    (rs, rowNum) -> rs.getString(1), task.getExperimentId());
+            if (!names.isEmpty() && names.get(0) != null && !names.get(0).isBlank()) return names.get(0).trim();
+        }
+        return "未关联具体实验";
     }
 
     private BatchReviewDto normalizeResult(Map<String, Object> parsed, List<GradingSubmissionEntity> submissions) {

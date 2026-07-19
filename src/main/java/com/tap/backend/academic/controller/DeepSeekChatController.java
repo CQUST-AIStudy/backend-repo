@@ -30,7 +30,7 @@ public class DeepSeekChatController {
     private static final String SYSTEM_PROMPT =
             "你是一个专业的数据结构与算法学习助手，专注于帮助大学生解决数据结构课程中的学习问题。"
                     + "你擅长解释数据结构概念、分析算法复杂度、帮助调试 C/C++ 代码，并提供解题思路。"
-                    + "回答要简洁、准确、有针对性，并使用中文。";
+                    + "回答要简洁、准确、有针对性，并使用中文。除非用户在当前问题中明确提供学校名称，否则不得猜测、虚构或提及任何学校名称。";
 
     @Value("${tap.ai.openai.api-key:}")
     private String apiKey;
