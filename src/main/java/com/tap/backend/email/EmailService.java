@@ -46,6 +46,9 @@ public class EmailService {
     @Value("${spring.mail.username}")
     private String fromAddress;
 
+    @Value("${tap.frontend.base-url:http://localhost:5173}")
+    private String frontendBaseUrl;
+
     /**
      * 发送预警邮件（异步，不阻塞主流程）
      *
@@ -259,7 +262,7 @@ public class EmailService {
         sb.append("<div class=\"footer\">");
         sb.append("<p>提示：本邮件由系统自动发送，登录时每 2 小时最多提醒一次。</p>");
         sb.append("<p>请根据上述错误类型有针对性地复习相关知识点。</p>");
-        sb.append("<p style=\"margin-top:12px\"><a href=\"http://121.43.152.73\">📱 点击前往智能实验辅助系统 →</a></p>");
+        sb.append("<p style=\"margin-top:12px\"><a href=\"").append(escapeHtml(frontendBaseUrl)).append("\">📱 点击前往智能实验辅助系统 →</a></p>");
         sb.append("<p class=\"signature\">—— 智能实验辅助系统</p>");
         sb.append("</div>");
 
@@ -348,7 +351,7 @@ public class EmailService {
 
         sb.append("<div class=\"footer\">");
         sb.append("<p>提示：本邮件由系统自动发送，同一实验 1 小时内仅提醒一次。</p>");
-        sb.append("<p style=\"margin-top:12px\"><a href=\"http://121.43.152.73\">📱 点击前往智能实验辅助系统 →</a></p>");
+        sb.append("<p style=\"margin-top:12px\"><a href=\"").append(escapeHtml(frontendBaseUrl)).append("\">📱 点击前往智能实验辅助系统 →</a></p>");
         sb.append("<p class=\"signature\">—— 智能实验辅助系统</p>");
         sb.append("</div>");
 

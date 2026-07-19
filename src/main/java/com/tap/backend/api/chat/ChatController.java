@@ -62,7 +62,7 @@ public class ChatController {
     private static final int MAX_QUERY_LENGTH = 120;
     private static final int MAX_MESSAGE_LENGTH = 4000;
     private static final Duration ARXIV_REQUEST_TIMEOUT = Duration.ofSeconds(6);
-    private static final Duration AI_CHAT_REQUEST_TIMEOUT = Duration.ofSeconds(90);
+    private static final Duration AI_CHAT_REQUEST_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration AI_STREAM_REQUEST_TIMEOUT = Duration.ofMinutes(5);
     private static final String ANSWER_SYSTEM_PROMPT = """
             You are the teaching copilot for university instructors.
@@ -79,6 +79,7 @@ public class ChatController {
             - If arXiv search results are provided, only cite paper titles and URLs that appear in those results.
             - If no paper results are provided, do not fabricate citations, links, or publication details.
             - When the user's request is underspecified, make the minimum reasonable assumption and state it briefly.
+            - Never invent or mention a school or institution name unless the user explicitly provides it in the current request.
             """;
     private static final String ARXIV_REWRITE_SYSTEM_PROMPT = """
             You rewrite user requests into high-quality arXiv search queries.
