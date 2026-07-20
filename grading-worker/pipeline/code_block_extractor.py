@@ -33,6 +33,9 @@ CODE_SYMBOLS = ['{', '}', ';', '=', '(', ')', '[', ']', '->', '++', '--', '+=', 
 def extract_code_blocks(content: str, page: int, min_lines: int = 3) -> List[CodeBlock]:
     """从文本内容中提取代码块。
 
+    使用代码密度滑动窗口：连续代码行之间允许最多 1 个空行，
+    只有连续 2 行以上明确是散文时才终止代码块。
+
     Args:
         content: 原始文本内容
         page: 页码
@@ -48,25 +51,45 @@ def extract_code_blocks(content: str, page: int, min_lines: int = 3) -> List[Cod
     blocks = []
     current_block = None
     current_start = 0
+    blank_count = 0
+
+    def flush_block(end_idx: int):
+        nonlocal current_block, current_start
+        if current_block is not None and len(current_block) >= min_lines:
+            blocks.append(CodeBlock(
+                page=page,
+                start_line=current_start + 1,
+                end_line=end_idx,
+                code='\n'.join(current_block),
+                language=_detect_language(current_block),
+                confidence=_calculate_confidence(current_block)
+            ))
+        current_block = None
 
     for i, line in enumerate(lines):
-        if _looks_like_code(line):
+        stripped = line.strip()
+        is_code = _looks_like_code(line)
+        is_blank = not stripped
+
+        if is_code:
+            blank_count = 0
             if current_block is None:
                 current_start = i
                 current_block = [line]
             else:
                 current_block.append(line)
+        elif is_blank and current_block is not None:
+            # 空行可以出现在代码块中间，但连续 2 个空行可能意味着代码结束
+            blank_count += 1
+            if blank_count <= 1:
+                current_block.append(line)
+            else:
+                flush_block(i - blank_count + 1)
+                blank_count = 0
         else:
-            if current_block is not None and len(current_block) >= min_lines:
-                blocks.append(CodeBlock(
-                    page=page,
-                    start_line=current_start + 1,
-                    end_line=i,
-                    code='\n'.join(current_block),
-                    language=_detect_language(current_block),
-                    confidence=_calculate_confidence(current_block)
-                ))
-            current_block = None
+            # 明确的散文行，终止代码块
+            flush_block(i)
+            blank_count = 0
 
     # 处理文件末尾的代码块
     if current_block is not None and len(current_block) >= min_lines:
@@ -90,6 +113,10 @@ def _looks_like_code(line: str) -> bool:
 
     # 代码关键词
     if any(kw in stripped for kw in CODE_KEYWORDS):
+        return True
+
+    # 结构符号行（如 }, {, );, ;, }); 等）
+    if stripped in ('}', '{', ');', '});', '};', '];', ');'):
         return True
 
     # 代码符号密度（至少 2 个符号）
