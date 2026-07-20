@@ -3,7 +3,6 @@ package com.tap.backend.service;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.tap.backend.domain.grading.EvidenceBlockEntity;
-import com.tap.backend.domain.grading.EvidenceKind;
 import com.tap.backend.domain.grading.GradingSubmissionEntity;
 import com.tap.backend.domain.grading.ScoreItemEntity;
 import com.tap.backend.service.grading.animation.AnimationCandidate;
@@ -93,16 +92,6 @@ public class GradingErrorDemonstrationService {
             GradingSubmissionEntity submission,
             List<ScoreItemEntity> scoreItems,
             List<EvidenceBlockEntity> evidenceBlocks) {
-
-        // 优先使用 code 类型证据块生成动画，避免整页报告文字被当作代码展示
-        List<EvidenceBlockEntity> codeBlocks = evidenceBlocks == null ? List.of()
-                : evidenceBlocks.stream()
-                        .filter(eb -> eb.getKind() == EvidenceKind.code)
-                        .collect(Collectors.toList());
-        if (!codeBlocks.isEmpty()) {
-            evidenceBlocks = codeBlocks;
-            log.debug("Using {} code evidence blocks for error demonstrations", codeBlocks.size());
-        }
 
         ProblemContext problemContext = problemContextResolver.resolve(
                 submission == null ? null : submission.getTask());
