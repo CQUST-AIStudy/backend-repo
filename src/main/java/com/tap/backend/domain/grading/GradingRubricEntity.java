@@ -41,6 +41,15 @@ public class GradingRubricEntity {
     @Column(name = "image_parsed_json", columnDefinition = "json")
     private String imageParsedJson;
 
+    @Column(name = "generated_prompt", columnDefinition = "text")
+    private String generatedPrompt;
+
+    @Column(name = "generated_prompt_at")
+    private Instant generatedPromptAt;
+
+    @Column(name = "generated_prompt_source_hash", length = 64)
+    private String generatedPromptSourceHash;
+
     @OneToMany(mappedBy = "rubric", cascade = CascadeType.ALL, orphanRemoval = true)
     @OrderBy("sortOrder ASC")
     private List<RubricDimensionEntity> dimensions = new ArrayList<>();
@@ -80,6 +89,12 @@ public class GradingRubricEntity {
     public void setImageParsedAt(Instant imageParsedAt) { this.imageParsedAt = imageParsedAt; }
     public String getImageParsedJson() { return imageParsedJson; }
     public void setImageParsedJson(String imageParsedJson) { this.imageParsedJson = imageParsedJson; }
+    public String getGeneratedPrompt() { return generatedPrompt; }
+    public void setGeneratedPrompt(String generatedPrompt) { this.generatedPrompt = generatedPrompt; }
+    public Instant getGeneratedPromptAt() { return generatedPromptAt; }
+    public void setGeneratedPromptAt(Instant generatedPromptAt) { this.generatedPromptAt = generatedPromptAt; }
+    public String getGeneratedPromptSourceHash() { return generatedPromptSourceHash; }
+    public void setGeneratedPromptSourceHash(String generatedPromptSourceHash) { this.generatedPromptSourceHash = generatedPromptSourceHash; }
     public List<RubricDimensionEntity> getDimensions() { return dimensions; }
     public void setDimensions(List<RubricDimensionEntity> dimensions) { this.dimensions = dimensions; }
     public Instant getCreatedAt() { return createdAt; }

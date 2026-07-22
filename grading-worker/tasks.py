@@ -70,6 +70,7 @@ from models.db_models import (
 
 from models.pipeline_models import EvidenceBlock, ImageKind, TaskMessage
 
+from pipeline.code_block_extractor import extract_code_blocks
 from pipeline.document_parser import parse_document
 
 from pipeline.evidence_builder import build_evidence_packs
@@ -596,6 +597,22 @@ def process_submission(self, task_message_json: str):
                     location={"page": page.page_num, "paragraphIndex": 0},
 
                 ))
+
+
+
+                # 从文本证据中提取代码块，单独保存为 code 类型证据
+                code_blocks = extract_code_blocks(page.text, page.page_num)
+                for cb in code_blocks:
+                    ev_counter += 1
+                    evidence_blocks.append(EvidenceBlock(
+                        evidence_id=_next_evidence_id(msg.submissionId, run_tag, ev_counter),
+                        kind="code",
+                        page=cb.page,
+                        content=cb.code,
+                        confidence=cb.confidence,
+                        location={"page": cb.page, "paragraphIndex": 0},
+                        metadata={"language": cb.language, "start_line": cb.start_line, "end_line": cb.end_line},
+                    ))
 
 
 
@@ -1167,8 +1184,10 @@ def process_submission(self, task_message_json: str):
 
                 }
 
-        except Exception:
+        except ValueError as e:
 
+            # 批量评分 JSON 解析失败，回退到逐维度评分
+            print(f"Batch scoring failed, falling back to per-dimension scoring: {str(e)[:200]}")
             score_workers = max(1, min(DIMENSION_SCORE_CONCURRENCY, len(dimensions)))
 
             if score_workers == 1:

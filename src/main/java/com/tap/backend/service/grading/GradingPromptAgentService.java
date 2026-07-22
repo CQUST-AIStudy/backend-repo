@@ -1,0 +1,375 @@
+package com.tap.backend.service.grading;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.tap.backend.ai.AiProperties;
+import com.tap.backend.domain.grading.GradingRubricEntity;
+import com.tap.backend.domain.grading.RubricDimensionEntity;
+import com.tap.backend.repo.GradingRubricRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.http.MediaType;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.client.RestClient;
+
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+
+/**
+ * 提示词生成 Agent：接收教师评分标准（维度 + 说明 + 自定义补充），调用大模型专门写出
+ * 下一步喂给批改模型的批改提示词。生成结果持久化到 grading_rubric（DB 作为可靠缓存，
+ * 避免重复调用大模型），并额外在 Redis 做一层读缓存。
+ *
+ * 生成链路：Agent(LLM) 成功 -> 维度规则拼装 -> 通用兜底。
+ * 失效策略：以评分标准内容哈希为版本，评分标准变化即触发重新生成。
+ */
+@Service
+public class GradingPromptAgentService {
+    private static final Logger log = LoggerFactory.getLogger(GradingPromptAgentService.class);
+
+    private static final String PROMPT_CACHE_PREFIX = "grading:prompt:rubric:";
+    private static final Duration PROMPT_CACHE_TTL = Duration.ofDays(7);
+
+    // 维度无说明时的通用给分口径
+    private static final String GENERIC_DIMENSION_HINT = "根据该维度的正确性、完整性与深度综合给分。";
+    // 与所有维度共用的批改反馈硬性要求（固定的输出质量约束，独立于学科）
+    private static final String FEEDBACK_DETAIL_PROMPT = """
+            批改反馈要求：每个评分维度的 comment 必须写成有证据的具体分析，不要只写"较好""不够深入"等短语。请结合学生报告中的实验目的、步骤、结果、数据、代码或图表内容，说明为什么做得好、为什么存在不足、具体原因是什么，以及下一步应如何修改。每个维度建议不少于 2 句中文；如果扣分，请明确扣分依据和对应改进点。""";
+    // 评分标准既无自定义提示词也无维度时的通用兜底（不绑定具体学科）
+    private static final String GENERIC_FALLBACK_PROMPT = """
+            本报告为实验/实训报告。请依据报告的实验目的、任务要求、设计与实现、测试结果、结论与规范性等方面综合评分，各维度权重总和为 100。请根据每一部分的正确性、完整性与分析深度给分。""";
+
+    private final GradingRubricRepository rubricRepo;
+    private final AiProperties aiProperties;
+    private final ObjectMapper objectMapper;
+    private final StringRedisTemplate redisTemplate;
+
+    public GradingPromptAgentService(GradingRubricRepository rubricRepo,
+                                     AiProperties aiProperties,
+                                     ObjectMapper objectMapper,
+                                     StringRedisTemplate redisTemplate) {
+        this.rubricRepo = rubricRepo;
+        this.aiProperties = aiProperties;
+        this.objectMapper = objectMapper;
+        this.redisTemplate = redisTemplate;
+    }
+
+    /**
+     * 解析批改用提示词：Redis -> DB -> Agent 生成（并回写 DB + Redis）。
+     * 由批改任务发布时按需调用。
+     */
+    @Transactional
+    public String resolvePrompt(Long rubricId) {
+        GradingRubricEntity rubric = rubricId == null
+                ? null
+                : rubricRepo.findByIdWithDimensions(rubricId).orElse(null);
+        if (rubric == null) {
+            return withFeedbackRule(GENERIC_FALLBACK_PROMPT);
+        }
+
+        String hash = contentHash(rubric);
+        String cacheKey = PROMPT_CACHE_PREFIX + rubric.getId() + ":" + hash;
+
+        // 1) Redis 读缓存
+        try {
+            String cached = redisTemplate.opsForValue().get(cacheKey);
+            if (cached != null && !cached.isBlank()) {
+                return cached;
+            }
+        } catch (Exception e) {
+            log.warn("Read grading prompt cache failed for rubric {}", rubric.getId(), e);
+        }
+
+        // 2) DB 持久化命中（哈希一致说明评分标准未变）
+        if (rubric.getGeneratedPrompt() != null && !rubric.getGeneratedPrompt().isBlank()
+                && hash.equals(rubric.getGeneratedPromptSourceHash())) {
+            writeCache(cacheKey, rubric.getGeneratedPrompt());
+            return rubric.getGeneratedPrompt();
+        }
+
+        // 3) 调用 Agent 生成（失败回退到规则拼装/通用兜底）
+        String prompt = generate(rubric);
+
+        rubric.setGeneratedPrompt(prompt);
+        rubric.setGeneratedPromptAt(Instant.now());
+        rubric.setGeneratedPromptSourceHash(hash);
+        try {
+            rubricRepo.save(rubric);
+        } catch (Exception e) {
+            log.warn("Persist generated prompt failed for rubric {}", rubric.getId(), e);
+        }
+        writeCache(cacheKey, prompt);
+        return prompt;
+    }
+
+    private void writeCache(String key, String value) {
+        try {
+            redisTemplate.opsForValue().set(key, value, PROMPT_CACHE_TTL);
+        } catch (Exception e) {
+            log.warn("Write grading prompt cache failed for key {}", key, e);
+        }
+    }
+
+    /**
+     * 生成批改提示词主体：优先 Agent(LLM)，失败则维度规则拼装，再无维度则通用兜底。
+     * 统一追加固定的批改反馈质量要求。
+     */
+    private String generate(GradingRubricEntity rubric) {
+        String agentBody = tryGenerateByAgent(rubric);
+        if (agentBody != null && !agentBody.isBlank()) {
+            log.info("Grading prompt generated by agent for rubric {}", rubric.getId());
+            return withFeedbackRule(agentBody.trim());
+        }
+
+        String dimensionBody = buildPromptFromDimensions(rubric);
+        if (!dimensionBody.isBlank()) {
+            log.info("Grading prompt fell back to dimension assembly for rubric {}", rubric.getId());
+            return withFeedbackRule(dimensionBody);
+        }
+
+        log.info("Grading prompt fell back to generic template for rubric {}", rubric.getId());
+        return withFeedbackRule(GENERIC_FALLBACK_PROMPT);
+    }
+
+    private String withFeedbackRule(String body) {
+        return body + "\n\n" + FEEDBACK_DETAIL_PROMPT;
+    }
+
+    // ---------------------------------------------------------------------
+    // Agent（大模型）调用
+    // ---------------------------------------------------------------------
+
+    private String tryGenerateByAgent(GradingRubricEntity rubric) {
+        ProviderConfig config = resolveProvider();
+        if (config == null) {
+            return null;
+        }
+        try {
+            RestClient client = RestClient.builder()
+                    .baseUrl(config.baseUrl())
+                    .defaultHeader("Authorization", "Bearer " + config.apiKey())
+                    .build();
+
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("model", config.model());
+            body.put("temperature", 0.3);
+            body.put("max_tokens", 1200);
+            body.put("messages", List.of(
+                    Map.of("role", "system", "content", SYSTEM_PROMPT),
+                    Map.of("role", "user", "content", buildAgentUserPrompt(rubric))
+            ));
+
+            String raw = client.post()
+                    .uri("/chat/completions")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(objectMapper.writeValueAsString(body))
+                    .retrieve()
+                    .body(String.class);
+
+            JsonNode root = objectMapper.readTree(raw);
+            String content = root.path("choices").path(0).path("message").path("content").asText("");
+            return stripFences(content);
+        } catch (Exception e) {
+            log.warn("Grading prompt agent call failed for rubric {}: {}", rubric.getId(), e.getMessage());
+            return null;
+        }
+    }
+
+    private static final String SYSTEM_PROMPT =
+            "你是资深教学与评估专家。你的任务是把教师提供的实验/实训报告评分标准，转写成一段可直接交给"
+            + "AI 批改模型使用的中文批改提示词。要求：\n"
+            + "1. 逐条列出每个评分维度，写清该维度的权重、需要考察的要点，以及给分依据；\n"
+            + "2. 自然融合教师的补充说明（若有），不要照抄，也不要遗漏其关键意图；\n"
+            + "3. 强调必须依据学生报告中的真实内容与证据评分，证据不足时保守给分并指出缺失；\n"
+            + "4. 只输出批改提示词正文本身，使用简洁清晰的中文，不要输出 JSON、Markdown 代码块或任何解释性前后缀。";
+
+    private String buildAgentUserPrompt(GradingRubricEntity rubric) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("请根据以下评分标准，生成批改提示词。\n\n");
+        sb.append("评分标准名称：").append(safe(rubric.getName(), 200)).append('\n');
+        if (rubric.getSubject() != null && !rubric.getSubject().isBlank()) {
+            sb.append("课程/主题：").append(safe(rubric.getSubject(), 120)).append('\n');
+        }
+        if (rubric.getDescription() != null && !rubric.getDescription().isBlank()) {
+            sb.append("评分标准说明：").append(safe(rubric.getDescription(), 600)).append('\n');
+        }
+        if (rubric.getCustomPrompt() != null && !rubric.getCustomPrompt().isBlank()) {
+            sb.append("教师补充要求：").append(safe(rubric.getCustomPrompt(), 1200)).append('\n');
+        }
+
+        List<RubricDimensionEntity> dims = rubric.getDimensions();
+        if (dims != null && !dims.isEmpty()) {
+            sb.append("\n评分维度（权重总和应为 100）：\n");
+            int idx = 1;
+            for (RubricDimensionEntity dim : dims) {
+                if (dim == null || dim.getName() == null || dim.getName().isBlank()) {
+                    continue;
+                }
+                sb.append(idx++).append(". ").append(dim.getName().trim());
+                if (dim.getWeight() != null) {
+                    sb.append("（权重 ").append(dim.getWeight()).append("%）");
+                }
+                if (dim.getDescription() != null && !dim.getDescription().isBlank()) {
+                    sb.append("：").append(safe(dim.getDescription(), 400));
+                }
+                sb.append('\n');
+            }
+        } else {
+            sb.append("\n（未提供细分维度，请根据上述说明自行组织实验报告的通用评分维度。）\n");
+        }
+        return sb.toString();
+    }
+
+    // ---------------------------------------------------------------------
+    // 规则拼装兜底
+    // ---------------------------------------------------------------------
+
+    private String buildPromptFromDimensions(GradingRubricEntity rubric) {
+        List<RubricDimensionEntity> dims = rubric == null ? null : rubric.getDimensions();
+        if (dims == null || dims.isEmpty()) {
+            return "";
+        }
+        String rubricName = rubric.getName() != null && !rubric.getName().isBlank()
+                ? rubric.getName().trim()
+                : "本次实验报告";
+        StringBuilder sb = new StringBuilder();
+        sb.append("本报告依据评分标准《").append(rubricName)
+                .append("》评分，各维度权重总和为 100。评分维度如下：\n");
+        int idx = 1;
+        for (RubricDimensionEntity dim : dims) {
+            if (dim == null || dim.getName() == null || dim.getName().isBlank()) {
+                continue;
+            }
+            sb.append(idx++).append(". ").append(dim.getName().trim());
+            if (dim.getWeight() != null) {
+                sb.append("（权重 ").append(dim.getWeight()).append("%）");
+            }
+            sb.append("：");
+            String desc = dim.getDescription() != null ? dim.getDescription().trim() : "";
+            sb.append(desc.isBlank() ? GENERIC_DIMENSION_HINT : desc);
+            sb.append('\n');
+        }
+        if (rubric.getCustomPrompt() != null && !rubric.getCustomPrompt().isBlank()) {
+            sb.append("\n教师补充要求：").append(rubric.getCustomPrompt().trim());
+        }
+        return sb.toString().trim();
+    }
+
+    // ---------------------------------------------------------------------
+    // 工具方法
+    // ---------------------------------------------------------------------
+
+    /** 以评分标准内容（名称/学科/说明/自定义提示词/各维度）计算哈希，作为提示词失效版本。 */
+    private String contentHash(GradingRubricEntity rubric) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(nullToEmpty(rubric.getName())).append('\u0001')
+                .append(nullToEmpty(rubric.getSubject())).append('\u0001')
+                .append(nullToEmpty(rubric.getDescription())).append('\u0001')
+                .append(nullToEmpty(rubric.getCustomPrompt())).append('\u0001');
+        List<RubricDimensionEntity> dims = rubric.getDimensions();
+        if (dims != null) {
+            for (RubricDimensionEntity dim : dims) {
+                if (dim == null) continue;
+                sb.append(nullToEmpty(dim.getName())).append('\u0002')
+                        .append(dim.getWeight() == null ? "" : dim.getWeight()).append('\u0002')
+                        .append(dim.getMaxScore() == null ? "" : dim.getMaxScore().stripTrailingZeros().toPlainString()).append('\u0002')
+                        .append(nullToEmpty(dim.getDescription())).append('\u0003');
+            }
+        }
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] digest = md.digest(sb.toString().getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder(digest.length * 2);
+            for (byte b : digest) {
+                hex.append(Character.forDigit((b >> 4) & 0xF, 16));
+                hex.append(Character.forDigit(b & 0xF, 16));
+            }
+            return hex.toString();
+        } catch (Exception e) {
+            // 极端情况下退化为长度+hashCode，仍能区分大部分变化
+            return Integer.toHexString(sb.toString().hashCode());
+        }
+    }
+
+    private ProviderConfig resolveProvider() {
+        String provider = aiProperties.provider() == null
+                ? ""
+                : aiProperties.provider().trim().toLowerCase(Locale.ROOT);
+
+        if ("dashscope".equals(provider) || "qwen".equals(provider)) {
+            AiProperties.Dashscope dashscope = aiProperties.dashscope();
+            String apiKey = dashscope == null ? null : dashscope.apiKey();
+            if (apiKey == null || apiKey.isBlank()) {
+                return null;
+            }
+            String baseUrl = dashscope.baseUrl();
+            if (baseUrl == null || baseUrl.isBlank()) {
+                baseUrl = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+            }
+            String model = dashscope.model();
+            if (model == null || model.isBlank()) {
+                model = "qwen-plus-latest";
+            }
+            return new ProviderConfig(baseUrl, apiKey.trim(), model);
+        }
+
+        if ("openai".equals(provider)) {
+            AiProperties.OpenAi openAi = aiProperties.openai();
+            String apiKey = openAi == null ? null : openAi.apiKey();
+            if (apiKey == null || apiKey.isBlank()) {
+                return null;
+            }
+            String baseUrl = openAi.baseUrl();
+            if (baseUrl == null || baseUrl.isBlank()) {
+                baseUrl = "https://api.openai.com/v1";
+            }
+            String model = openAi.model();
+            if (model == null || model.isBlank()) {
+                model = "gpt-4o-mini";
+            }
+            return new ProviderConfig(baseUrl, apiKey.trim(), model);
+        }
+        // provider = mock 或未配置 -> 不调用大模型，走规则兜底
+        return null;
+    }
+
+    private static String stripFences(String content) {
+        if (content == null) {
+            return null;
+        }
+        String trimmed = content.trim();
+        if (trimmed.startsWith("```")) {
+            int firstLf = trimmed.indexOf('\n');
+            int lastFence = trimmed.lastIndexOf("```");
+            if (firstLf >= 0 && lastFence > firstLf) {
+                trimmed = trimmed.substring(firstLf + 1, lastFence).trim();
+            }
+        }
+        return trimmed;
+    }
+
+    private static String nullToEmpty(String value) {
+        return value == null ? "" : value;
+    }
+
+    private static String safe(String value, int maxLen) {
+        if (value == null) {
+            return "";
+        }
+        String trimmed = value.trim();
+        if (trimmed.length() <= maxLen) {
+            return trimmed;
+        }
+        return trimmed.substring(0, Math.max(0, maxLen - 3)) + "...";
+    }
+
+    private record ProviderConfig(String baseUrl, String apiKey, String model) {}
+}
