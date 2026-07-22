@@ -1022,6 +1022,12 @@ public class ApiController {
                 }
             }
 
+            // 解析合并代码中的测试点，按题注入到 problems 数组
+            for (Map<String, Object> exp : experiments) {
+                String code = Objects.toString(exp.get("code"), "").trim();
+                enrichProblemsWithTestPoints(exp, code);
+            }
+
             for (Map<String, Object> exp : experiments) {
                 String code = Objects.toString(exp.get("code"), "").trim();
                 boolean eligible = !code.isBlank();
@@ -1041,6 +1047,138 @@ public class ApiController {
             response.put("message", "failed to load student experiments: " + e.getMessage());
         }
         return ResponseEntity.ok(response);
+    }
+
+    /**
+     * 从合并代码字符串中解析每题代码 + 全部测试结果（去重），
+     * 按题号注入到 problems，测试点只放在第一题和实验级字段
+     */
+    private void enrichProblemsWithTestPoints(Map<String, Object> exp, String code) {
+        if (code == null || code.isBlank()) return;
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> problems = (List<Map<String, Object>>) exp.get("problems");
+        if (problems == null) problems = new ArrayList<>();
+
+        // 找所有 "第N题如下" 标记
+        java.util.regex.Matcher markerMatcher = java.util.regex.Pattern.compile("第(\\d+)题如下[：:]").matcher(code);
+        java.util.List<int[]> markers = new java.util.ArrayList<>(); // [start, end, number]
+        while (markerMatcher.find()) {
+            markers.add(new int[]{markerMatcher.start(), markerMatcher.end(), Integer.parseInt(markerMatcher.group(1))});
+        }
+
+        if (markers.isEmpty()) return;
+
+        // 每题只取纯代码（去掉测试点表格行）
+        for (int i = 0; i < markers.size(); i++) {
+            int bodyStart = markers.get(i)[1];
+            int bodyEnd = (i + 1 < markers.size()) ? markers.get(i + 1)[0] : code.length();
+            String body = code.substring(bodyStart, bodyEnd);
+            int questionNum = markers.get(i)[2];
+
+            // 找代码结束位置：第一个 |...测试点...| 表头行
+            StringBuilder cleanCode = new StringBuilder();
+            for (String line : body.split("\n")) {
+                if (line.matches(".*\\|.*测试点.*\\|.*")) break;
+                cleanCode.append(line).append("\n");
+            }
+            String qCode = cleanCode.toString().trim();
+
+            // 找到或创建 problem
+            Map<String, Object> target = null;
+            for (Map<String, Object> p : problems) {
+                if (Integer.valueOf(questionNum).equals(p.get("number"))) {
+                    target = p;
+                    break;
+                }
+            }
+            if (target == null && questionNum <= problems.size()) {
+                target = problems.get(questionNum - 1);
+            }
+            if (target != null) {
+                target.put("code", qCode);
+                target.put("number", questionNum);
+                // 测试点不放每题，避免重复
+                target.remove("testResults");
+            } else if (!qCode.isEmpty()) {
+                Map<String, Object> np = new LinkedHashMap<>();
+                np.put("number", questionNum);
+                np.put("code", qCode);
+                problems.add(np);
+            }
+        }
+
+        // 从第一题拆测试点表格，轮流分配：第1个|测试点|表→Q1，第2个→Q2...轮流
+        if (markers.size() >= 1) {
+            int firstBodyStart = markers.get(0)[1];
+            int firstBodyEnd = markers.size() > 1 ? markers.get(1)[0] : code.length();
+            String firstBody = code.substring(firstBodyStart, firstBodyEnd);
+
+            // 拆成独立表格（每个 |...测试点...| 表头开始一个新表格）
+            java.util.List<java.util.List<Map<String, Object>>> tables = new java.util.ArrayList<>();
+            java.util.List<Map<String, Object>> currentTable = null;
+            for (String line : firstBody.split("\n")) {
+                if (line.matches(".*\\|.*测试点.*\\|.*")) {
+                    if (currentTable != null && !currentTable.isEmpty()) tables.add(currentTable);
+                    currentTable = new java.util.ArrayList<>();
+                    continue;
+                }
+                if (currentTable == null) continue;
+                if (!line.startsWith("|") || line.contains("---") || line.contains("测试点")) continue;
+                String[] cells = line.split("\\|");
+                java.util.List<String> parts = new java.util.ArrayList<>();
+                for (String c : cells) { String v = c.trim(); if (!v.isEmpty()) parts.add(v); }
+                if (parts.size() >= 5) {
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("point", parts.get(0));
+                    row.put("result", parts.get(1));
+                    row.put("score", parts.get(2));
+                    row.put("time", parts.get(3));
+                    row.put("memory", parts.get(4));
+                    currentTable.add(row);
+                }
+            }
+            if (currentTable != null && !currentTable.isEmpty()) tables.add(currentTable);
+
+            // 轮流分配：table[k] → problems[k % N]
+            int N = problems.size();
+            if (N > 0 && !tables.isEmpty()) {
+                for (int k = 0; k < tables.size(); k++) {
+                    int qi = k % N;
+                    @SuppressWarnings("unchecked")
+                    java.util.List<Map<String, Object>> existing = (java.util.List<Map<String, Object>>) problems.get(qi).get("testResults");
+                    if (existing == null) {
+                        existing = new java.util.ArrayList<>();
+                        problems.get(qi).put("testResults", existing);
+                    }
+                    existing.addAll(tables.get(k));
+                }
+            }
+
+            // 同时放一份去重的在实验级
+            java.util.Set<String> seen = new java.util.LinkedHashSet<>();
+            java.util.List<Map<String, Object>> allTP = new java.util.ArrayList<>();
+            for (Map<String, Object> p : problems) {
+                @SuppressWarnings("unchecked")
+                java.util.List<Map<String, Object>> tp = (java.util.List<Map<String, Object>>) p.get("testResults");
+                if (tp != null) {
+                    for (Map<String, Object> row : tp) {
+                        String key = row.get("point") + "|" + row.get("result") + "|" + row.get("score");
+                        if (seen.add(key)) allTP.add(row);
+                    }
+                }
+            }
+            if (!allTP.isEmpty()) exp.put("allTestResults", allTP);
+        }
+
+        exp.put("problems", problems);
+
+        // 清理 code：去 | 行
+        StringBuilder cleanSb = new StringBuilder();
+        for (String line : code.split("\n")) {
+            if (!line.trim().startsWith("|")) cleanSb.append(line).append("\n");
+        }
+        exp.put("code", cleanSb.toString().replaceAll("\n{3,}", "\n\n").trim());
     }
 
     private boolean idsEqual(Object value, long expected) {
@@ -1957,6 +2095,106 @@ public class ApiController {
             return ResponseEntity.status(500).body(response);
         }
     }
+
+    /**
+     * 批量评分：对多个学生提交进行统一评分
+     */
+    @PostMapping("/api/submissions/batch-grade")
+    public ResponseEntity<Map<String, Object>> batchGrade(
+            @RequestBody BatchGradeRequest request,
+            HttpServletRequest servletRequest) {
+        Map<String, Object> response = new LinkedHashMap<>();
+        try {
+            legacySessionAccessResolver.requireTeacherOrAdmin(servletRequest);
+
+            if (request == null || request.submissionIds() == null || request.submissionIds().isEmpty()) {
+                response.put("success", false);
+                response.put("message", "提交ID列表不能为空");
+                return ResponseEntity.badRequest().body(response);
+            }
+
+            int processed = 0;
+            int failed = 0;
+            List<String> errors = new ArrayList<>();
+
+            for (String submissionId : request.submissionIds()) {
+                try {
+                    int separatorIndex = submissionId.lastIndexOf('-');
+                    if (separatorIndex <= 0 || separatorIndex >= submissionId.length() - 1) {
+                        failed++;
+                        errors.add("提交ID格式不正确: " + submissionId);
+                        continue;
+                    }
+
+                    String studentIdKey = submissionId.substring(0, separatorIndex).trim();
+                    int experimentId = Integer.parseInt(submissionId.substring(separatorIndex + 1).trim());
+
+                    // 查找实验，获取实验编号
+                    Experiment experiment = experimentService.findExperimentById(experimentId);
+                    int experimentNum = experiment != null ? experiment.getNum() : experimentId;
+
+                    // 查找已有成绩
+                    Score existingScore = scoreService.findByUsernameAndExperimentNum(studentIdKey, experimentNum);
+
+                    Score score = existingScore != null ? existingScore : new Score();
+                    score.setUsername(studentIdKey);
+                    score.setExperiment_id(experimentId);
+                    score.setNum(experimentNum);
+                    if (request.score() != null) {
+                        score.setScore(request.score().intValue());
+                    }
+                    if (request.plagiarismRate() != null) {
+                        score.setPlagiarism_rate(String.valueOf(request.plagiarismRate()));
+                    }
+                    score.setStatus("graded");
+                    score.setSubmit_time(new java.util.Date());
+
+                    if (existingScore != null) {
+                        scoreService.updateScore(score);
+                    } else {
+                        scoreService.saveScore(score);
+                    }
+
+                    // 保存AI评语
+                    if (request.aiComment() != null && !request.aiComment().isBlank()) {
+                        String experimentName = experiment != null ? experiment.getName() : "实验" + experimentId;
+                        AIRemarks remarks = new AIRemarks(studentIdKey, studentIdKey, experimentId,
+                                experimentName, request.aiComment());
+                        aiRemarksService.saveOrUpdateAIRemark(remarks);
+                    }
+
+                    processed++;
+                } catch (NumberFormatException e) {
+                    failed++;
+                    errors.add("实验ID解析失败: " + submissionId);
+                } catch (Exception e) {
+                    failed++;
+                    errors.add(submissionId + ": " + e.getMessage());
+                }
+            }
+
+            response.put("success", true);
+            response.put("processed", processed);
+            response.put("failed", failed);
+            if (!errors.isEmpty()) {
+                response.put("errors", errors);
+            }
+            response.put("message", String.format("批量评分完成，成功处理 %d 条" + (failed > 0 ? "，%d 条失败" : ""),
+                    processed, failed > 0 ? failed : null).replace("null", ""));
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            response.put("success", false);
+            response.put("message", "批量评分失败: " + e.getMessage());
+            return ResponseEntity.status(500).body(response);
+        }
+    }
+
+    public record BatchGradeRequest(
+            List<String> submissionIds,
+            Double score,
+            Double plagiarismRate,
+            String aiComment
+    ) {}
 
     @GetMapping("/api/student/learning-analysis")
     public ResponseEntity<?> getLearningAnalysis(HttpServletRequest request) {

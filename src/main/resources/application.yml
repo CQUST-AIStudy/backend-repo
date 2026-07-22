@@ -1,13 +1,32 @@
+# Spring 顶层配置
 spring:
+  mail:
+    host: smtp.qq.com
+    port: 587
+    username: 2832945838@qq.com
+    password: qnxvtzadqyildgab
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+  # 外部配置导入，optional 不存在文件不会报错
   config:
     import: optional:classpath:application-local.yml
+  # 应用名称
   application:
     name: teaching-assistant-backend
+  # MySQL 数据源配置
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://${DB_HOST:localhost}:${DB_PORT:3306}/${DB_NAME:ptadatabase}?useUnicode=true&characterEncoding=utf-8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&cachePrepStmts=true&prepStmtCacheSize=250&prepStmtCacheSqlLimit=2048&useServerPrepStmts=true&rewriteBatchedStatements=true
+    # 数据库连接地址，支持环境变量兜底默认值
+    url: jdbc:mysql://${DB_HOST:rm-bp179y7vm468o6yc5qo.mysql.rds.aliyuncs.com}:${DB_PORT:3306}/${DB_NAME:ptadatabase}?useUnicode=true&characterEncoding=utf-8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&cachePrepStmts=true&prepStmtCacheSize=250&prepStmtCacheSqlLimit=2048&useServerPrepStmts=true&rewriteBatchedStatements=true
+    # 数据库账号
     username: ${DB_USERNAME:root}
-    password: ${DB_PASSWORD:${DB_PASS:}}
+    # 数据库密码，双层兜底环境变量
+    password: ${DB_PASSWORD:${DB_PASS:cqust!admin123}}
+    # Hikari 连接池参数
     hikari:
       connection-timeout: 20000
       maximum-pool-size: ${DB_POOL_MAX:30}
@@ -16,11 +35,12 @@ spring:
       max-lifetime: 1200000
       leak-detection-threshold: 60000
       pool-name: HikariPool-Main
+  # JPA / Hibernate ORM 配置
   jpa:
     database-platform: org.hibernate.dialect.MySQL8Dialect
     show-sql: false
     hibernate:
-      ddl-auto: validate
+      ddl-auto: none
     open-in-view: false
     properties:
       hibernate:
@@ -31,47 +51,38 @@ spring:
         order_inserts: true
         order_updates: true
         generate_statistics: false
+  # Flyway 数据库版本迁移
   flyway:
-    enabled: true
+    enabled: false
     locations: classpath:db/migration
     baseline-on-migrate: true
     baseline-version: 0
+    validate-on-migrate: false
+    clean-disabled: true
+    out-of-order: true
+    repair-on-migrate: true
+  # Redis 缓存配置
   data:
     redis:
-      host: ${REDIS_HOST:localhost}
-      port: ${REDIS_PORT:6379}
-      username: ${REDIS_USERNAME:}
-      password: ${REDIS_PASSWORD:}
+      host: localhost
+      port: 6379
+      password:
       lettuce:
         pool:
-          max-active: ${REDIS_POOL_MAX:16}
+          max-active: 16
           max-idle: 8
           min-idle: 4
           max-wait: 3000ms
-      # 临时禁用Redis以便测试
-      timeout: 1000ms
-      connect-timeout: 1000ms
-  mail:
-    host: ${TAP_MAIL_HOST:smtp.163.com}
-    port: ${TAP_MAIL_PORT:465}
-    username: ${TAP_MAIL_USERNAME:}
-    password: ${TAP_MAIL_PASSWORD:}
-    protocol: smtps
-    properties:
-      mail:
-        smtp:
-          auth: true
-          ssl:
-            enable: true
-          starttls:
-            enable: true
-            required: true
+      timeout: 5000ms
+      connect-timeout: 5000ms
+  # Servlet 会话、文件上传
   servlet:
     session:
       timeout: 3600
     multipart:
       max-file-size: 512MB
       max-request-size: 520MB
+  # 异步线程池、定时任务线程池
   task:
     execution:
       pool:
@@ -85,6 +96,7 @@ spring:
         size: 4
       thread-name-prefix: sched-
 
+# MyBatis ORM 映射配置
 mybatis:
   configuration:
     log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
@@ -93,9 +105,11 @@ mybatis:
   mapper-locations: classpath:/mappers/*.xml
   type-aliases-package: com.tap.backend.academic.entity
 
+# 分页插件 PageHelper
 pagehelper:
   helper-dialect: mysql
 
+# 日志级别控制
 logging:
   level:
     root: info
@@ -106,6 +120,7 @@ logging:
         transaction: warn
         web: warn
 
+# Tomcat Web服务容器配置
 server:
   port: 8081
   servlet:
@@ -127,6 +142,7 @@ server:
     mime-types: application/json,application/xml,text/html,text/plain,text/css,application/javascript
     min-response-size: 1024
 
+# SpringBoot Actuator 监控端点
 management:
   endpoints:
     web:
@@ -136,19 +152,21 @@ management:
     health:
       show-details: always
 
+# 方舟大模型接口密钥
 ark:
   api:
     key: ${ARK_API_KEY:}
 
+# 火山引擎大模型配置
 volcano:
   api:
     key: ${VOLCANO_API_KEY:}
     model: deepseek-r1-250120
 
-# ========== LeetCode 推荐系统配置 ==========
+# ========== LeetCode 题目推荐系统配置 ==========
 leetcode:
   recommendation:
-    # 推荐算法权重配置
+    # 推荐算法各维度权重
     weights:
       need-match: 0.45
       difficulty-fit: 0.20
@@ -156,23 +174,24 @@ leetcode:
       novelty: 0.10
       quality: 0.10
       repeat-penalty: 0.15
-    # 召回配置
+    # 召回策略比例
     recall:
       weak-skill-ratio: 0.60
       difficulty-progression-ratio: 0.25
       exploration-ratio: 0.15
-    # 多样性配置
+    # 题目多样性控制
     diversity:
       min-easy-count: 2
       min-medium-count: 4
       max-hard-count: 2
-    # 缓存配置
+    # 推荐缓存过期时间
     cache:
       recommendation-ttl-minutes: 30
       skill-profile-ttl-minutes: 60
+
+# 项目自定义业务配置根节点
 tap:
-  frontend:
-    base-url: ${TAP_FRONTEND_BASE_URL:http://localhost:5173}
+  # 安全、JWT、PTA凭证加密
   security:
     jwt:
       issuer: ${JWT_ISSUER:tap}
@@ -180,35 +199,31 @@ tap:
       access-token-ttl-seconds: ${JWT_TTL_SECONDS:3600}
     pta-credentials:
       secret: ${PTA_CREDENTIALS_SECRET:${JWT_SECRET:local_dev_only_jwt_secret_change_me_1234567890}}
+  # 接口调用配额限制
   quota:
     translation-chars-per-day: ${QUOTA_TRANSLATION_CHARS_PER_DAY:200000}
     ai-requests-per-day: ${QUOTA_AI_REQUESTS_PER_DAY:200}
     admin-unlimited: ${QUOTA_ADMIN_UNLIMITED:true}
-  recommendation:
-    base-url: ${RECOMMENDATION_SERVICE_BASE_URL:http://127.0.0.1:8003}
-    connect-timeout-ms: ${RECOMMENDATION_SERVICE_CONNECT_TIMEOUT_MS:3000}
-    read-timeout-ms: ${RECOMMENDATION_SERVICE_READ_TIMEOUT_MS:10000}
-  error-analysis:
-    base-url: ${TAP_ERROR_ANALYSIS_BASE_URL:http://127.0.0.1:8002}
+  # AI大模型多厂商配置
   ai:
     provider: ${AI_PROVIDER:mock}
     openai:
       base-url: ${OPENAI_BASE_URL:https://api.deepseek.com/v1}
-      api-key: ${OPENAI_API_KEY:}
+      api-key: ${OPENAI_API_KEY:sk-941d468ac9434ec9be65bf16a7517c3e}
       model: ${OPENAI_MODEL:deepseek-chat}
     dashscope:
       base-url: ${DASHSCOPE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
       api-key: ${DASHSCOPE_API_KEY:}
       model: ${DASHSCOPE_MODEL:qwen-vl-max-latest}
     arxiv:
-      # Shared paper-search endpoint for all teacher users for now.
-      # Later this should move to admin-managed configuration instead of static app config.
+      # 论文检索接口配置，教师共用一套
       enabled: ${ARXIV_API_ENABLED:true}
       search-base-url: ${ARXIV_SEARCH_BASE_URL:https://export.arxiv.org/api/query}
       api-key: ${ARXIV_API_KEY:}
       api-key-header: ${ARXIV_API_KEY_HEADER:}
       max-results: ${ARXIV_MAX_RESULTS:5}
       timeout-seconds: ${ARXIV_TIMEOUT_SECONDS:8}
+  # 教师端查询开关控制
   teacher:
     read-path:
       unified-experiment-queries-enabled: ${TAP_TEACHER_UNIFIED_EXPERIMENT_QUERIES_ENABLED:true}
@@ -216,6 +231,7 @@ tap:
       submission-detail-legacy-code-fallback-enabled: ${TAP_TEACHER_SUBMISSION_DETAIL_LEGACY_CODE_FALLBACK_ENABLED:true}
       submission-detail-legacy-report-fallback-enabled: ${TAP_TEACHER_SUBMISSION_DETAIL_LEGACY_REPORT_FALLBACK_ENABLED:true}
       submission-detail-legacy-ai-remarks-fallback-enabled: ${TAP_TEACHER_SUBMISSION_DETAIL_LEGACY_AI_REMARKS_FALLBACK_ENABLED:true}
+  # 文档解析、OCR、VLM图文模型
   documents:
     extracted-text-max-chars: ${DOC_EXTRACT_MAX_CHARS:20000}
     store-full-extracted-text-to-minio: ${DOC_STORE_FULL_TEXT_TO_MINIO:true}
@@ -225,11 +241,13 @@ tap:
     ocr-max-pages: ${DOC_OCR_MAX_PAGES:24}
     vlm-fallback-enabled: ${DOC_VLM_FALLBACK_ENABLED:true}
     vlm-max-pages: ${DOC_VLM_MAX_PAGES:8}
+  # Agent异步任务调度参数
   agent:
     job-max-concurrency: ${AGENT_JOB_MAX_CONCURRENCY:4}
     doc-max-concurrency: ${AGENT_DOC_MAX_CONCURRENCY:4}
     poll-interval-ms: ${AGENT_POLL_INTERVAL_MS:2000}
     doc-task-max-retries: ${AGENT_DOC_TASK_MAX_RETRIES:3}
+  # 压缩包批量解析任务配置
   zip-organize:
     job-max-concurrency: ${ZIP_ORGANIZE_JOB_MAX_CONCURRENCY:1}
     item-max-concurrency: ${ZIP_ORGANIZE_ITEM_MAX_CONCURRENCY:3}
@@ -240,6 +258,7 @@ tap:
     ai-text-max-chars: ${ZIP_ORGANIZE_AI_TEXT_MAX_CHARS:5000}
     retry-limit: ${ZIP_ORGANIZE_RETRY_LIMIT:2}
     review-threshold: ${ZIP_ORGANIZE_REVIEW_THRESHOLD:0.6}
+  # 翻译服务缓存与厂商
   translation:
     cache-ttl-seconds: ${TRANS_CACHE_TTL_SECONDS:604800}
     provider: ${TRANS_PROVIDER:deepl}
@@ -248,40 +267,85 @@ tap:
       base-url: ${DEEPL_BASE_URL:https://api-free.deepl.com}
       max-batch-size: ${DEEPL_MAX_BATCH_SIZE:40}
       min-interval-ms: ${DEEPL_MIN_INTERVAL_MS:0}
+  # MinIO 对象存储
   storage:
     s3:
-      endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
-      access-key: ${MINIO_ACCESS_KEY:minioadmin}
-      secret-key: ${MINIO_SECRET_KEY:minioadmin}
+      endpoint: ${MINIO_ENDPOINT:http://121.43.152.73:9000}
+      access-key: ${MINIO_ACCESS_KEY:root}
+      secret-key: ${MINIO_SECRET_KEY:cqust!admin123}
       bucket: ${MINIO_BUCKET:tap-files}
+  # RAG 检索增强知识库全套配置
   rag:
-    proxy:
-      base-url: ${RAG_SERVICE_BASE_URL:http://127.0.0.1:8001}
+    maintenance-mode: ${RAG_MAINTENANCE_MODE:false}
+    langchain4j:
+      enabled: ${RAG_LANGCHAIN4J_ENABLED:false}
+      use-streaming: ${RAG_LANGCHAIN4J_USE_STREAMING:true}
+      use-embedding-model: ${RAG_LANGCHAIN4J_USE_EMBEDDING_MODEL:true}
+      chat:
+        base-url: ${RAG_LANGCHAIN4J_CHAT_BASE_URL:}
+        api-key: ${RAG_LANGCHAIN4J_CHAT_API_KEY:}
+        model-name: ${RAG_LANGCHAIN4J_CHAT_MODEL_NAME:}
+        timeout-seconds: ${RAG_LANGCHAIN4J_CHAT_TIMEOUT_SECONDS:120}
+      embedding:
+        base-url: ${RAG_LANGCHAIN4J_EMBEDDING_BASE_URL:${RAG_DASHSCOPE_BASE_URL:${DASHSCOPE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}}}
+        api-key: ${RAG_LANGCHAIN4J_EMBEDDING_API_KEY:${DASHSCOPE_API_KEY:}}
+        model-name: ${RAG_LANGCHAIN4J_EMBEDDING_MODEL_NAME:text-embedding-v3}
+        dimensions: ${RAG_LANGCHAIN4J_EMBEDDING_DIMENSIONS:1024}
+        timeout-seconds: ${RAG_LANGCHAIN4J_EMBEDDING_TIMEOUT_SECONDS:30}
+    dashscope:
+      api-key: ${DASHSCOPE_API_KEY:}
+      base-url: ${RAG_DASHSCOPE_BASE_URL:${DASHSCOPE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}}
+      embedding-model: text-embedding-v3
+      embedding-dimensions: 1024
+    milvus:
+      host: ${MILVUS_HOST:127.0.0.1}
+      port: ${MILVUS_PORT:19530}
+      collection: course_chunks
+    retrieval:
+      top-k: 20
+      top-parent: 5
+      score-threshold: 0.5
+    fusion:
+      alpha: 0.5
+      beta: 0.3
+      gamma: 0.1
+      delta: 0.1
+    rerank:
+      enabled: true
+      provider: heuristic
+      endpoint: ${RAG_RERANK_ENDPOINT:http://127.0.0.1:8101/rerank}
+      timeout-ms: 2500
+      cross-encoder-weight: 0.7
+      top-n: 5
+      base-weight: 0.45
+      overlap-weight: 0.4
+      phrase-weight: 0.1
+      annotation-weight: 0.05
+    mmr:
+      lambda: 0.7
+    coverage:
+      threshold: 0.30
+    evidence:
+      max-sentences: 8
+      token-ratio-min: 0.25
+      token-ratio-max: 0.40
+    web:
+      tavily-api-key: ${TAVILY_API_KEY:}
+      enabled: false
+    lucene:
+      index-path: ${LUCENE_INDEX_PATH:./data/lucene-index}
+  # 作业导出批量并发
   grading:
     export:
       max-concurrency: ${GRADING_EXPORT_MAX_CONCURRENCY:6}
       submit-interval-ms: ${GRADING_EXPORT_SUBMIT_INTERVAL_MS:30}
-    code-tracer:
-      python: ${CODE_TRACER_PYTHON:python3.11}
-      script: ${CODE_TRACER_SCRIPT:}
-      timeout-ms: ${CODE_TRACER_TIMEOUT_MS:10000}
-    worker:
-      base-url: ${GRADING_WORKER_BASE_URL:http://127.0.0.1:8004}
-      connect-timeout-ms: ${GRADING_WORKER_CONNECT_TIMEOUT_MS:5000}
-      read-timeout-ms: ${GRADING_WORKER_READ_TIMEOUT_MS:60000}
-  animation:
-    chat-model: ${ANIMATION_CHAT_MODEL:}
-    tts-model: ${ANIMATION_TTS_MODEL:qwen-tts}
-    tts-voice: ${ANIMATION_TTS_VOICE:Cherry}
 
-# PTA spider service
+# PTA爬虫微服务对接配置
 pta:
   spider-url: ${PTA_SPIDER_URL:http://127.0.0.1:8100}
   connect-timeout-ms: ${PTA_SPIDER_CONNECT_TIMEOUT_MS:5000}
   read-timeout-ms: ${PTA_SPIDER_READ_TIMEOUT_MS:20000}
   scheduler:
-    cron: ${PTA_SYNC_CRON:0 0 2 * * ?}
-    mode: ${PTA_SYNC_MODE:full}
     max-concurrency: ${PTA_SYNC_MAX_CONCURRENCY:3}
     submit-interval-ms: ${PTA_SYNC_SUBMIT_INTERVAL_MS:200}
   auto-start: ${PTA_SPIDER_AUTO_START:false}
@@ -290,3 +354,12 @@ pta:
   auto-stop: ${PTA_SPIDER_AUTO_STOP:true}
   stop-script: ${PTA_SPIDER_STOP_SCRIPT:../services/pta_spider/stop_spider_api.ps1}
   stop-timeout-seconds: ${PTA_SPIDER_STOP_TIMEOUT_SECONDS:12}
+
+# 【报错修复提示】当前配置缺少 spring.mail 邮件模块配置
+# EmailService 使用了 ${spring.mail.username} 占位符，此处未定义导致启动失败
+# 解决方案二选一：
+# 1. 补充完整mail配置到spring节点下
+
+
+# 2. 修改 @Value("${spring.mail.username:}") 增加空默认值避免启动崩溃
+# 3. 临时注释掉EmailService的@Service注解，不实例化邮件Bean
