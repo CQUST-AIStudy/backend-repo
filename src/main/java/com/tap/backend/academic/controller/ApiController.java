@@ -2097,6 +2097,87 @@ public class ApiController {
     }
 
     /**
+     * 单独评分：对单个学生提交进行评分
+     */
+    @PostMapping("/api/submissions/{submissionId}/grade")
+    public ResponseEntity<Map<String, Object>> gradeSingle(
+            @PathVariable String submissionId,
+            @RequestBody Map<String, Object> body,
+            HttpServletRequest servletRequest) {
+        Map<String, Object> response = new LinkedHashMap<>();
+        try {
+            legacySessionAccessResolver.requireTeacherOrAdmin(servletRequest);
+
+            int separatorIndex = submissionId.lastIndexOf('-');
+            if (separatorIndex <= 0 || separatorIndex >= submissionId.length() - 1) {
+                response.put("success", false);
+                response.put("message", "提交ID格式不正确，应为'学号-实验ID'");
+                return ResponseEntity.badRequest().body(response);
+            }
+
+            String studentIdKey = submissionId.substring(0, separatorIndex).trim();
+            int experimentId = Integer.parseInt(submissionId.substring(separatorIndex + 1).trim());
+
+            // 查找实验，获取实验编号
+            Experiment experiment = experimentService.findExperimentById(experimentId);
+            int experimentNum = experiment != null ? experiment.getNum() : experimentId;
+
+            // 查找已有成绩
+            Score existingScore = scoreService.findByUsernameAndExperimentNum(studentIdKey, experimentNum);
+            Score score = existingScore != null ? existingScore : new Score();
+            score.setUsername(studentIdKey);
+            score.setExperiment_id(experimentId);
+            score.setNum(experimentNum);
+
+            // 从请求体获取评分数据
+            Object scoreValue = body.get("score");
+            if (scoreValue instanceof Number) {
+                score.setScore(((Number) scoreValue).intValue());
+            }
+            Object plagiarismValue = body.get("plagiarismRate");
+            if (plagiarismValue instanceof Number) {
+                score.setPlagiarism_rate(String.valueOf(plagiarismValue));
+            }
+            score.setStatus("graded");
+            score.setSubmit_time(new java.util.Date());
+
+            boolean saved;
+            if (existingScore != null) {
+                saved = scoreService.updateScore(score);
+            } else {
+                saved = scoreService.saveScore(score);
+            }
+
+            // 保存AI评语
+            Object aiComment = body.get("aiComment");
+            if (aiComment instanceof String && !((String) aiComment).isBlank()) {
+                String experimentName = experiment != null ? experiment.getName() : "实验" + experimentId;
+                AIRemarks remarks = new AIRemarks(studentIdKey, studentIdKey, experimentId,
+                        experimentName, (String) aiComment);
+                aiRemarksService.saveOrUpdateAIRemark(remarks);
+            }
+
+            if (!saved) {
+                response.put("success", false);
+                response.put("message", "保存成绩失败，数据库写入异常");
+                return ResponseEntity.status(500).body(response);
+            }
+
+            response.put("success", true);
+            response.put("message", "评分成功");
+            return ResponseEntity.ok(response);
+        } catch (NumberFormatException e) {
+            response.put("success", false);
+            response.put("message", "实验ID解析失败");
+            return ResponseEntity.badRequest().body(response);
+        } catch (Exception e) {
+            response.put("success", false);
+            response.put("message", "评分失败: " + e.getMessage());
+            return ResponseEntity.status(500).body(response);
+        }
+    }
+
+    /**
      * 批量评分：对多个学生提交进行统一评分
      */
     @PostMapping("/api/submissions/batch-grade")
@@ -2149,10 +2230,17 @@ public class ApiController {
                     score.setStatus("graded");
                     score.setSubmit_time(new java.util.Date());
 
+                    boolean saved;
                     if (existingScore != null) {
-                        scoreService.updateScore(score);
+                        saved = scoreService.updateScore(score);
                     } else {
-                        scoreService.saveScore(score);
+                        saved = scoreService.saveScore(score);
+                    }
+
+                    if (!saved) {
+                        failed++;
+                        errors.add(submissionId + ": 保存成绩失败");
+                        continue;
                     }
 
                     // 保存AI评语
