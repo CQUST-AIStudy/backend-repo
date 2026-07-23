@@ -143,6 +143,48 @@ public class TeacherExperimentQueryServiceImpl implements TeacherExperimentQuery
             return new TeacherStudentExperimentResult(getStudentCount(teacherId, classId) > 0, Collections.emptyList());
         }
 
+        // 收集查询 score 表所需的 username keys
+        Set<String> lookupKeys = new LinkedHashSet<>();
+        for (TeacherStudentAssignmentRow assignment : assignments) {
+            if (hasText(assignment.getStudentUsername())) {
+                lookupKeys.add(assignment.getStudentUsername());
+            }
+            if (hasText(assignment.getStudentId())) {
+                lookupKeys.add(assignment.getStudentId());
+            }
+        }
+
+        // 查询 legacy score 表（手动评分数据）
+        Map<String, TeacherExperimentScoreRow> scoreByCompositeKey = lookupKeys.isEmpty()
+                ? Collections.emptyMap()
+                : teacherExperimentQueryDao.findPerExperimentSumScoresByUsernames(new ArrayList<>(lookupKeys))
+                .stream()
+                .filter(Objects::nonNull)
+                .collect(Collectors.toMap(
+                        row -> buildCompositeKey(row.getUsername(), row.getExperimentId()),
+                        row -> row,
+                        (left, right) -> preferLegacyScoreRow(left, right),
+                        LinkedHashMap::new
+                ));
+
+        // submit_situation 兜底
+        Map<String, TeacherExperimentScoreRow> submitSituationByCompositeKey = lookupKeys.isEmpty()
+                ? Collections.emptyMap()
+                : teacherExperimentQueryDao.findPerExperimentSumScoresFromSubmitSituation(
+                        new ArrayList<>(lookupKeys), experimentId)
+                .stream()
+                .filter(Objects::nonNull)
+                .collect(Collectors.toMap(
+                        row -> buildCompositeKey(row.getUsername(), row.getExperimentId()),
+                        row -> row,
+                        (left, right) -> preferLegacyScoreRow(left, right),
+                        LinkedHashMap::new
+                ));
+
+        for (Map.Entry<String, TeacherExperimentScoreRow> entry : submitSituationByCompositeKey.entrySet()) {
+            scoreByCompositeKey.putIfAbsent(entry.getKey(), entry.getValue());
+        }
+
         List<Map<String, Object>> rows = new ArrayList<>(assignments.size());
         for (TeacherStudentAssignmentRow assignment : assignments) {
             Map<String, Object> experimentData = new LinkedHashMap<>();
@@ -157,9 +199,21 @@ public class TeacherExperimentQueryServiceImpl implements TeacherExperimentQuery
             experimentData.put("experimentId", assignment.getExperimentId());
             experimentData.put("experimentName", assignment.getExperimentName());
             experimentData.put("deadline", assignment.getDeadline());
-            experimentData.put("status", mapUnifiedStatus(assignment.getSubmissionStatus()));
-            experimentData.put("submitTime", assignment.getSubmitTime());
-            experimentData.put("score", assignment.getScore() == null ? 0.0 : assignment.getScore());
+
+            // 优先使用 legacy score 表中的手动评分数据
+            TeacherExperimentScoreRow scoreRow = findLegacyScoreRow(scoreByCompositeKey, assignment, assignment.getExperimentId());
+
+            if (scoreRow != null && scoreRow.getScore() != null) {
+                experimentData.put("score", scoreRow.getScore().doubleValue());
+                experimentData.put("submitTime",
+                        scoreRow.getSubmitTime() != null ? scoreRow.getSubmitTime() : assignment.getSubmitTime());
+                experimentData.put("status", mapLegacyStatus(scoreRow));
+            } else {
+                experimentData.put("score", assignment.getScore());
+                experimentData.put("submitTime", assignment.getSubmitTime());
+                experimentData.put("status", mapUnifiedStatus(assignment.getSubmissionStatus()));
+            }
+
             experimentData.put("submissionStatus", assignment.getSubmissionStatus());
             experimentData.put("completionEvidence", assignment.getCompletionEvidence());
             experimentData.put("transcriptRowPresent", Boolean.TRUE.equals(assignment.getTranscriptRowPresent()));
@@ -301,7 +355,7 @@ public class TeacherExperimentQueryServiceImpl implements TeacherExperimentQuery
                 experimentData.put("submitTime", scoreRow == null ? null : scoreRow.getSubmitTime());
                 experimentData.put(
                         "score",
-                        scoreRow == null || scoreRow.getScore() == null ? 0.0 : scoreRow.getScore().doubleValue()
+                        scoreRow == null || scoreRow.getScore() == null ? null : scoreRow.getScore().doubleValue()
                 );
                 experimentData.put(
                         "plagiarismRate",
@@ -538,7 +592,7 @@ public class TeacherExperimentQueryServiceImpl implements TeacherExperimentQuery
                 experimentData.put("submitTime", scoreRow == null ? null : scoreRow.getSubmitTime());
                 experimentData.put(
                         "score",
-                        scoreRow == null || scoreRow.getScore() == null ? 0.0 : scoreRow.getScore().doubleValue()
+                        scoreRow == null || scoreRow.getScore() == null ? null : scoreRow.getScore().doubleValue()
                 );
                 experimentData.put(
                         "plagiarismRate",
