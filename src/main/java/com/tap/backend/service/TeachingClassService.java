@@ -99,6 +99,8 @@ public class TeachingClassService {
             String joinPassword,
             String grade,
             String courseName,
+            Long courseId,
+            Long termId,
             String description,
             String ptaKeyword,
             String ptaGroupName,
@@ -114,6 +116,8 @@ public class TeachingClassService {
         teachingClass.setJoinPassword(joinPassword);
         teachingClass.setGrade(grade);
         teachingClass.setCourseName(courseName);
+        teachingClass.setCourseId(courseId);
+        teachingClass.setTermId(termId);
         teachingClass.setDescription(description);
         String resolvedGroupName = normalizeNullableText(firstNotBlank(ptaGroupName, ptaKeyword));
         teachingClass.setPtaGroupName(resolvedGroupName);
@@ -135,6 +139,8 @@ public class TeachingClassService {
             String joinPassword,
             String grade,
             String courseName,
+            Long courseId,
+            Long termId,
             String description,
             String ptaKeyword,
             String ptaGroupName,
@@ -152,6 +158,12 @@ public class TeachingClassService {
         }
         if (courseName != null) {
             teachingClass.setCourseName(courseName);
+        }
+        if (courseId != null) {
+            teachingClass.setCourseId(courseId);
+        }
+        if (termId != null) {
+            teachingClass.setTermId(termId);
         }
         if (description != null) {
             teachingClass.setDescription(description);

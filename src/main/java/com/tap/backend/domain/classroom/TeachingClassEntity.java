@@ -34,6 +34,12 @@ public class TeachingClassEntity {
     @Column(name = "course_name", length = 128)
     private String courseName;
 
+    @Column(name = "course_id")
+    private Long courseId;
+
+    @Column(name = "term_id")
+    private Long termId;
+
     @Column(name = "description", columnDefinition = "text")
     private String description;
 
@@ -115,6 +121,12 @@ public class TeachingClassEntity {
 
     public String getCourseName() { return courseName; }
     public void setCourseName(String courseName) { this.courseName = courseName; }
+
+    public Long getCourseId() { return courseId; }
+    public void setCourseId(Long courseId) { this.courseId = courseId; }
+
+    public Long getTermId() { return termId; }
+    public void setTermId(Long termId) { this.termId = termId; }
 
     public String getDescription() { return description; }
     public void setDescription(String description) { this.description = description; }

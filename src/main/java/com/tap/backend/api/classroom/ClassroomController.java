@@ -87,6 +87,8 @@ public class ClassroomController {
             String joinPassword,
             String grade,
             String courseName,
+            Long courseId,
+            Long termId,
             String description,
             String ptaKeyword,
             String ptaGroupName,
@@ -106,6 +108,8 @@ public class ClassroomController {
                 req.joinPassword(),
                 req.grade(),
                 req.courseName(),
+                req.courseId(),
+                req.termId(),
                 req.description(),
                 req.ptaKeyword(),
                 req.ptaGroupName(),
@@ -119,6 +123,8 @@ public class ClassroomController {
             String joinPassword,
             String grade,
             String courseName,
+            Long courseId,
+            Long termId,
             String description,
             String ptaKeyword,
             String ptaGroupName,
@@ -139,6 +145,8 @@ public class ClassroomController {
                 req.joinPassword(),
                 req.grade(),
                 req.courseName(),
+                req.courseId(),
+                req.termId(),
                 req.description(),
                 req.ptaKeyword(),
                 req.ptaGroupName(),
@@ -414,6 +422,8 @@ public class ClassroomController {
         result.put("joinPassword", teachingClass.getJoinPassword());
         result.put("grade", teachingClass.getGrade());
         result.put("courseName", teachingClass.getCourseName());
+        result.put("courseId", teachingClass.getCourseId());
+        result.put("termId", teachingClass.getTermId());
         result.put("description", teachingClass.getDescription());
         result.put("teacherName", teacherName);
         result.put("studentCount", studentCount);
