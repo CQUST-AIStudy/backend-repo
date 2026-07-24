@@ -13,7 +13,7 @@ import org.springframework.stereotype.Component;
  *   <li>代码类错误（数组越界、指针、死循环等）且能提取到可执行代码时，优先使用 PYTHON_TUTOR 真实执行可视化。</li>
  *   <li>PYTHON_TUTOR 执行失败时，由 {@link PythonTutorWorkflow} 内部回退到 CODE_HIGHLIGHT。</li>
  *   <li>结果/数据类错误使用 RESULT_COMPARE。</li>
- *   <li>概念/原理类错误使用 HTML_ANIMATION。</li>
+ *   <li>概念/原理类错误使用 CONCEPT_STEPS（大模型产出结构化步骤，固定引擎渲染）。</li>
  *   <li>其他情况使用 CODE_HIGHLIGHT 或 GENERIC_HIGHLIGHT 兜底。</li>
  * </ul>
  */
@@ -51,7 +51,7 @@ public class AnimationWorkflowRouter {
         if (errorType != null) {
             return switch (errorType) {
                 case RESULT_MISMATCH -> AnimationWorkflow.RESULT_COMPARE;
-                case CONCEPT -> AnimationWorkflow.HTML_ANIMATION;
+                case CONCEPT -> AnimationWorkflow.CONCEPT_STEPS;
                 case ARRAY_BOUNDS, INVALID_POINTER, INFINITE_LOOP, MEMORY_LEAK,
                         RECURSION, RUNTIME_ERROR, TYPE_ERROR, LOGIC_ERROR -> AnimationWorkflow.CODE_HIGHLIGHT;
                 default -> defaultRoute(candidate);
@@ -97,7 +97,7 @@ public class AnimationWorkflowRouter {
             return AnimationWorkflow.RESULT_COMPARE;
         }
         if ("text".equalsIgnoreCase(evidenceKind) || "vlm".equalsIgnoreCase(evidenceKind)) {
-            return AnimationWorkflow.HTML_ANIMATION;
+            return AnimationWorkflow.CONCEPT_STEPS;
         }
         return AnimationWorkflow.GENERIC_HIGHLIGHT;
     }
