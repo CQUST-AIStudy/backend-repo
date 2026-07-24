@@ -556,9 +556,15 @@ Response: { "success": true, "steps": [...], "errorMessage": null }
 |---|---|---|
 | `PYTHON_TUTOR` | 伪执行，几乎不用 | 真实执行，代码错误首选 |
 | `CODE_HIGHLIGHT` | 代码错误首选 | 无法真实执行时的降级方案 |
-| `HTML_ANIMATION` | 概念类错误 | 概念类错误 |
+| `HTML_ANIMATION` | 概念类错误 | **已弃用**（`@Deprecated`，保留兼容，不再被路由） |
+| `CONCEPT_STEPS` | — | 概念类错误改走此工作流（大模型产出结构化步骤，固定引擎渲染） |
 | `RESULT_COMPARE` | 结果不匹配 | 结果不匹配 |
 | `GENERIC_HIGHLIGHT` | 兜底 | 兜底 |
+
+> **更新（2026-07-24）**：概念/原理类错误的动画已从「大模型直出整段 HTML」（`HTML_ANIMATION`）改为
+> 「大模型只产出结构化步骤 JSON，交由前端固定引擎渲染」（`CONCEPT_STEPS`，即"路 B"）。
+> 设计与实现详见 **[concept-steps-animation.md](concept-steps-animation.md)**。本文档 §5.4 / §5.5 中
+> `case CONCEPT -> HTML_ANIMATION` 及 text/vlm 默认路由的片段为当时方案，现实以新文档为准。
 
 ---
 
