@@ -14,6 +14,7 @@ import com.tap.backend.service.grading.animation.CodeContext;
 import com.tap.backend.service.grading.animation.CodeHighlightAnimationWorkflow;
 import com.tap.backend.service.grading.animation.CodeContextExtractor;
 import com.tap.backend.service.grading.animation.CommentIssueExtractor;
+import com.tap.backend.service.grading.animation.ConceptStepsWorkflow;
 import com.tap.backend.service.grading.animation.ErrorPatternDetector;
 import com.tap.backend.service.grading.animation.ErrorPatternDetector.ErrorType;
 import com.tap.backend.service.grading.animation.GenericHighlightWorkflow;
@@ -54,6 +55,7 @@ public class GradingErrorDemonstrationService {
     private final CodeHighlightAnimationWorkflow codeHighlightWorkflow;
     private final PythonTutorWorkflow pythonTutorWorkflow;
     private final HtmlAnimationWorkflow htmlAnimationWorkflow;
+    private final ConceptStepsWorkflow conceptStepsWorkflow;
     private final ResultCompareWorkflow resultCompareWorkflow;
     private final GenericHighlightWorkflow genericHighlightWorkflow;
 
@@ -66,6 +68,7 @@ public class GradingErrorDemonstrationService {
                                             CodeHighlightAnimationWorkflow codeHighlightWorkflow,
                                             PythonTutorWorkflow pythonTutorWorkflow,
                                             HtmlAnimationWorkflow htmlAnimationWorkflow,
+                                            ConceptStepsWorkflow conceptStepsWorkflow,
                                             ResultCompareWorkflow resultCompareWorkflow,
                                             GenericHighlightWorkflow genericHighlightWorkflow) {
         this.problemContextResolver = problemContextResolver;
@@ -77,6 +80,7 @@ public class GradingErrorDemonstrationService {
         this.codeHighlightWorkflow = codeHighlightWorkflow;
         this.pythonTutorWorkflow = pythonTutorWorkflow;
         this.htmlAnimationWorkflow = htmlAnimationWorkflow;
+        this.conceptStepsWorkflow = conceptStepsWorkflow;
         this.resultCompareWorkflow = resultCompareWorkflow;
         this.genericHighlightWorkflow = genericHighlightWorkflow;
     }
@@ -359,6 +363,7 @@ public class GradingErrorDemonstrationService {
                 yield ptResult;
             }
             case HTML_ANIMATION -> htmlAnimationWorkflow.generate(candidate, index);
+            case CONCEPT_STEPS -> conceptStepsWorkflow.generate(candidate, index);
             case RESULT_COMPARE -> resultCompareWorkflow.generate(candidate, index);
             case GENERIC_HIGHLIGHT -> genericHighlightWorkflow.generate(candidate, index);
         };
@@ -384,6 +389,16 @@ public class GradingErrorDemonstrationService {
         int anchorLine = ctx == null ? 1 : ctx.relativeAnchorLine();
         int highlightStart = ctx == null ? 1 : ctx.highlightStartLine();
         int highlightEnd = ctx == null ? 1 : ctx.highlightEndLine();
+
+        // CONCEPT_STEPS 等由工作流自带示意代码：metadata 提供 sourceCode 时优先采用，
+        // 并让每步的 line 驱动高亮（不强加固定 highlight 区间）。其它工作流行为不变。
+        Object metaSource = result.metadata().get("sourceCode");
+        if (metaSource != null && !metaSource.toString().isBlank()) {
+            sourceCode = metaSource.toString();
+            anchorLine = parseInt(result.metadata().get("errorLine"), 0);
+            highlightStart = 0;
+            highlightEnd = 0;
+        }
 
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> frames = (List<Map<String, Object>>) result.frames();
@@ -433,6 +448,20 @@ public class GradingErrorDemonstrationService {
             }
         }
         return null;
+    }
+
+    private int parseInt(Object value, int defaultValue) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        if (value != null) {
+            try {
+                return Integer.parseInt(value.toString().trim());
+            } catch (NumberFormatException ignored) {
+                // fall through
+            }
+        }
+        return defaultValue;
     }
 
     public record ErrorDemonstration(
