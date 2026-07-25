@@ -1022,6 +1022,89 @@ public class ApiController {
                 }
             }
 
+            // 补查 assignment_problem 题目信息：为缺少标题/题面的 problem 填充数据
+            try {
+                Set<Long> allOfferingIds = experiments.stream()
+                        .map(e -> (Long) e.get("offeringId"))
+                        .filter(Objects::nonNull)
+                        .collect(Collectors.toSet());
+                if (!allOfferingIds.isEmpty()) {
+                    StringBuilder enrichSql = new StringBuilder(
+                            "SELECT ao.id AS offering_id, ap.problem_no, ap.title, " +
+                            "COALESCE(apd.content, ap.statement_md) AS statement_md, " +
+                            "CAST(ap.sort_order AS SIGNED) AS sort_order " +
+                            "FROM assignment_offering ao " +
+                            "JOIN assignment_problem ap ON ap.offering_id = ao.id " +
+                            "LEFT JOIN pta_problem_detail apd ON apd.problem_set_problem_id = ap.problem_no " +
+                            "WHERE ao.id IN ("
+                    );
+                    int idx = 0;
+                    List<Long> oidList = new ArrayList<>(allOfferingIds);
+                    for (int i = 0; i < oidList.size(); i++) {
+                        if (i > 0) enrichSql.append(",");
+                        enrichSql.append("?").append(i + 1);
+                    }
+                    enrichSql.append(") ORDER BY ao.id, ap.sort_order");
+
+                    jakarta.persistence.Query enrichQuery = em.createNativeQuery(enrichSql.toString());
+                    for (int i = 0; i < oidList.size(); i++) {
+                        enrichQuery.setParameter(i + 1, oidList.get(i));
+                    }
+
+                    @SuppressWarnings("unchecked")
+                    List<Object[]> enrichRows = enrichQuery.getResultList();
+                    Map<Long, List<Map<String, Object>>> dbProblemsMap = new LinkedHashMap<>();
+                    for (Object[] er : enrichRows) {
+                        Long oid = toLong(er[0]);
+                        Map<String, Object> info = new LinkedHashMap<>();
+                        info.put("problemNo", er[1] != null ? er[1].toString() : null);
+                        info.put("problemTitle", er[2] != null ? er[2].toString() : null);
+                        info.put("statementMd", er[3] != null ? er[3].toString() : null);
+                        dbProblemsMap.computeIfAbsent(oid, k -> new ArrayList<>()).add(info);
+                    }
+
+                    // 按 number 将 DB 的题目信息合并入 experiments 的 problems
+                    for (Map<String, Object> exp : experiments) {
+                        Long oid = (Long) exp.get("offeringId");
+                        List<Map<String, Object>> dbList = dbProblemsMap.get(oid);
+                        if (dbList == null || dbList.isEmpty()) continue;
+
+                        @SuppressWarnings("unchecked")
+                        List<Map<String, Object>> problems = (List<Map<String, Object>>) exp.get("problems");
+                        if (problems == null) problems = new ArrayList<>();
+
+                        for (int i = 0; i < problems.size() && i < dbList.size(); i++) {
+                            Map<String, Object> p = problems.get(i);
+                            Map<String, Object> db = dbList.get(i);
+                            // 只在为空时才补值
+                            if (p.get("problemTitle") == null || "".equals(p.get("problemTitle"))) {
+                                p.put("problemTitle", db.get("problemTitle"));
+                            }
+                            if (p.get("statementMd") == null || "".equals(p.get("statementMd"))) {
+                                p.put("statementMd", db.get("statementMd"));
+                            }
+                            if (p.get("problemNo") == null || "".equals(p.get("problemNo"))) {
+                                p.put("problemNo", db.get("problemNo"));
+                            }
+                        }
+                        // 如果 problems 数量不够 DB 的数量，补上缺少的
+                        for (int i = problems.size(); i < dbList.size(); i++) {
+                            Map<String, Object> newP = new LinkedHashMap<>();
+                            newP.put("number", i + 1);
+                            newP.put("code", "");
+                            newP.put("problemNo", dbList.get(i).get("problemNo"));
+                            newP.put("problemTitle", dbList.get(i).get("problemTitle"));
+                            newP.put("statementMd", dbList.get(i).get("statementMd"));
+                            newP.put("testResults", null);
+                            problems.add(newP);
+                        }
+                        exp.put("problems", problems);
+                    }
+                }
+            } catch (Exception e) {
+                System.err.println("[WARN] 补查题目信息失败（不影响主流程）: " + e.getMessage());
+            }
+
             // 解析合并代码中的测试点，按题注入到 problems 数组
             for (Map<String, Object> exp : experiments) {
                 String code = Objects.toString(exp.get("code"), "").trim();
