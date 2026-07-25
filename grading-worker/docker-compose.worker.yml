@@ -1,0 +1,51 @@
+services:
+  grading-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: grading-worker:latest
+    container_name: grading-worker
+    restart: unless-stopped
+    command: ["python", "-u", "run_worker.py"]
+    environment: &worker-env
+      TZ: Asia/Shanghai
+      REDIS_HOST: 1Panel-redis-4SUW
+      REDIS_PORT: "6379"
+      REDIS_USERNAME: default
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
+      DB_HOST: 1Panel-mysql-kzG5
+      DB_PORT: "3306"
+      DB_NAME: ptadatabase
+      DB_USERNAME: root
+      DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      MINIO_ENDPOINT: http://1Panel-minio-6CAm:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
+      MINIO_BUCKET: tap-files
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?DASHSCOPE_API_KEY is required}
+      GRADING_AI_PROVIDER: qwen
+      GRADING_MODEL: qwen-plus-latest
+      # 该账号对 -latest 快照版 VLM 无权限(403 access_denied)，改用稳定版
+      QWEN_VLM_MODEL: qwen-vl-max
+      OCR_STRATEGY: vlm_only
+      USE_VLM_UNIFIED_ANALYSIS: "true"
+      CELERY_CONCURRENCY: "3"
+      CELERY_POOL: threads
+      DIMENSION_SCORE_CONCURRENCY: "1"
+    networks:
+      - cqst-backend-network
+
+  grading-consumer:
+    image: grading-worker:latest
+    container_name: grading-consumer
+    restart: unless-stopped
+    command: ["python", "-u", "run_consumer.py"]
+    environment: *worker-env
+    depends_on:
+      - grading-worker
+    networks:
+      - cqst-backend-network
+
+networks:
+  cqst-backend-network:
+    external: true
