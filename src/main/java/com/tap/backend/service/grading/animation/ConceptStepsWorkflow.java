@@ -35,7 +35,36 @@ public class ConceptStepsWorkflow {
 
     /** 渲染器支持的可视化结构类型；模型只能从中取值，越界时回落 code。 */
     private static final Set<String> ALLOWED_STRUCTURES = Set.of(
-            "array", "linked-list", "tree", "graph", "pointer", "loop", "heap", "code");
+            "array", "matrix", "string",
+            "linked-list", "doubly-linked-list", "circular-linked-list", "static-linked-list",
+            "stack", "queue", "circular-queue",
+            "tree", "binary-tree", "heap",
+            "graph", "adjacency-matrix", "adjacency-list", "hash-table",
+            "pointer", "loop", "code");
+
+    /** 常见别名 → 规范结构名，与前端 PythonTutorRenderer 的 STRUCTURE_ALIASES 保持一致。 */
+    private static final Map<String, String> STRUCTURE_ALIASES = Map.ofEntries(
+            Map.entry("list", "linked-list"),
+            Map.entry("linkedlist", "linked-list"),
+            Map.entry("singly-linked-list", "linked-list"),
+            Map.entry("double-linked-list", "doubly-linked-list"),
+            Map.entry("circular-list", "circular-linked-list"),
+            Map.entry("static-list", "static-linked-list"),
+            Map.entry("2d-array", "matrix"),
+            Map.entry("grid", "matrix"),
+            Map.entry("str", "string"),
+            Map.entry("ring-queue", "circular-queue"),
+            Map.entry("deque", "queue"),
+            Map.entry("bst", "binary-tree"),
+            Map.entry("binary-search-tree", "binary-tree"),
+            Map.entry("huffman-tree", "binary-tree"),
+            Map.entry("avl", "binary-tree"),
+            Map.entry("min-heap", "heap"),
+            Map.entry("max-heap", "heap"),
+            Map.entry("adj-matrix", "adjacency-matrix"),
+            Map.entry("adj-list", "adjacency-list"),
+            Map.entry("hashtable", "hash-table"),
+            Map.entry("hashmap", "hash-table"));
 
     private static final int MAX_STEPS = 12;
     private static final int MAX_NODES_PER_STEP = 12;
@@ -51,7 +80,7 @@ public class ConceptStepsWorkflow {
             {
               "title": "简短标题（<=16字）",
               "concept": "本动画讲解的核心概念，如：链表结构 / 指针与内存 / 递归执行过程",
-              "dataStructure": "从这些里选一个最贴切的：array | linked-list | tree | graph | pointer | loop | heap | code",
+              "dataStructure": "从下面选一个最贴切的（见末尾结构说明）：array | matrix | string | linked-list | doubly-linked-list | circular-linked-list | static-linked-list | stack | queue | circular-queue | tree | binary-tree | heap | graph | adjacency-matrix | adjacency-list | hash-table | pointer | loop | code",
               "sourceCode": "一段<=25行的示意代码（可用C/伪代码），仅用于配合动画讲解，不必是学生原代码",
               "errorLine": 0,
               "correctedCode": "关键的正确写法或要点（可留空字符串）",
@@ -61,8 +90,9 @@ public class ConceptStepsWorkflow {
                   "line": 3,
                   "caption": "这一步在发生什么（旁白字幕，中文，<=32字，语气自然温柔）",
                   "variables": { "pHead": "NULL", "x": "30" },
-                  "nodes": [ { "id": "n1", "label": "20", "value": "20", "active": true } ],
-                  "edges": [ { "from": "n1", "to": "n2", "label": "next" } ],
+                  "nodes": [ { "id": "n1", "label": "20", "value": "20", "active": true, "index": 0 } ],
+                  "edges": [ { "from": "n1", "to": "n2", "label": "next", "kind": "next" } ],
+                  "pointers": [ { "name": "pHead", "target": "n1" } ],
                   "error": false
                 }
               ]
@@ -72,11 +102,28 @@ public class ConceptStepsWorkflow {
             - 步骤数 4-10 步，每步只讲清一件事，circular 推进，前后状态连贯（节点只增/改一点点）。
             - line 指向 sourceCode 中与本步最相关的行号（从 1 开始）；若该步不对应某行填 0。
             - caption 是给学生看的旁白，像老师在旁边讲解，不要写“步骤1”这种废话。
-            - nodes 表示画面里的元素：id 稳定唯一、label 显示文本、active=true 高亮当前操作的元素。
-            - edges 用 from/to 引用 node 的 id，label 可写“next”“prior”等指针名；无连线则给空数组。
-            - dataStructure=linked-list/tree/graph/pointer 时务必给出 nodes 与 edges；array/loop/heap 主要用 nodes。
+            - nodes 通用字段：id 稳定唯一、label/value 显示文本、active=true 高亮当前操作元素、
+              outOfBounds=true 标非法/越界（红色虚线）、index 为下标。
+            - edges 用 from/to 引用 node 的 id；label 可写权重或“next”，kind 用于二叉树左右：'child-left'/'child-right'。
+            - pointers 画指向某结点的具名箭头（栈 top、队列 front/rear、链表 pHead/头尾等），target 为 node id。
             - 出错的那一步把 error 设为 true，并让 caption 点明错在哪。
             - 全程中文、术语准确、不啰嗦。
+
+            ## 各结构的数据怎么给（挑与 dataStructure 对应的填）
+            - array/string：nodes 顺序即元素顺序，index 为下标；string 每个 node 放一个字符。
+            - matrix / adjacency-matrix：每个 node 给 row、col；matrix 也可在顶层给 rows、cols。
+            - linked-list / doubly-linked-list / circular-linked-list：nodes 按链序排；edges 给 next 连接；
+              用 pointers 标 pHead/头尾；双链表会自动画反向 prior 箭头，循环链表会自动画末→首回边。
+            - static-linked-list：每个 node 给 value 与 cursor（游标=下一个下标，尾结点省略即可）。
+            - stack：nodes 按 index 从 0（栈底）到顶排列；pointers 里放 { name:"top", target: 栈顶node.id }。
+            - queue：nodes 从队头到队尾；pointers 放 front 与 rear。
+            - circular-queue：顶层给 capacity；pointers 放 front、rear；已占用的槽 active=true。
+            - tree：任意树，用 edges(from=父,to=子)。
+            - binary-tree/BST：edges 用 kind='child-left'/'child-right' 指明左右孩子。
+            - heap：nodes 的 index 按完全二叉树层序（1 起或 0 起均可），会自动按 2i/2i+1 布局。
+            - graph：nodes + edges（label 可作权重）。adjacency-list：edges(from→to) 表示邻居。
+            - hash-table：顶层给 buckets（桶数）；每个 node 给 slot（所在桶下标），同桶按出现顺序串成链。
+            - pointer：两个 node（一个含 'ptr'，一个目标）示意指向关系。loop：nodes[0].value 作循环条件文字。
             """;
 
     private final AnimationAiClient aiClient;
@@ -129,7 +176,7 @@ public class ConceptStepsWorkflow {
                     break;
                 }
                 order++;
-                frames.add(buildFrame(step, order, structure));
+                frames.add(buildFrame(step, order, structure, root));
             }
         }
         if (frames.isEmpty()) {
@@ -160,7 +207,7 @@ public class ConceptStepsWorkflow {
         );
     }
 
-    private Map<String, Object> buildFrame(JsonNode step, int order, String structure) {
+    private Map<String, Object> buildFrame(JsonNode step, int order, String structure, JsonNode root) {
         Map<String, Object> frame = new LinkedHashMap<>();
         frame.put("order", order);
         frame.put("line", step.path("line").asInt(0));
@@ -173,8 +220,34 @@ public class ConceptStepsWorkflow {
         state.put("dataStructure", structure);
         state.put("nodes", parseNodes(step.path("nodes")));
         state.put("edges", parseEdges(step.path("edges")));
+        state.put("pointers", parsePointers(step.path("pointers")));
+        // 结构级标量：优先取本步，缺省回落到根级（rows/cols/capacity/buckets）。
+        for (String key : new String[]{"rows", "cols", "capacity", "buckets"}) {
+            if (step.has(key)) {
+                state.put(key, step.path(key).asInt());
+            } else if (root != null && root.has(key)) {
+                state.put(key, root.path(key).asInt());
+            }
+        }
         frame.put("state", state);
         return frame;
+    }
+
+    private List<Map<String, Object>> parsePointers(JsonNode arr) {
+        List<Map<String, Object>> pointers = new ArrayList<>();
+        if (arr != null && arr.isArray()) {
+            for (JsonNode p : arr) {
+                String target = firstNonBlank(text(p, "target"), text(p, "node"));
+                if (target.isBlank()) {
+                    continue;
+                }
+                Map<String, Object> ptr = new LinkedHashMap<>();
+                ptr.put("name", text(p, "name"));
+                ptr.put("target", target);
+                pointers.add(ptr);
+            }
+        }
+        return pointers;
     }
 
     private Map<String, String> parseVariables(JsonNode node) {
@@ -200,6 +273,13 @@ public class ConceptStepsWorkflow {
                 node.put("active", n.path("active").asBoolean(false));
                 node.put("outOfBounds", n.path("outOfBounds").asBoolean(false));
                 node.put("index", n.path("index").asInt(i));
+                // 结构特定字段：仅在存在时透传，避免污染无关结构。
+                if (n.has("next")) node.put("next", text(n, "next"));
+                if (n.has("cursor")) node.put("cursor", n.path("cursor").asInt());
+                if (n.has("row")) node.put("row", n.path("row").asInt());
+                if (n.has("col")) node.put("col", n.path("col").asInt());
+                if (n.has("slot")) node.put("slot", n.path("slot").asInt());
+                if (n.has("pointer")) node.put("pointer", text(n, "pointer"));
                 nodes.add(node);
                 i++;
             }
@@ -213,13 +293,14 @@ public class ConceptStepsWorkflow {
             for (JsonNode e : arr) {
                 String from = firstNonBlank(text(e, "from"), text(e, "source"));
                 String to = firstNonBlank(text(e, "to"), text(e, "target"));
-                if (from == null || to == null) {
+                if (from.isBlank() || to.isBlank()) {
                     continue;
                 }
                 Map<String, Object> edge = new LinkedHashMap<>();
                 edge.put("from", from);
                 edge.put("to", to);
                 edge.put("label", text(e, "label"));
+                edge.put("kind", text(e, "kind"));
                 edges.add(edge);
             }
         }
@@ -327,9 +408,7 @@ public class ConceptStepsWorkflow {
 
     private String normalizeStructure(String value) {
         String v = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
-        if (v.equals("linkedlist") || v.equals("list")) {
-            v = "linked-list";
-        }
+        v = STRUCTURE_ALIASES.getOrDefault(v, v);
         return ALLOWED_STRUCTURES.contains(v) ? v : "code";
     }
 
