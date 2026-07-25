@@ -41,18 +41,20 @@
 {
   "title": "简短标题",
   "concept": "核心概念，如 链表结构 / 指针与内存 / 递归执行过程",
-  "dataStructure": "array | linked-list | tree | graph | pointer | loop | heap | code",
+  "dataStructure": "见 §3.5 全量结构词表（如 linked-list / stack / binary-tree / hash-table …）",
   "sourceCode": "<=25 行示意代码，仅用于配合讲解（不必是学生原代码）",
   "errorLine": 0,
   "correctedCode": "关键正确写法（可空）",
   "explanation": "一句话讲清概念/为什么错",
+  "rows": 0, "cols": 0, "capacity": 0, "buckets": 0,   // 结构级标量，按需给（见 §3.5）
   "steps": [
     {
       "line": 3,                                  // 高亮 sourceCode 的行(1起)，无则 0
       "caption": "旁白字幕(<=32字，语气自然)",
       "variables": { "pHead": "NULL", "x": "30" },
-      "nodes": [ { "id": "n1", "label": "20", "value": "20", "active": true } ],
-      "edges": [ { "from": "n1", "to": "n2", "label": "next" } ],
+      "nodes": [ { "id": "n1", "label": "20", "value": "20", "active": true, "index": 0 } ],
+      "edges": [ { "from": "n1", "to": "n2", "label": "next", "kind": "next" } ],
+      "pointers": [ { "name": "pHead", "target": "n1" } ],
       "error": false
     }
   ]
@@ -69,19 +71,43 @@
 ### 3.4 帧 → 前端契约
 
 `ConceptStepsWorkflow` 产出的每帧 Map 键与前端播放器一致：
-`order` / `line` / `variables`(Map) / `state{dataStructure,nodes,edges}` / `explanation`(= caption) / `error` / `memory`(空)。
+`order` / `line` / `variables`(Map) / `state{dataStructure,nodes,edges,pointers,rows?,cols?,capacity?,buckets?}` / `explanation`(= caption) / `error` / `memory`(空)。
+
+### 3.5 支持的结构词表与数据字段
+
+后端 `ConceptStepsWorkflow.ALLOWED_STRUCTURES` 与前端 `PythonTutorRenderer.STRUCTURE_ALIASES` 保持一致；越界值回落 `code`。常见别名（`bst`→`binary-tree`、`hashmap`→`hash-table` 等）两端都做映射。
+
+| 分类 | dataStructure | 关键数据字段 |
+|---|---|---|
+| 线性表 | `array` / `string` | nodes（顺序即元素，`index` 下标；string 每格一个字符） |
+| | `matrix` | node 给 `row`/`col`；或顶层 `rows`/`cols` |
+| | `linked-list` | nodes 按链序 + edges(next)；`pointers` 标 pHead/头尾 |
+| | `doubly-linked-list` | 同上，自动补反向 prior 箭头 |
+| | `circular-linked-list` | 同上，自动补末→首回边 |
+| | `static-linked-list` | node 给 `value` + `cursor`(下一下标) |
+| 栈队列 | `stack` | nodes 按 `index` 0(栈底)→顶；`pointers` 放 top |
+| | `queue` | nodes 队头→队尾；`pointers` 放 front/rear |
+| | `circular-queue` | 顶层 `capacity`；`pointers` 放 front/rear；占用槽 active |
+| 树 | `tree` | edges(from=父,to=子) |
+| | `binary-tree`(含 BST/AVL/Huffman) | edges `kind`='child-left'/'child-right' |
+| | `heap` | node `index` 按完全二叉树层序，自动 2i/2i+1 布局 |
+| 图/散列 | `graph` | nodes + edges(label 可作权重) |
+| | `adjacency-matrix` | nodes(顶点) + edges；自动生成 0/1 邻接矩阵 |
+| | `adjacency-list` | edges(from→to) 表示邻居 |
+| | `hash-table` | 顶层 `buckets`；node 给 `slot`(桶下标)，同桶串链 |
+| 辅助 | `pointer` / `loop` / `code` | pointer 两 node 示意；loop 用 nodes[0].value 作条件文字 |
 
 ## 4. 前端
 
 `components/grading/ErrorDemonstrationPlayer.vue` 新增 `current.workflow === 'CONCEPT_STEPS'` 分支：
 
-- **画布为主角**：`PythonTutorRenderer`（D3，高 300px）渲染 `activeStep.state` 的 nodes/edges，支持 array/linked-list/tree/graph/pointer/loop/heap。
+- **画布为主角**：`PythonTutorRenderer`（D3，高 300px）渲染 `activeStep.state`，覆盖 §3.5 全量结构（数组/矩阵/串、单双循环静态链表、栈/队列/循环队列、树/二叉树/堆、图/邻接矩阵/邻接表/哈希表、指针/循环）。
 - **旁白字幕**：画布下方居中醒目字幕条（图码式），错误步转红。
 - **变量芯片** + **示意代码栏**（有 `sourceCode` 时显示，随当前步 `line` 高亮）。
 - 复用既有 上一步/播放/下一步/重置 控件与进度条；概念动画播放间隔 900ms → **1600ms** 便于阅读字幕（只影响 CONCEPT_STEPS）。
 
 渲染器 `PythonTutorRenderer.vue` 的 state 契约：
-`nodes[].{id,label,value,active,outOfBounds,index}`、`edges[].{from|source,to|target,label}`。
+`nodes[].{id,label,value,active,outOfBounds,index, next?,cursor?,row?,col?,slot?}`、`edges[].{from|source,to|target,label,kind?}`、`pointers[].{name,target}`，以及结构级 `rows?/cols?/capacity?/buckets?`。
 
 ## 5. 验证状态
 
