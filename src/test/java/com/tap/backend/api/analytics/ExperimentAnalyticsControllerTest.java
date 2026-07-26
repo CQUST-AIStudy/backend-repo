@@ -126,6 +126,27 @@ class ExperimentAnalyticsControllerTest {
         assertTrue(scopedQuery.contains("sa.offering_id = ?2"));
     }
 
+    @Test
+    void overviewBatchIncludesDifficultyAndDiscrimination() {
+        when(query.setParameter(anyInt(), org.mockito.ArgumentMatchers.any())).thenReturn(query);
+        when(query.getResultList()).thenReturn(Collections.singletonList(new Object[] {
+                101, 35, 30, 28, 30, 95, 80, 90, 60, 100
+        }));
+
+        Map<Integer, Map<String, Object>> result = ReflectionTestUtils.invokeMethod(
+                controller, "computeOverviewBatch", List.of(101));
+
+        assertEquals(80.0, result.get(101).get("avgScore"));
+        assertEquals(0.2, result.get(101).get("difficulty"));
+        assertEquals(0.3, result.get(101).get("discrimination"));
+
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        verify(entityManager).createNativeQuery(sql.capture());
+        assertTrue(sql.getValue().contains("PARTITION BY offering_id"));
+        assertTrue(sql.getValue().contains("top_avg"));
+        assertTrue(sql.getValue().contains("bottom_avg"));
+    }
+
     private void stubTeacher() {
         when(teacherSessionResolver.requireCurrentTeacher(request))
                 .thenReturn(new Teacher(42, "Teacher", null, null));

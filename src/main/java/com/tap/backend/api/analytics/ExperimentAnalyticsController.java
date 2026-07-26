@@ -500,23 +500,49 @@ public class ExperimentAnalyticsController {
             return result;
         }
 
-        StringBuilder inClause = new StringBuilder();
+        StringBuilder selectedOfferings = new StringBuilder();
         for (int i = 0; i < experimentIds.size(); i++) {
-            if (i > 0) inClause.append(",");
-            inClause.append("?");
+            if (i > 0) selectedOfferings.append(" UNION ALL ");
+            selectedOfferings.append("SELECT ?").append(i + 1).append(" AS offering_id");
         }
 
-        String sql = "SELECT "
-                + "  sa.offering_id, "
-                + "  COUNT(*) AS roster_count, "
-                + "  SUM(CASE WHEN " + SUBMISSION_ACTIVITY_PREDICATE + " THEN 1 ELSE 0 END) AS submitted_count, "
-                + "  SUM(CASE WHEN " + SCORED_ASSIGNMENT_PREDICATE + " THEN 1 ELSE 0 END) AS scored_count, "
-                + "  COUNT(CASE WHEN " + SCORED_ASSIGNMENT_PREDICATE + " THEN 1 END) AS total_students, "
-                + "  COALESCE(AVG(CASE WHEN " + SCORED_ASSIGNMENT_PREDICATE
-                + "    THEN COALESCE(sa.best_total_score, sa.latest_total_score, 0) END), 0) AS avg_score "
-                + "FROM student_assignment sa "
-                + "WHERE sa.offering_id IN (" + inClause + ") "
-                + "GROUP BY sa.offering_id";
+        String sql = "WITH selected_offerings AS (" + selectedOfferings + "), "
+                + "roster AS ("
+                + "  SELECT so.offering_id, COUNT(sa.id) AS roster_count, "
+                + "    SUM(CASE WHEN " + SUBMISSION_ACTIVITY_PREDICATE + " THEN 1 ELSE 0 END) AS submitted_count, "
+                + "    SUM(CASE WHEN " + SCORED_ASSIGNMENT_PREDICATE + " THEN 1 ELSE 0 END) AS scored_count "
+                + "  FROM selected_offerings so "
+                + "  LEFT JOIN student_assignment sa ON sa.offering_id = so.offering_id "
+                + "  GROUP BY so.offering_id"
+                + "), scores AS ("
+                + "  SELECT sa.offering_id, COALESCE(sa.best_total_score, sa.latest_total_score, 0) AS score "
+                + "  FROM student_assignment sa "
+                + "  JOIN selected_offerings so ON so.offering_id = sa.offering_id "
+                + "  WHERE " + SUBMISSION_ACTIVITY_PREDICATE
+                + "), ranked AS ("
+                + "  SELECT offering_id, score, "
+                + "    ROW_NUMBER() OVER (PARTITION BY offering_id ORDER BY score) AS rn_asc, "
+                + "    ROW_NUMBER() OVER (PARTITION BY offering_id ORDER BY score DESC) AS rn_desc, "
+                + "    COUNT(*) OVER (PARTITION BY offering_id) AS cnt "
+                + "  FROM scores"
+                + "), score_stats AS ("
+                + "  SELECT offering_id, COUNT(*) AS total_students, "
+                + "    COALESCE(MAX(score), 0) AS max_score, COALESCE(AVG(score), 0) AS avg_score, "
+                + "    COALESCE(AVG(CASE WHEN rn_desc <= GREATEST(1, FLOOR(cnt * 0.27 + 0.5)) THEN score END), 0) AS top_avg, "
+                + "    COALESCE(AVG(CASE WHEN rn_asc <= GREATEST(1, FLOOR(cnt * 0.27 + 0.5)) THEN score END), 0) AS bottom_avg "
+                + "  FROM ranked GROUP BY offering_id"
+                + "), full_scores AS ("
+                + "  SELECT so.offering_id, COALESCE(SUM(COALESCE(ap.max_score, 0)), 0) AS full_score "
+                + "  FROM selected_offerings so "
+                + "  LEFT JOIN assignment_problem ap ON ap.offering_id = so.offering_id AND ap.status = 'ACTIVE' "
+                + "  GROUP BY so.offering_id"
+                + ") SELECT so.offering_id, r.roster_count, r.submitted_count, r.scored_count, "
+                + "  COALESCE(s.total_students, 0), COALESCE(s.max_score, 0), COALESCE(s.avg_score, 0), "
+                + "  COALESCE(s.top_avg, 0), COALESCE(s.bottom_avg, 0), f.full_score "
+                + "FROM selected_offerings so "
+                + "JOIN roster r ON r.offering_id = so.offering_id "
+                + "LEFT JOIN score_stats s ON s.offering_id = so.offering_id "
+                + "JOIN full_scores f ON f.offering_id = so.offering_id";
 
         var query = em.createNativeQuery(sql);
         for (int i = 0; i < experimentIds.size(); i++) {
@@ -532,7 +558,23 @@ public class ExperimentAnalyticsController {
             overview.put("submittedCount", toInt(row[2]));
             overview.put("scoredCount", toInt(row[3]));
             overview.put("totalStudents", toLong(row[4]));
-            overview.put("avgScore", round2(toDouble(row[5])));
+            double maxScore = toDouble(row[5]);
+            double avgScore = toDouble(row[6]);
+            double topAvg = toDouble(row[7]);
+            double bottomAvg = toDouble(row[8]);
+            double fullScore = toDouble(row[9]);
+            if (fullScore <= 0 && maxScore > 0) {
+                fullScore = maxScore;
+            }
+            if (fullScore <= 0 && toLong(row[4]) > 0) {
+                fullScore = 100.0;
+            }
+            if (fullScore <= 0) {
+                fullScore = queryFullScore(experimentId);
+            }
+            overview.put("avgScore", round2(avgScore));
+            overview.put("difficulty", fullScore > 0 ? round2(1.0 - avgScore / fullScore) : 0);
+            overview.put("discrimination", fullScore > 0 ? round2((topAvg - bottomAvg) / fullScore) : 0);
             result.put(experimentId, overview);
         }
         return result;
