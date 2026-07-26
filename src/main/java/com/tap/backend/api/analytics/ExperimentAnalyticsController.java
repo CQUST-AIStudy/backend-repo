@@ -24,8 +24,8 @@ import org.springframework.web.server.ResponseStatusException;
  *
  * Scope rules:
  * - only experiments owned by the current teacher
- * - only data-structure offerings
- * - exclude C-language course data mixed into legacy names
+ * - when supplied, restrict results to the current teaching class/course
+ * - never widen a scoped request to experiments from another course
  */
 @RestController
 @RequestMapping("/api/analytics")
@@ -79,6 +79,9 @@ public class ExperimentAnalyticsController {
     @GetMapping("/experiments")
     public ApiResponse<List<Map<String, Object>>> listExperiments(
             @RequestParam(required = false) String classPrefix,
+            @RequestParam(required = false) Long classId,
+            @RequestParam(required = false) Long courseId,
+            @RequestParam(required = false) String courseName,
             HttpServletRequest request) {
         Integer teacherId = requireCurrentTeacherId(request);
 
@@ -87,7 +90,9 @@ public class ExperimentAnalyticsController {
                 .append("  CAST(ao.id AS SIGNED) AS experimentId, ")
                 .append("  ").append(EXPERIMENT_NAME_EXPR).append(" AS name, ")
                 .append("  ").append(CLASS_PREFIX_EXPR).append(" AS classPrefix, ")
+                .append("  CAST(ao.class_id AS SIGNED) AS classId, ")
                 .append("  tc.name AS className, ")
+                .append("  CAST(tc.course_id AS SIGNED) AS courseId, ")
                 .append("  NULLIF(TRIM(").append(COURSE_NAME_EXPR).append("), ").append(EMPTY_STR).append(") AS courseName, ")
                 .append("  COUNT(DISTINCT sa.id) AS rosterCount, ")
                 .append("  COUNT(DISTINCT CASE WHEN ").append(SUBMISSION_ACTIVITY_PREDICATE).append(" THEN sa.id END) AS submittedCount, ")
@@ -98,30 +103,47 @@ public class ExperimentAnalyticsController {
                 .append("LEFT JOIN course c ON c.id = tc.course_id ")
                 .append("LEFT JOIN student_assignment sa ON sa.offering_id = ao.id ")
                 .append("LEFT JOIN assignment_problem ap ON ap.offering_id = ao.id AND ap.status = 'ACTIVE' ")
-                .append("WHERE ao.teacher_id = ?1 ");
+                .append("WHERE ao.teacher_id = :teacherId ")
+                .append("  AND tc.teacher_id = :teacherId ");
 
         boolean hasPrefix = hasText(classPrefix);
         if (hasPrefix) {
             sql.append("  AND (")
-                    .append(CLASS_PREFIX_EXPR).append(" = ?2 ")
-                    .append("   OR tc.name").append(COLL).append(" LIKE ?3 ")
-                    .append("   OR ").append(EXPERIMENT_NAME_EXPR_COLL).append(" LIKE ?3 ")
-                    .append("   OR COALESCE(NULLIF(TRIM(tc.pta_keyword), ").append(EMPTY_STR).append("), '')").append(COLL).append(" LIKE ?3")
+                    .append(CLASS_PREFIX_EXPR).append(" = :classPrefix ")
+                    .append("   OR tc.name").append(COLL).append(" LIKE :classPrefixLike ")
+                    .append("   OR ").append(EXPERIMENT_NAME_EXPR_COLL).append(" LIKE :classPrefixLike ")
+                    .append("   OR COALESCE(NULLIF(TRIM(tc.pta_keyword), ").append(EMPTY_STR).append("), '')").append(COLL).append(" LIKE :classPrefixLike")
                     .append(") ");
+        }
+        if (classId != null) {
+            sql.append("  AND ao.class_id = :classId ");
+        }
+        if (courseId != null) {
+            sql.append("  AND tc.course_id = :courseId ");
+        } else if (hasText(courseName)) {
+            sql.append("  AND ").append(COURSE_NAME_EXPR).append(COLL).append(" = :courseName ");
         }
 
         sql.append("GROUP BY ao.id, ")
                 .append(EXPERIMENT_NAME_EXPR).append(", ")
                 .append(CLASS_PREFIX_EXPR).append(", ")
-                .append("tc.name, NULLIF(TRIM(").append(COURSE_NAME_EXPR).append("), ").append(EMPTY_STR).append("), ao.seq_no ")
+                .append("ao.class_id, tc.name, tc.course_id, NULLIF(TRIM(").append(COURSE_NAME_EXPR).append("), ").append(EMPTY_STR).append("), ao.seq_no ")
                 .append("ORDER BY CASE WHEN ao.seq_no IS NULL THEN 1 ELSE 0 END, ao.seq_no, ao.id");
 
         var query = em.createNativeQuery(sql.toString());
-        query.setParameter(1, teacherId);
+        query.setParameter("teacherId", teacherId);
         if (hasPrefix) {
             String normalizedPrefix = classPrefix.trim();
-            query.setParameter(2, normalizedPrefix);
-            query.setParameter(3, normalizedPrefix + "%");
+            query.setParameter("classPrefix", normalizedPrefix);
+            query.setParameter("classPrefixLike", normalizedPrefix + "%");
+        }
+        if (classId != null) {
+            query.setParameter("classId", classId);
+        }
+        if (courseId != null) {
+            query.setParameter("courseId", courseId);
+        } else if (hasText(courseName)) {
+            query.setParameter("courseName", courseName.trim());
         }
 
         @SuppressWarnings("unchecked")
@@ -132,31 +154,53 @@ public class ExperimentAnalyticsController {
             item.put("experimentId", toInt(row[0]));
             item.put("name", row[1]);
             item.put("classPrefix", normalizeText(row[2]));
-            item.put("className", normalizeText(row[3]));
-            item.put("courseName", normalizeText(row[4]));
-            item.put("rosterCount", toInt(row[5]));
-            item.put("submittedCount", toInt(row[6]));
-            item.put("topicSum", toInt(row[7]));
+            item.put("classId", toNullableLong(row[3]));
+            item.put("className", normalizeText(row[4]));
+            item.put("courseId", toNullableLong(row[5]));
+            item.put("courseName", normalizeText(row[6]));
+            item.put("rosterCount", toInt(row[7]));
+            item.put("submittedCount", toInt(row[8]));
+            item.put("topicSum", toInt(row[9]));
             result.add(item);
         }
         return ApiResponse.of(result);
     }
 
     @GetMapping("/class-prefixes")
-    public ApiResponse<List<String>> getClassPrefixes(HttpServletRequest request) {
+    public ApiResponse<List<String>> getClassPrefixes(
+            @RequestParam(required = false) Long classId,
+            @RequestParam(required = false) Long courseId,
+            @RequestParam(required = false) String courseName,
+            HttpServletRequest request) {
         Integer teacherId = requireCurrentTeacherId(request);
-        String sql = "SELECT DISTINCT " + CLASS_PREFIX_EXPR + " AS prefix " +
+        StringBuilder sql = new StringBuilder("SELECT DISTINCT " + CLASS_PREFIX_EXPR + " AS prefix " +
                 "FROM assignment_offering ao " +
                 "JOIN assignment_template at ON at.id = ao.template_id " +
                 "JOIN teaching_class tc ON tc.id = ao.class_id " +
                 "LEFT JOIN course c ON c.id = tc.course_id " +
-                "WHERE ao.teacher_id = ?1 " +
-                "ORDER BY prefix";
+                "WHERE ao.teacher_id = :teacherId " +
+                "  AND tc.teacher_id = :teacherId ");
+        if (classId != null) {
+            sql.append("AND ao.class_id = :classId ");
+        }
+        if (courseId != null) {
+            sql.append("AND tc.course_id = :courseId ");
+        } else if (hasText(courseName)) {
+            sql.append("AND ").append(COURSE_NAME_EXPR).append(COLL).append(" = :courseName ");
+        }
+        sql.append("ORDER BY prefix");
 
         @SuppressWarnings("unchecked")
-        List<Object> rows = em.createNativeQuery(sql)
-                .setParameter(1, teacherId)
-                .getResultList();
+        var query = em.createNativeQuery(sql.toString()).setParameter("teacherId", teacherId);
+        if (classId != null) {
+            query.setParameter("classId", classId);
+        }
+        if (courseId != null) {
+            query.setParameter("courseId", courseId);
+        } else if (hasText(courseName)) {
+            query.setParameter("courseName", courseName.trim());
+        }
+        List<Object> rows = query.getResultList();
 
         List<String> prefixes = new ArrayList<>();
         for (Object row : rows) {
@@ -171,9 +215,13 @@ public class ExperimentAnalyticsController {
     @GetMapping("/experiments/{experimentId}")
     public ApiResponse<Map<String, Object>> getExperimentAnalytics(
             @PathVariable int experimentId,
+            @RequestParam(required = false) Long classId,
+            @RequestParam(required = false) Long courseId,
+            @RequestParam(required = false) String courseName,
             HttpServletRequest request) {
         Integer teacherId = requireCurrentTeacherId(request);
-        Map<String, Object> experimentMeta = requireScopedExperiment(experimentId, teacherId);
+        Map<String, Object> experimentMeta = requireScopedExperiment(
+                experimentId, teacherId, classId, courseId, courseName);
 
         Map<String, Object> result = new LinkedHashMap<>();
         Map<String, Object> overview = computeOverview(experimentId);
@@ -188,8 +236,12 @@ public class ExperimentAnalyticsController {
     @GetMapping("/comparison")
     public ApiResponse<List<Map<String, Object>>> getComparison(
             @RequestParam(required = false) String classPrefix,
+            @RequestParam(required = false) Long classId,
+            @RequestParam(required = false) Long courseId,
+            @RequestParam(required = false) String courseName,
             HttpServletRequest request) {
-        List<Map<String, Object>> experiments = listExperiments(classPrefix, request).data();
+        List<Map<String, Object>> experiments = listExperiments(
+                classPrefix, classId, courseId, courseName, request).data();
         if (experiments == null || experiments.isEmpty()) {
             return ApiResponse.of(Collections.emptyList());
         }
@@ -250,12 +302,19 @@ public class ExperimentAnalyticsController {
         return rows.get(0).intValue();
     }
 
-    private Map<String, Object> requireScopedExperiment(int experimentId, Integer teacherId) {
-        String sql = "SELECT " +
+    private Map<String, Object> requireScopedExperiment(
+            int experimentId,
+            Integer teacherId,
+            Long classId,
+            Long courseId,
+            String courseName) {
+        StringBuilder sql = new StringBuilder("SELECT " +
                 "  CAST(ao.id AS SIGNED) AS experimentId, " +
                 "  " + EXPERIMENT_NAME_EXPR + " AS experimentName, " +
                 "  " + CLASS_PREFIX_EXPR + " AS classPrefix, " +
+                "  CAST(ao.class_id AS SIGNED) AS classId, " +
                 "  tc.name AS className, " +
+                "  CAST(tc.course_id AS SIGNED) AS courseId, " +
                 "  NULLIF(TRIM(" + COURSE_NAME_EXPR + "), " + EMPTY_STR + ") AS courseName, " +
                 "  COUNT(DISTINCT ap.id) AS problemCount " +
                 "FROM assignment_offering ao " +
@@ -263,15 +322,35 @@ public class ExperimentAnalyticsController {
                 "JOIN teaching_class tc ON tc.id = ao.class_id " +
                 "LEFT JOIN course c ON c.id = tc.course_id " +
                 "LEFT JOIN assignment_problem ap ON ap.offering_id = ao.id AND ap.status = 'ACTIVE' " +
-                "WHERE ao.id = ?1 " +
-                "  AND ao.teacher_id = ?2 " +
-                "GROUP BY ao.id, " + EXPERIMENT_NAME_EXPR + ", " + CLASS_PREFIX_EXPR + ", tc.name, NULLIF(TRIM(" + COURSE_NAME_EXPR + "), " + EMPTY_STR + ")";
+                "WHERE ao.id = :experimentId " +
+                "  AND ao.teacher_id = :teacherId " +
+                "  AND tc.teacher_id = :teacherId ");
+        if (classId != null) {
+            sql.append("  AND ao.class_id = :classId ");
+        }
+        if (courseId != null) {
+            sql.append("  AND tc.course_id = :courseId ");
+        } else if (hasText(courseName)) {
+            sql.append("  AND ").append(COURSE_NAME_EXPR).append(COLL).append(" = :courseName ");
+        }
+        sql.append("GROUP BY ao.id, ").append(EXPERIMENT_NAME_EXPR).append(", ")
+                .append(CLASS_PREFIX_EXPR)
+                .append(", ao.class_id, tc.name, tc.course_id, NULLIF(TRIM(")
+                .append(COURSE_NAME_EXPR).append("), ").append(EMPTY_STR).append(")");
 
         @SuppressWarnings("unchecked")
-        List<Object[]> rows = em.createNativeQuery(sql)
-                .setParameter(1, experimentId)
-                .setParameter(2, teacherId)
-                .getResultList();
+        var query = em.createNativeQuery(sql.toString())
+                .setParameter("experimentId", experimentId)
+                .setParameter("teacherId", teacherId);
+        if (classId != null) {
+            query.setParameter("classId", classId);
+        }
+        if (courseId != null) {
+            query.setParameter("courseId", courseId);
+        } else if (hasText(courseName)) {
+            query.setParameter("courseName", courseName.trim());
+        }
+        List<Object[]> rows = query.getResultList();
 
         if (rows.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "experiment analytics not found");
@@ -282,19 +361,23 @@ public class ExperimentAnalyticsController {
         meta.put("experimentId", toInt(row[0]));
         meta.put("experimentName", row[1]);
         meta.put("classPrefix", normalizeText(row[2]));
-        meta.put("className", normalizeText(row[3]));
-        meta.put("courseName", normalizeText(row[4]));
-        meta.put("problemCount", toInt(row[5]));
+        meta.put("classId", toNullableLong(row[3]));
+        meta.put("className", normalizeText(row[4]));
+        meta.put("courseId", toNullableLong(row[5]));
+        meta.put("courseName", normalizeText(row[6]));
+        meta.put("problemCount", toInt(row[7]));
         return meta;
     }
 
     private Map<String, Object> buildScope(Map<String, Object> experimentMeta, Map<String, Object> overview) {
         Map<String, Object> scope = new LinkedHashMap<>();
         scope.put("classPrefix", experimentMeta.get("classPrefix"));
+        scope.put("classId", experimentMeta.get("classId"));
         scope.put("className", experimentMeta.get("className"));
+        scope.put("courseId", experimentMeta.get("courseId"));
         scope.put("courseName", experimentMeta.get("courseName"));
         scope.put("problemCount", experimentMeta.get("problemCount"));
-        scope.put("dataScope", "all courses");
+        scope.put("dataScope", "current course");
         scope.put("rosterCount", overview.get("rosterCount"));
         scope.put("submittedCount", overview.get("submittedCount"));
         scope.put("scoredCount", overview.get("scoredCount"));
@@ -565,12 +648,18 @@ public class ExperimentAnalyticsController {
         }
         @SuppressWarnings("unchecked")
         List<Number> rows = em.createNativeQuery(
-                "SELECT MAX(COALESCE(max_score, 0)) AS full_score " +
-                        "FROM problem_score_detail " +
-                        "WHERE experiment_id = ?1 " +
-                        "GROUP BY problem_label " +
-                        "ORDER BY CAST(problem_label AS UNSIGNED), problem_label"
-        ).setParameter(1, legacyExperimentId).getResultList();
+                "SELECT MAX(COALESCE(psd.max_score, 0)) AS full_score " +
+                        "FROM problem_score_detail psd " +
+                        "JOIN student_profile sp " +
+                        "  ON sp.student_no" + COLL + " = psd.student_id" + COLL + " " +
+                        "JOIN student_assignment sa " +
+                        "  ON sa.student_id = sp.id AND sa.offering_id = ?2 " +
+                        "WHERE psd.experiment_id = ?1 " +
+                        "GROUP BY psd.problem_label " +
+                        "ORDER BY CAST(psd.problem_label AS UNSIGNED), psd.problem_label"
+        ).setParameter(1, legacyExperimentId)
+                .setParameter(2, offeringId)
+                .getResultList();
 
         List<Double> scores = new ArrayList<>(rows.size());
         for (Number row : rows) {
@@ -588,20 +677,26 @@ public class ExperimentAnalyticsController {
         @SuppressWarnings("unchecked")
         List<Object[]> rows = em.createNativeQuery(
                 "SELECT " +
-                        "  problem_label, " +
-                        "  COALESCE(NULLIF(TRIM(problem_type), " + EMPTY_STR + "), 'PTA Problem') AS problem_type, " +
-                        "  MAX(COALESCE(max_score, 0)) AS full_score, " +
-                        "  AVG(COALESCE(actual_score, 0)) AS avg_score, " +
-                        "  COUNT(DISTINCT student_id) AS student_count, " +
+                        "  psd.problem_label, " +
+                        "  COALESCE(NULLIF(TRIM(psd.problem_type), " + EMPTY_STR + "), 'PTA Problem') AS problem_type, " +
+                        "  MAX(COALESCE(psd.max_score, 0)) AS full_score, " +
+                        "  AVG(COALESCE(psd.actual_score, 0)) AS avg_score, " +
+                        "  COUNT(DISTINCT psd.student_id) AS student_count, " +
                         "  SUM(CASE " +
-                        "        WHEN COALESCE(max_score, 0) > 0 AND COALESCE(actual_score, 0) >= COALESCE(max_score, 0) " +
+                        "        WHEN COALESCE(psd.max_score, 0) > 0 AND COALESCE(psd.actual_score, 0) >= COALESCE(psd.max_score, 0) " +
                         "        THEN 1 ELSE 0 END) AS full_mark_count, " +
-                        "  SUM(CASE WHEN COALESCE(actual_score, 0) = 0 THEN 1 ELSE 0 END) AS zero_count " +
-                        "FROM problem_score_detail " +
-                        "WHERE experiment_id = ?1 " +
-                        "GROUP BY problem_label, problem_type " +
-                        "ORDER BY CAST(problem_label AS UNSIGNED), problem_label"
-        ).setParameter(1, legacyExperimentId).getResultList();
+                        "  SUM(CASE WHEN COALESCE(psd.actual_score, 0) = 0 THEN 1 ELSE 0 END) AS zero_count " +
+                        "FROM problem_score_detail psd " +
+                        "JOIN student_profile sp " +
+                        "  ON sp.student_no" + COLL + " = psd.student_id" + COLL + " " +
+                        "JOIN student_assignment sa " +
+                        "  ON sa.student_id = sp.id AND sa.offering_id = ?2 " +
+                        "WHERE psd.experiment_id = ?1 " +
+                        "GROUP BY psd.problem_label, psd.problem_type " +
+                        "ORDER BY CAST(psd.problem_label AS UNSIGNED), psd.problem_label"
+        ).setParameter(1, legacyExperimentId)
+                .setParameter(2, offeringId)
+                .getResultList();
 
         List<Map<String, Object>> result = new ArrayList<>(rows.size());
         for (Object[] row : rows) {
@@ -644,12 +739,18 @@ public class ExperimentAnalyticsController {
         @SuppressWarnings("unchecked")
         List<Number> rows = em.createNativeQuery(
                 "SELECT SUM(full_score) FROM (" +
-                        "  SELECT problem_label, MAX(COALESCE(max_score, 0)) AS full_score " +
-                        "  FROM problem_score_detail " +
-                        "  WHERE experiment_id = ?1 " +
-                        "  GROUP BY problem_label" +
+                        "  SELECT psd.problem_label, MAX(COALESCE(psd.max_score, 0)) AS full_score " +
+                        "  FROM problem_score_detail psd " +
+                        "  JOIN student_profile sp " +
+                        "    ON sp.student_no" + COLL + " = psd.student_id" + COLL + " " +
+                        "  JOIN student_assignment sa " +
+                        "    ON sa.student_id = sp.id AND sa.offering_id = ?2 " +
+                        "  WHERE psd.experiment_id = ?1 " +
+                        "  GROUP BY psd.problem_label" +
                         ") problem_scores"
-        ).setParameter(1, legacyExperimentId).getResultList();
+        ).setParameter(1, legacyExperimentId)
+                .setParameter(2, offeringId)
+                .getResultList();
         if (rows.isEmpty() || rows.get(0) == null) {
             return 0;
         }
@@ -695,6 +796,10 @@ public class ExperimentAnalyticsController {
 
     private static Long toLong(Object value) {
         return value == null ? 0L : ((Number) value).longValue();
+    }
+
+    private static Long toNullableLong(Object value) {
+        return value == null ? null : ((Number) value).longValue();
     }
 
     private static double round2(double value) {
