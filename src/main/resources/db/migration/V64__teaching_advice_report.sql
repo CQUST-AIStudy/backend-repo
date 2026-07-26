@@ -23,7 +23,30 @@ CREATE TABLE IF NOT EXISTS teaching_advice_report (
   CONSTRAINT chk_teaching_advice_status CHECK (status IN ('COMPLETED', 'FAILED'))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
-CREATE INDEX idx_teaching_advice_teacher_created
-  ON teaching_advice_report(teacher_id, created_at);
-CREATE INDEX idx_teaching_advice_scope
-  ON teaching_advice_report(teacher_id, scope_level, class_id, experiment_id);
+SET @idx_exists := (
+    SELECT COUNT(*) FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'teaching_advice_report'
+      AND INDEX_NAME = 'idx_teaching_advice_teacher_created'
+);
+SET @ddl := IF(@idx_exists = 0,
+    'CREATE INDEX idx_teaching_advice_teacher_created ON teaching_advice_report(teacher_id, created_at)',
+    'SELECT 1'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @idx_exists := (
+    SELECT COUNT(*) FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'teaching_advice_report'
+      AND INDEX_NAME = 'idx_teaching_advice_scope'
+);
+SET @ddl := IF(@idx_exists = 0,
+    'CREATE INDEX idx_teaching_advice_scope ON teaching_advice_report(teacher_id, scope_level, class_id, experiment_id)',
+    'SELECT 1'
+);
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
