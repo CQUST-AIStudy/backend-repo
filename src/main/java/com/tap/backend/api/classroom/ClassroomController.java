@@ -202,7 +202,7 @@ public class ClassroomController {
         return null;
     }
 
-    record ResetStudentPasswordRequest(String newPassword) {}
+    record ResetStudentPasswordRequest(String newPassword, Boolean createIfMissing) {}
 
     @PostMapping("/{classId}/students/{studentId}/reset-password")
     public ApiResponse<Void> resetStudentPassword(
@@ -221,6 +221,10 @@ public class ClassroomController {
         ClassStudentEntity student = classService.getStudentForTeacher(classId, studentId, user.getId());
         UserEntity tapUser = findTapUserForStudent(student);
         if (tapUser == null) {
+            if (Boolean.TRUE.equals(req.createIfMissing())) {
+                classService.createStudentAccountForTeacher(classId, studentId, user.getId(), req.newPassword());
+                return ApiResponse.of(null);
+            }
             throw new IllegalStateException("该学生尚未创建登录账号，无法重置密码");
         }
         tapUser.setPasswordHash(passwordEncoder.encode(req.newPassword()));

@@ -392,6 +392,41 @@ public class TeachingClassService {
     }
 
     @Transactional
+    public UserEntity createStudentAccountForTeacher(Long classId, Long studentRecordId, Long teacherId, String rawPassword) {
+        ClassStudentEntity student = getStudentForTeacher(classId, studentRecordId, teacherId);
+        String studentNum = blankToNull(student.getStudentNum());
+        if (studentNum == null) {
+            throw new IllegalStateException("该学生没有学号，无法自动创建账号");
+        }
+        UserEntity account = userRepo.findByUsername(studentNum).orElse(null);
+        if (account == null) {
+            account = new UserEntity();
+            account.setUsername(studentNum);
+            account.setUsernum(studentNum);
+            account.setDisplayName(student.getStudentName());
+            account.setRole(UserRole.STUDENT);
+            account.setPasswordHash(passwordEncoder.encode(rawPassword));
+            account.setEnabled(true);
+            account = userRepo.save(account);
+        } else {
+            if (account.getRole() != UserRole.STUDENT) {
+                throw new IllegalStateException("用户名 " + studentNum + " 已被非学生账号占用，无法自动创建账号");
+            }
+            account.setPasswordHash(passwordEncoder.encode(rawPassword));
+            if (!Boolean.TRUE.equals(account.getEnabled())) {
+                account.setEnabled(true);
+            }
+            if (blankToNull(account.getDisplayName()) == null) {
+                account.setDisplayName(student.getStudentName());
+            }
+            account = userRepo.save(account);
+        }
+        student.setUserId(account.getId());
+        studentRepo.save(student);
+        return account;
+    }
+
+    @Transactional
     public void removeStudent(Long studentRecordId) {
         studentRepo.deleteById(studentRecordId);
     }
