@@ -37,34 +37,34 @@ public class LeetCodeSyncServiceImpl implements LeetCodeSyncService {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     // 标签关键词映射
-    private static final Map<String, String> TAG_KEYWORDS = new HashMap<>();
+    private static final Map<String, String> TAG_KEYWORDS = new LinkedHashMap<>();
     static {
         // 数据结构标签
-        TAG_KEYWORDS.put("array", "数组|Array|array");
-        TAG_KEYWORDS.put("linked_list", "链表|LinkedList|linked.*list");
-        TAG_KEYWORDS.put("stack", "栈|Stack|stack");
-        TAG_KEYWORDS.put("queue", "队列|Queue|queue");
-        TAG_KEYWORDS.put("tree", "树|Tree|tree|二叉树");
-        TAG_KEYWORDS.put("heap", "堆|Heap|heap|优先队列");
-        TAG_KEYWORDS.put("hash_table", "哈希|Hash|hash|散列");
-        TAG_KEYWORDS.put("string", "字符串|String|string");
+        TAG_KEYWORDS.put("数组", "数组|Array|array");
+        TAG_KEYWORDS.put("链表", "链表|LinkedList|linked.*list");
+        TAG_KEYWORDS.put("栈", "栈|Stack|stack");
+        TAG_KEYWORDS.put("队列", "队列|Queue|queue");
+        TAG_KEYWORDS.put("树", "树|Tree|tree|二叉树");
+        TAG_KEYWORDS.put("堆", "堆|Heap|heap|优先队列");
+        TAG_KEYWORDS.put("哈希表", "哈希|Hash|hash|散列");
+        TAG_KEYWORDS.put("字符串", "字符串|String|string");
         
         // 算法标签
-        TAG_KEYWORDS.put("sorting", "排序|Sort|sort");
-        TAG_KEYWORDS.put("binary_search", "二分|Binary.*Search|binary.*search");
-        TAG_KEYWORDS.put("dfs", "深度优先|DFS|dfs|递归");
-        TAG_KEYWORDS.put("bfs", "广度优先|BFS|bfs");
-        TAG_KEYWORDS.put("backtracking", "回溯|Backtrack|backtrack");
-        TAG_KEYWORDS.put("greedy", "贪心|Greedy|greedy");
-        TAG_KEYWORDS.put("divide_conquer", "分治|Divide.*Conquer|divide.*conquer");
+        TAG_KEYWORDS.put("排序", "排序|Sort|sort");
+        TAG_KEYWORDS.put("二分查找", "二分|Binary.*Search|binary.*search");
+        TAG_KEYWORDS.put("深度优先搜索", "深度优先|DFS|dfs|递归");
+        TAG_KEYWORDS.put("广度优先搜索", "广度优先|BFS|bfs");
+        TAG_KEYWORDS.put("回溯", "回溯|Backtrack|backtrack");
+        TAG_KEYWORDS.put("贪心", "贪心|Greedy|greedy");
+        TAG_KEYWORDS.put("分治", "分治|Divide.*Conquer|divide.*conquer");
         
         // 技巧标签
-        TAG_KEYWORDS.put("two_pointers", "双指针|Two.*Pointer|two.*pointer");
-        TAG_KEYWORDS.put("sliding_window", "滑动窗口|Sliding.*Window|sliding.*window");
-        TAG_KEYWORDS.put("dynamic_programming", "动态规划|Dynamic.*Programming|dp|DP");
-        TAG_KEYWORDS.put("bit_manipulation", "位运算|Bit.*Manipulation|bit.*manipulation");
-        TAG_KEYWORDS.put("math", "数学|Math|math");
-        TAG_KEYWORDS.put("simulation", "模拟|Simulation|simulation");
+        TAG_KEYWORDS.put("双指针", "双指针|Two.*Pointer|two.*pointer");
+        TAG_KEYWORDS.put("滑动窗口", "滑动窗口|Sliding.*Window|sliding.*window");
+        TAG_KEYWORDS.put("动态规划", "动态规划|Dynamic.*Programming|dp|DP");
+        TAG_KEYWORDS.put("位运算", "位运算|Bit.*Manipulation|bit.*manipulation");
+        TAG_KEYWORDS.put("数学", "数学|Math|math");
+        TAG_KEYWORDS.put("模拟", "模拟|Simulation|simulation");
     }
 
     @Override
@@ -148,15 +148,16 @@ public class LeetCodeSyncServiceImpl implements LeetCodeSyncService {
             
         } catch (Exception e) {
             logger.error("同步单个题目失败", e);
-            return false;
+            throw new IllegalStateException("同步单个题目失败: " + e.getMessage(), e);
         }
     }
 
     @Override
     public int extractAndSaveTags(Long problemId, String problemText, String solutionText) {
         try {
-            Set<String> extractedTags = new HashSet<>();
-            String combinedText = (problemText + " " + solutionText).toLowerCase();
+            Set<String> extractedTags = new LinkedHashSet<>();
+            String combinedText = ((problemText == null ? "" : problemText) + " "
+                    + (solutionText == null ? "" : solutionText)).toLowerCase();
             
             // 使用关键词匹配提取标签
             for (Map.Entry<String, String> entry : TAG_KEYWORDS.entrySet()) {
@@ -170,7 +171,7 @@ public class LeetCodeSyncServiceImpl implements LeetCodeSyncService {
             
             // 如果没有提取到标签，添加默认标签
             if (extractedTags.isEmpty()) {
-                extractedTags.add("algorithm");
+                extractedTags.add("模拟");
             }
             
             // 保存标签到数据库
@@ -181,9 +182,8 @@ public class LeetCodeSyncServiceImpl implements LeetCodeSyncService {
                 boolean isPrimary = index == 0; // 第一个标签设为主标签
                 
                 LeetCodeProblemTag tag = new LeetCodeProblemTag(problemId, tagCategory, tagName);
-                if (isPrimary) {
-                    tag.setConfidence(new BigDecimal("0.95")); // 主标签置信度更高
-                }
+                tag.setPrimary(isPrimary);
+                tag.setRelevanceScore(isPrimary ? new BigDecimal("0.9500") : new BigDecimal("0.8000"));
                 tags.add(tag);
                 index++;
             }
@@ -199,15 +199,15 @@ public class LeetCodeSyncServiceImpl implements LeetCodeSyncService {
             
         } catch (Exception e) {
             logger.error("提取标签失败", e);
-            return 0;
+            throw new IllegalStateException("提取并保存标签失败: " + e.getMessage(), e);
         }
     }
 
     // 获取标签分类
     private String getTagCategory(String tagName) {
-        if (Arrays.asList("array", "linked_list", "stack", "queue", "tree", "heap", "hash_table", "string").contains(tagName)) {
+        if (Arrays.asList("数组", "链表", "栈", "队列", "树", "堆", "哈希表", "字符串").contains(tagName)) {
             return "data_structure";
-        } else if (Arrays.asList("two_pointers", "sliding_window", "dynamic_programming", "bit_manipulation", "math", "simulation").contains(tagName)) {
+        } else if (Arrays.asList("双指针", "滑动窗口", "动态规划", "位运算", "数学", "模拟").contains(tagName)) {
             return "technique";
         } else {
             return "algorithm";

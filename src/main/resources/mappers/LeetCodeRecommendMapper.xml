@@ -28,8 +28,11 @@
         <result property="scoreSuccessProb" column="score_success_prob"/>
         <result property="scoreNovelty" column="score_novelty"/>
         <result property="scoreQuality" column="score_quality"/>
+        <result property="scoreSemantic" column="score_semantic"/>
         <result property="reasonText" column="reason_text"/>
         <result property="reasonJson" column="reason_json"/>
+        <result property="matchedTag" column="matched_tag"/>
+        <result property="recallSource" column="recall_source"/>
         <result property="createdAt" column="created_at"/>
         <!-- 关联题目信息 -->
         <association property="problem" javaType="com.tap.backend.academic.entity.LeetCodeProblem">
@@ -122,13 +125,13 @@
         INSERT INTO leetcode_recommend_item (
             request_id, student_id, rank_no, problem_id,
             score_total, score_need_match, score_difficulty_fit, 
-            score_success_prob, score_novelty, score_quality,
-            reason_text, reason_json
+            score_success_prob, score_novelty, score_quality, score_semantic,
+            reason_text, reason_json, matched_tag, recall_source
         ) VALUES (
             #{requestId}, #{studentId}, #{rankNo}, #{problemId},
             #{scoreTotal}, #{scoreNeedMatch}, #{scoreDifficultyFit},
-            #{scoreSuccessProb}, #{scoreNovelty}, #{scoreQuality},
-            #{reasonText}, #{reasonJson}
+            #{scoreSuccessProb}, #{scoreNovelty}, #{scoreQuality}, #{scoreSemantic},
+            #{reasonText}, #{reasonJson}, #{matchedTag}, #{recallSource}
         )
     </insert>
 
@@ -137,14 +140,14 @@
         INSERT INTO leetcode_recommend_item (
             request_id, student_id, rank_no, problem_id,
             score_total, score_need_match, score_difficulty_fit, 
-            score_success_prob, score_novelty, score_quality,
-            reason_text, reason_json
+            score_success_prob, score_novelty, score_quality, score_semantic,
+            reason_text, reason_json, matched_tag, recall_source
         ) VALUES
         <foreach collection="items" item="item" separator=",">
             (#{item.requestId}, #{item.studentId}, #{item.rankNo}, #{item.problemId},
              #{item.scoreTotal}, #{item.scoreNeedMatch}, #{item.scoreDifficultyFit},
-             #{item.scoreSuccessProb}, #{item.scoreNovelty}, #{item.scoreQuality},
-             #{item.reasonText}, #{item.reasonJson})
+             #{item.scoreSuccessProb}, #{item.scoreNovelty}, #{item.scoreQuality}, #{item.scoreSemantic},
+             #{item.reasonText}, #{item.reasonJson}, #{item.matchedTag}, #{item.recallSource})
         </foreach>
     </insert>
 

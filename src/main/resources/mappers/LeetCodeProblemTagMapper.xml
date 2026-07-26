@@ -6,74 +6,85 @@
     <resultMap id="LeetCodeProblemTagResultMap" type="com.tap.backend.academic.entity.LeetCodeProblemTag">
         <id column="id" property="id"/>
         <result column="problem_id" property="problemId"/>
-        <result column="tag_type" property="tagType"/>
-        <result column="tag_value" property="tagValue"/>
-        <result column="confidence" property="confidence"/>
+        <result column="tag_name" property="tagName"/>
+        <result column="tag_category" property="tagCategory"/>
+        <result column="relevance_score" property="relevanceScore"/>
+        <result column="is_primary" property="primary"/>
         <result column="created_at" property="createdAt"/>
-        <result column="updated_at" property="updatedAt"/>
     </resultMap>
 
     <!-- 根据题目ID查找标签 -->
     <select id="findByProblemId" resultMap="LeetCodeProblemTagResultMap">
         SELECT * FROM leetcode_problem_tag 
         WHERE problem_id = #{problemId}
-        ORDER BY tag_type, confidence DESC
+        ORDER BY is_primary DESC, relevance_score DESC, tag_name
     </select>
 
     <!-- 根据标签类型和值查找题目ID -->
     <select id="findProblemIdsByTag" resultType="java.lang.Long">
         SELECT DISTINCT problem_id FROM leetcode_problem_tag 
-        WHERE tag_type = #{tagType} AND tag_value = #{tagValue}
-        ORDER BY confidence DESC
+        WHERE tag_category = #{tagCategory} AND tag_name = #{tagName}
+        ORDER BY relevance_score DESC
     </select>
 
     <!-- 根据多个标签查找题目ID -->
     <select id="findProblemIdsByTags" resultType="java.lang.Long">
         SELECT DISTINCT problem_id FROM leetcode_problem_tag 
-        WHERE tag_type = #{tagType} 
-        AND tag_value IN
-        <foreach collection="tagValues" item="tagValue" open="(" separator="," close=")">
-            #{tagValue}
+        WHERE tag_category = #{tagCategory}
+        AND tag_name IN
+        <foreach collection="tagNames" item="tagName" open="(" separator="," close=")">
+            #{tagName}
         </foreach>
-        ORDER BY confidence DESC
+        ORDER BY relevance_score DESC
     </select>
 
     <!-- 跨标签类型根据标签值查找题目ID -->
-    <select id="findProblemIdsByTagValues" resultType="java.lang.Long">
+    <select id="findProblemIdsByTagNames" resultType="java.lang.Long">
         SELECT DISTINCT problem_id FROM leetcode_problem_tag
-        WHERE tag_value IN
-        <foreach collection="tagValues" item="tagValue" open="(" separator="," close=")">
-            #{tagValue}
+        WHERE tag_name IN
+        <foreach collection="tagNames" item="tagName" open="(" separator="," close=")">
+            #{tagName}
         </foreach>
-        ORDER BY confidence DESC
+        ORDER BY relevance_score DESC
     </select>
 
     <!-- 获取所有标签类型 -->
-    <select id="findAllTagTypes" resultType="java.lang.String">
-        SELECT DISTINCT tag_type FROM leetcode_problem_tag 
-        ORDER BY tag_type
+    <select id="findAllTagCategories" resultType="java.lang.String">
+        SELECT DISTINCT tag_category FROM leetcode_problem_tag
+        ORDER BY tag_category
     </select>
 
     <!-- 根据标签类型获取所有标签值 -->
-    <select id="findTagValuesByType" resultType="java.lang.String">
-        SELECT DISTINCT tag_value FROM leetcode_problem_tag 
-        WHERE tag_type = #{tagType}
-        ORDER BY tag_value
+    <select id="findTagNamesByCategory" resultType="java.lang.String">
+        SELECT DISTINCT tag_name FROM leetcode_problem_tag
+        WHERE tag_category = #{tagCategory}
+        ORDER BY tag_name
     </select>
 
     <!-- 插入标签 -->
     <insert id="insert" parameterType="com.tap.backend.academic.entity.LeetCodeProblemTag" useGeneratedKeys="true" keyProperty="id">
-        INSERT INTO leetcode_problem_tag (problem_id, tag_type, tag_value, confidence)
-        VALUES (#{problemId}, #{tagType}, #{tagValue}, #{confidence})
+        INSERT INTO leetcode_problem_tag
+            (problem_id, tag_name, tag_category, relevance_score, is_primary)
+        VALUES
+            (#{problemId}, #{tagName}, #{tagCategory}, #{relevanceScore}, #{primary})
+        ON DUPLICATE KEY UPDATE
+            tag_category = VALUES(tag_category),
+            relevance_score = VALUES(relevance_score),
+            is_primary = VALUES(is_primary)
     </insert>
 
     <!-- 批量插入标签 -->
     <insert id="batchInsert" parameterType="java.util.List">
-        INSERT INTO leetcode_problem_tag (problem_id, tag_type, tag_value, confidence)
+        INSERT INTO leetcode_problem_tag
+            (problem_id, tag_name, tag_category, relevance_score, is_primary)
         VALUES
         <foreach collection="tags" item="tag" separator=",">
-            (#{tag.problemId}, #{tag.tagType}, #{tag.tagValue}, #{tag.confidence})
+            (#{tag.problemId}, #{tag.tagName}, #{tag.tagCategory}, #{tag.relevanceScore}, #{tag.primary})
         </foreach>
+        ON DUPLICATE KEY UPDATE
+            tag_category = VALUES(tag_category),
+            relevance_score = VALUES(relevance_score),
+            is_primary = VALUES(is_primary)
     </insert>
 
     <!-- 删除题目的所有标签 -->

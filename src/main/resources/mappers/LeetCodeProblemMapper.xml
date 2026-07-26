@@ -87,6 +87,7 @@
             #{problemText}, #{solutionText}, #{sourceUrl}, #{difficulty},
             #{estimatedMinutes}, #{qualityScore}
         ) ON DUPLICATE KEY UPDATE
+            id = LAST_INSERT_ID(id),
             title_main = VALUES(title_main),
             title_alt = VALUES(title_alt),
             problem_text = VALUES(problem_text),
@@ -130,7 +131,7 @@
             <if test="keyword != null and keyword.trim() != ''">
                 AND (pb.title_main LIKE CONCAT('%', #{keyword}, '%')
                      OR pb.problem_code LIKE CONCAT('%', #{keyword}, '%')
-                     OR pt.tag_value LIKE CONCAT('%', #{keyword}, '%'))
+                     OR pt.tag_name LIKE CONCAT('%', #{keyword}, '%'))
             </if>
             <if test="difficulty != null and difficulty.trim() != ''">
                 AND pb.difficulty = #{difficulty}
@@ -149,7 +150,7 @@
             <if test="keyword != null and keyword.trim() != ''">
                 AND (pb.title_main LIKE CONCAT('%', #{keyword}, '%')
                      OR pb.problem_code LIKE CONCAT('%', #{keyword}, '%')
-                     OR pt.tag_value LIKE CONCAT('%', #{keyword}, '%'))
+                     OR pt.tag_name LIKE CONCAT('%', #{keyword}, '%'))
             </if>
             <if test="difficulty != null and difficulty.trim() != ''">
                 AND pb.difficulty = #{difficulty}

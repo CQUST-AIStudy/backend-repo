@@ -20,27 +20,27 @@ public interface LeetCodeProblemTagDao {
     /**
      * 根据标签类型和值查找题目ID
      */
-    List<Long> findProblemIdsByTag(@Param("tagType") String tagType, @Param("tagValue") String tagValue);
+    List<Long> findProblemIdsByTag(@Param("tagCategory") String tagCategory, @Param("tagName") String tagName);
     
     /**
      * 根据多个标签查找题目ID
      */
-    List<Long> findProblemIdsByTags(@Param("tagType") String tagType, @Param("tagValues") List<String> tagValues);
+    List<Long> findProblemIdsByTags(@Param("tagCategory") String tagCategory, @Param("tagNames") List<String> tagNames);
 
     /**
      * 跨标签类型根据标签值查找题目ID
      */
-    List<Long> findProblemIdsByTagValues(@Param("tagValues") List<String> tagValues);
+    List<Long> findProblemIdsByTagNames(@Param("tagNames") List<String> tagNames);
     
     /**
      * 获取所有标签类型
      */
-    List<String> findAllTagTypes();
+    List<String> findAllTagCategories();
     
     /**
      * 根据标签类型获取所有标签值
      */
-    List<String> findTagValuesByType(@Param("tagType") String tagType);
+    List<String> findTagNamesByCategory(@Param("tagCategory") String tagCategory);
     
     /**
      * 插入标签

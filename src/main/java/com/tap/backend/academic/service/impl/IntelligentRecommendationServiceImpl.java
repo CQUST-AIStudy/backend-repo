@@ -135,7 +135,7 @@ public class IntelligentRecommendationServiceImpl implements LeetCodeRecommendat
             return unwrapData(response.getBody());
         } catch (RestClientException e) {
             logger.error("Call recommendation-service failed. path={}", path, e);
-            throw e;
+            throw new IllegalStateException("recommendation-service unavailable for " + path, e);
         }
     }
 
@@ -187,7 +187,10 @@ public class IntelligentRecommendationServiceImpl implements LeetCodeRecommendat
             item.setScoreSuccessProb(asDecimal(row.get("scoreSuccessProb")));
             item.setScoreNovelty(asDecimal(row.get("scoreNovelty")));
             item.setScoreQuality(asDecimal(row.get("scoreQuality")));
+            item.setScoreSemantic(asDecimal(row.get("scoreSemantic")));
             item.setReasonText(asString(row.get("reasonText")));
+            item.setMatchedTag(asString(row.get("matchedTag")));
+            item.setRecallSource(asString(row.get("recallSource")));
             item.setProblem(mapProblem(asMap(row.get("problem"))));
             item.setForgettingScore(asDecimal(row.get("forgettingScore")));
             item.setLastPracticeAt(asString(row.get("lastPracticeAt")));

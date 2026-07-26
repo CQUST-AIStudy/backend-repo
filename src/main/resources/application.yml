@@ -3,8 +3,8 @@ spring:
   mail:
     host: smtp.qq.com
     port: 587
-    username: 2832945838@qq.com
-    password: qnxvtzadqyildgab
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
     properties:
       mail:
         smtp:
@@ -21,11 +21,11 @@ spring:
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
     # 数据库连接地址，支持环境变量兜底默认值
-    url: jdbc:mysql://${DB_HOST:rm-bp179y7vm468o6yc5qo.mysql.rds.aliyuncs.com}:${DB_PORT:3306}/${DB_NAME:ptadatabase}?useUnicode=true&characterEncoding=utf-8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&cachePrepStmts=true&prepStmtCacheSize=250&prepStmtCacheSqlLimit=2048&useServerPrepStmts=true&rewriteBatchedStatements=true
+    url: jdbc:mysql://${DB_HOST:127.0.0.1}:${DB_PORT:3306}/${DB_NAME:ptadatabase}?useUnicode=true&characterEncoding=utf-8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&cachePrepStmts=true&prepStmtCacheSize=250&prepStmtCacheSqlLimit=2048&useServerPrepStmts=true&rewriteBatchedStatements=true
     # 数据库账号
     username: ${DB_USERNAME:root}
     # 数据库密码，双层兜底环境变量
-    password: ${DB_PASSWORD:${DB_PASS:cqust!admin123}}
+    password: ${DB_PASSWORD:${DB_PASS:}}
     # Hikari 连接池参数
     hikari:
       connection-timeout: 20000
@@ -53,7 +53,7 @@ spring:
         generate_statistics: false
   # Flyway 数据库版本迁移
   flyway:
-    enabled: false
+    enabled: ${SPRING_FLYWAY_ENABLED:true}
     locations: classpath:db/migration
     baseline-on-migrate: true
     baseline-version: 0
@@ -209,7 +209,7 @@ tap:
     provider: ${AI_PROVIDER:mock}
     openai:
       base-url: ${OPENAI_BASE_URL:https://api.deepseek.com/v1}
-      api-key: ${OPENAI_API_KEY:sk-941d468ac9434ec9be65bf16a7517c3e}
+      api-key: ${OPENAI_API_KEY:}
       model: ${OPENAI_MODEL:deepseek-chat}
     dashscope:
       base-url: ${DASHSCOPE_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
@@ -272,7 +272,7 @@ tap:
     s3:
       endpoint: ${MINIO_ENDPOINT:http://121.43.152.73:9000}
       access-key: ${MINIO_ACCESS_KEY:root}
-      secret-key: ${MINIO_SECRET_KEY:cqust!admin123}
+        secret-key: ${MINIO_SECRET_KEY:}
       bucket: ${MINIO_BUCKET:tap-files}
   # RAG 检索增强知识库全套配置
   rag:

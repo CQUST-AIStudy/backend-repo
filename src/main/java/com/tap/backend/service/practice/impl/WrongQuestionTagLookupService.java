@@ -33,7 +33,7 @@ public class WrongQuestionTagLookupService {
       List<LeetCodeProblemTag> rows = tagDao.findByProblemId(problemId);
       if (rows == null || rows.isEmpty()) return null;
       String csv = rows.stream()
-          .map(LeetCodeProblemTag::getTagValue)
+          .map(LeetCodeProblemTag::getTagName)
           .filter(v -> v != null && !v.isBlank())
           .map(String::trim)
           .distinct()

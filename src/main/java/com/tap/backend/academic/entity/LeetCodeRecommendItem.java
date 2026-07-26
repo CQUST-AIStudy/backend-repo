@@ -18,8 +18,11 @@ public class LeetCodeRecommendItem {
     private BigDecimal scoreSuccessProb;
     private BigDecimal scoreNovelty;
     private BigDecimal scoreQuality;
+    private BigDecimal scoreSemantic;
     private String reasonText;
     private String reasonJson;
+    private String matchedTag;
+    private String recallSource;
     private LocalDateTime createdAt;
 
     // 关联的题目信息（用于查询结果）
@@ -72,11 +75,20 @@ public class LeetCodeRecommendItem {
     public BigDecimal getScoreQuality() { return scoreQuality; }
     public void setScoreQuality(BigDecimal scoreQuality) { this.scoreQuality = scoreQuality; }
 
+    public BigDecimal getScoreSemantic() { return scoreSemantic; }
+    public void setScoreSemantic(BigDecimal scoreSemantic) { this.scoreSemantic = scoreSemantic; }
+
     public String getReasonText() { return reasonText; }
     public void setReasonText(String reasonText) { this.reasonText = reasonText; }
 
     public String getReasonJson() { return reasonJson; }
     public void setReasonJson(String reasonJson) { this.reasonJson = reasonJson; }
+
+    public String getMatchedTag() { return matchedTag; }
+    public void setMatchedTag(String matchedTag) { this.matchedTag = matchedTag; }
+
+    public String getRecallSource() { return recallSource; }
+    public void setRecallSource(String recallSource) { this.recallSource = recallSource; }
 
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }

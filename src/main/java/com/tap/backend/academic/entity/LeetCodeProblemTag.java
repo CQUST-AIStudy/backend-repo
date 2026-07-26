@@ -10,27 +10,29 @@ public class LeetCodeProblemTag {
     
     private Long id;
     private Long problemId;
-    private String tagType;
-    private String tagValue;
-    private BigDecimal confidence;
+    private String tagName;
+    private String tagCategory;
+    private BigDecimal relevanceScore;
+    private Boolean primary;
     private LocalDateTime createdAt;
-    private LocalDateTime updatedAt;
 
     // 构造函数
     public LeetCodeProblemTag() {}
 
-    public LeetCodeProblemTag(Long problemId, String tagType, String tagValue) {
+    public LeetCodeProblemTag(Long problemId, String tagCategory, String tagName) {
         this.problemId = problemId;
-        this.tagType = tagType;
-        this.tagValue = tagValue;
-        this.confidence = new BigDecimal("0.80");
+        this.tagCategory = tagCategory;
+        this.tagName = tagName;
+        this.relevanceScore = new BigDecimal("0.8000");
+        this.primary = false;
     }
 
-    public LeetCodeProblemTag(Long problemId, String tagType, String tagValue, BigDecimal confidence) {
+    public LeetCodeProblemTag(Long problemId, String tagCategory, String tagName, BigDecimal relevanceScore) {
         this.problemId = problemId;
-        this.tagType = tagType;
-        this.tagValue = tagValue;
-        this.confidence = confidence;
+        this.tagCategory = tagCategory;
+        this.tagName = tagName;
+        this.relevanceScore = relevanceScore;
+        this.primary = false;
     }
 
     // Getter和Setter方法
@@ -50,28 +52,36 @@ public class LeetCodeProblemTag {
         this.problemId = problemId;
     }
 
-    public String getTagType() {
-        return tagType;
+    public String getTagName() {
+        return tagName;
     }
 
-    public void setTagType(String tagType) {
-        this.tagType = tagType;
+    public void setTagName(String tagName) {
+        this.tagName = tagName;
     }
 
-    public String getTagValue() {
-        return tagValue;
+    public String getTagCategory() {
+        return tagCategory;
     }
 
-    public void setTagValue(String tagValue) {
-        this.tagValue = tagValue;
+    public void setTagCategory(String tagCategory) {
+        this.tagCategory = tagCategory;
     }
 
-    public BigDecimal getConfidence() {
-        return confidence;
+    public BigDecimal getRelevanceScore() {
+        return relevanceScore;
     }
 
-    public void setConfidence(BigDecimal confidence) {
-        this.confidence = confidence;
+    public void setRelevanceScore(BigDecimal relevanceScore) {
+        this.relevanceScore = relevanceScore;
+    }
+
+    public Boolean getPrimary() {
+        return primary;
+    }
+
+    public void setPrimary(Boolean primary) {
+        this.primary = primary;
     }
 
     public LocalDateTime getCreatedAt() {
@@ -82,22 +92,15 @@ public class LeetCodeProblemTag {
         this.createdAt = createdAt;
     }
 
-    public LocalDateTime getUpdatedAt() {
-        return updatedAt;
-    }
-
-    public void setUpdatedAt(LocalDateTime updatedAt) {
-        this.updatedAt = updatedAt;
-    }
-
     @Override
     public String toString() {
         return "LeetCodeProblemTag{" +
                 "id=" + id +
                 ", problemId=" + problemId +
-                ", tagType='" + tagType + '\'' +
-                ", tagValue='" + tagValue + '\'' +
-                ", confidence=" + confidence +
+                ", tagName='" + tagName + '\'' +
+                ", tagCategory='" + tagCategory + '\'' +
+                ", relevanceScore=" + relevanceScore +
+                ", primary=" + primary +
                 '}';
     }
 }

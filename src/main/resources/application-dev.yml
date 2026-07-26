@@ -6,7 +6,7 @@
 
 spring:
   datasource:
-    password: ${DB_PASSWORD:${DB_PASS:123456}}
+    password: ${DB_PASSWORD:${DB_PASS:}}
 
 tap:
   recommendation:
