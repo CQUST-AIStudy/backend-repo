@@ -130,6 +130,7 @@ public class SecurityConfig {
         .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll()
         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
         .requestMatchers(HttpMethod.POST, "/api/login", "/api/register", "/logout", "/api/logout").permitAll()
+        .requestMatchers(HttpMethod.GET, "/api/leetcode/problems/**", "/api/leetcode/problem/**").permitAll()
         .requestMatchers(HttpMethod.GET, "/rag/**").authenticated()
         .requestMatchers(
             HttpMethod.POST,
