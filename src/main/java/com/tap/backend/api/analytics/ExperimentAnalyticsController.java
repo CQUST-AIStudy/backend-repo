@@ -194,21 +194,30 @@ public class ExperimentAnalyticsController {
             return ApiResponse.of(Collections.emptyList());
         }
 
+        List<Integer> ids = new ArrayList<>();
+        for (Map<String, Object> experiment : experiments) {
+            Integer experimentId = toInt(experiment.get("experimentId"));
+            if (experimentId != null) {
+                ids.add(experimentId);
+            }
+        }
+        Map<Integer, Map<String, Object>> overviewBatch = computeOverviewBatch(ids);
+
         List<Map<String, Object>> result = new ArrayList<>();
         for (Map<String, Object> experiment : experiments) {
             Integer experimentId = toInt(experiment.get("experimentId"));
             if (experimentId == null) {
                 continue;
             }
-            Map<String, Object> overview = computeOverview(experimentId);
+            Map<String, Object> overview = overviewBatch.getOrDefault(experimentId, Collections.emptyMap());
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("experimentId", experimentId);
             item.put("name", experiment.get("name"));
             item.put("avgScore", overview.get("avgScore"));
-            item.put("difficulty", overview.get("difficulty"));
-            item.put("discrimination", overview.get("discrimination"));
-            item.put("totalStudents", overview.get("totalStudents"));
-            item.put("submittedCount", overview.get("submittedCount"));
+            item.put("difficulty", overview.getOrDefault("difficulty", 0));
+            item.put("discrimination", overview.getOrDefault("discrimination", 0));
+            item.put("totalStudents", overview.getOrDefault("totalStudents", 0L));
+            item.put("submittedCount", overview.getOrDefault("submittedCount", 0));
             result.add(item);
         }
         return ApiResponse.of(result);
@@ -296,90 +305,154 @@ public class ExperimentAnalyticsController {
         return scope;
     }
 
+    /**
+     * Single-query overview: roster counts + score statistics + full score,
+     * all computed in MySQL via CTEs and window functions.
+     */
     private Map<String, Object> computeOverview(int experimentId) {
+        String sql = "WITH "
+                + "roster AS ("
+                + "  SELECT "
+                + "    COUNT(*) AS roster_count, "
+                + "    SUM(CASE WHEN " + SUBMISSION_ACTIVITY_PREDICATE + " THEN 1 ELSE 0 END) AS submitted_count, "
+                + "    SUM(CASE WHEN " + SCORED_ASSIGNMENT_PREDICATE + " THEN 1 ELSE 0 END) AS scored_count "
+                + "  FROM student_assignment sa "
+                + "  WHERE sa.offering_id = ?1"
+                + "), "
+                + "scores AS ("
+                + "  SELECT COALESCE(sa.best_total_score, sa.latest_total_score, 0) AS score "
+                + "  FROM student_assignment sa "
+                + "  WHERE sa.offering_id = ?1"
+                + "    AND (" + SUBMISSION_ACTIVITY_PREDICATE + ")"
+                + "), "
+                + "ranked AS ("
+                + "  SELECT score, "
+                + "    ROW_NUMBER() OVER (ORDER BY score) AS rn_asc, "
+                + "    ROW_NUMBER() OVER (ORDER BY score DESC) AS rn_desc, "
+                + "    COUNT(*) OVER () AS cnt "
+                + "  FROM scores"
+                + "), "
+                + "score_stats AS ("
+                + "  SELECT "
+                + "    COUNT(*) AS total_students, "
+                + "    COALESCE(MAX(score), 0) AS max_score, "
+                + "    COALESCE(MIN(score), 0) AS min_score, "
+                + "    COALESCE(AVG(score), 0) AS avg_score, "
+                + "    (SELECT COALESCE(AVG(score), 0) FROM ranked WHERE rn_asc IN (FLOOR((cnt + 1) / 2), CEIL((cnt + 1) / 2))) AS median, "
+                + "    (SELECT COALESCE(AVG(score), 0) FROM ranked WHERE rn_desc <= GREATEST(1, FLOOR(cnt * 0.27 + 0.5))) AS top_avg, "
+                + "    (SELECT COALESCE(AVG(score), 0) FROM ranked WHERE rn_asc <= GREATEST(1, FLOOR(cnt * 0.27 + 0.5))) AS bottom_avg "
+                + "  FROM scores"
+                + "), "
+                + "full_score AS ("
+                + "  SELECT COALESCE(SUM(COALESCE(ap.max_score, 0)), 0) AS full_score "
+                + "  FROM assignment_problem ap "
+                + "  WHERE ap.offering_id = ?1 AND ap.status = 'ACTIVE'"
+                + ") "
+                + "SELECT "
+                + "  r.roster_count, r.submitted_count, r.scored_count, "
+                + "  s.total_students, s.max_score, s.min_score, s.avg_score, "
+                + "  s.median, s.top_avg, s.bottom_avg, "
+                + "  f.full_score "
+                + "FROM roster r "
+                + "CROSS JOIN score_stats s "
+                + "CROSS JOIN full_score f";
+
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = em.createNativeQuery(sql)
+                .setParameter(1, experimentId)
+                .getResultList();
+
         Map<String, Object> overview = new LinkedHashMap<>();
-
-        @SuppressWarnings("unchecked")
-        List<Object[]> countRows = em.createNativeQuery(
-                "SELECT " +
-                        "  COUNT(*) AS rosterCount, " +
-                        "  SUM(CASE WHEN " + SUBMISSION_ACTIVITY_PREDICATE + " THEN 1 ELSE 0 END) AS submittedCount, " +
-                        "  SUM(CASE WHEN " + SCORED_ASSIGNMENT_PREDICATE + " THEN 1 ELSE 0 END) AS scoredCount " +
-                        "FROM student_assignment sa " +
-                        "WHERE sa.offering_id = ?1"
-        ).setParameter(1, experimentId).getResultList();
-
-        int rosterCount = 0;
-        int submittedCount = 0;
-        int scoredCount = 0;
-        if (!countRows.isEmpty()) {
-            Object[] row = countRows.get(0);
-            rosterCount = toInt(row[0]) == null ? 0 : toInt(row[0]);
-            submittedCount = toInt(row[1]) == null ? 0 : toInt(row[1]);
-            scoredCount = toInt(row[2]) == null ? 0 : toInt(row[2]);
-        }
-
-        @SuppressWarnings("unchecked")
-        List<Number> scoreRows = em.createNativeQuery(
-                "SELECT COALESCE(sa.best_total_score, sa.latest_total_score, 0) AS score " +
-                        "FROM student_assignment sa " +
-                        "WHERE sa.offering_id = ?1 " +
-                        "ORDER BY score DESC"
-        ).setParameter(1, experimentId).getResultList();
-
-        double fullScore = queryFullScore(experimentId);
-        if (scoreRows.isEmpty()) {
+        if (rows.isEmpty()) {
             overview.put("totalStudents", 0);
-            overview.put("rosterCount", rosterCount);
-            overview.put("submittedCount", submittedCount);
-            overview.put("scoredCount", scoredCount);
-            overview.put("fullScore", round2(fullScore));
+            overview.put("rosterCount", 0);
+            overview.put("submittedCount", 0);
+            overview.put("scoredCount", 0);
+            overview.put("fullScore", 0);
             return overview;
         }
 
-        List<Double> scores = new ArrayList<>(scoreRows.size());
-        for (Number row : scoreRows) {
-            scores.add(row == null ? 0.0 : row.doubleValue());
+        Object[] row = rows.get(0);
+        int rosterCount = toInt(row[0]);
+        int submittedCount = toInt(row[1]);
+        int scoredCount = toInt(row[2]);
+        long totalStudents = toLong(row[3]);
+        double maxScore = toDouble(row[4]);
+        double minScore = toDouble(row[5]);
+        double avgScore = toDouble(row[6]);
+        double median = toDouble(row[7]);
+        double topAvg = toDouble(row[8]);
+        double bottomAvg = toDouble(row[9]);
+        double fullScore = toDouble(row[10]);
+
+        if (fullScore <= 0 && maxScore > 0) {
+            fullScore = maxScore;
+        }
+        if (fullScore <= 0 && totalStudents > 0) {
+            fullScore = 100.0;
+        }
+        if (totalStudents == 0) {
+            fullScore = queryFullScore(experimentId);
         }
 
-        scores.sort(Collections.reverseOrder());
-        int n = scores.size();
-        double max = scores.get(0);
-        double min = scores.get(n - 1);
-        double sum = scores.stream().mapToDouble(Double::doubleValue).sum();
-        double avg = sum / n;
-        double median = n % 2 == 0
-                ? (scores.get(n / 2 - 1) + scores.get(n / 2)) / 2.0
-                : scores.get(n / 2);
-
-        int bandSize = Math.max(1, (int) Math.round(n * 0.27));
-        double topAvg = scores.subList(0, bandSize).stream()
-                .mapToDouble(Double::doubleValue)
-                .average()
-                .orElse(0);
-        double bottomAvg = scores.subList(n - bandSize, n).stream()
-                .mapToDouble(Double::doubleValue)
-                .average()
-                .orElse(0);
-
-        if (fullScore <= 0) {
-            fullScore = max > 0 ? max : 100.0;
-        }
-
-        overview.put("totalStudents", n);
+        overview.put("totalStudents", totalStudents);
         overview.put("rosterCount", rosterCount);
         overview.put("submittedCount", submittedCount);
         overview.put("scoredCount", scoredCount);
-        overview.put("maxScore", round2(max));
-        overview.put("minScore", round2(min));
-        overview.put("avgScore", round2(avg));
+        overview.put("maxScore", round2(maxScore));
+        overview.put("minScore", round2(minScore));
+        overview.put("avgScore", round2(avgScore));
         overview.put("median", round2(median));
         overview.put("topAvg", round2(topAvg));
         overview.put("bottomAvg", round2(bottomAvg));
         overview.put("fullScore", round2(fullScore));
-        overview.put("difficulty", fullScore > 0 ? round2(1.0 - avg / fullScore) : 0);
+        overview.put("difficulty", fullScore > 0 ? round2(1.0 - avgScore / fullScore) : 0);
         overview.put("discrimination", fullScore > 0 ? round2((topAvg - bottomAvg) / fullScore) : 0);
         return overview;
+    }
+
+    private Map<Integer, Map<String, Object>> computeOverviewBatch(List<Integer> experimentIds) {
+        Map<Integer, Map<String, Object>> result = new LinkedHashMap<>();
+        if (experimentIds.isEmpty()) {
+            return result;
+        }
+
+        StringBuilder inClause = new StringBuilder();
+        for (int i = 0; i < experimentIds.size(); i++) {
+            if (i > 0) inClause.append(",");
+            inClause.append("?");
+        }
+
+        String sql = "SELECT "
+                + "  sa.offering_id, "
+                + "  COUNT(*) AS roster_count, "
+                + "  SUM(CASE WHEN " + SUBMISSION_ACTIVITY_PREDICATE + " THEN 1 ELSE 0 END) AS submitted_count, "
+                + "  SUM(CASE WHEN " + SCORED_ASSIGNMENT_PREDICATE + " THEN 1 ELSE 0 END) AS scored_count, "
+                + "  COUNT(CASE WHEN " + SCORED_ASSIGNMENT_PREDICATE + " THEN 1 END) AS total_students, "
+                + "  COALESCE(AVG(CASE WHEN " + SCORED_ASSIGNMENT_PREDICATE
+                + "    THEN COALESCE(sa.best_total_score, sa.latest_total_score, 0) END), 0) AS avg_score "
+                + "FROM student_assignment sa "
+                + "WHERE sa.offering_id IN (" + inClause + ") "
+                + "GROUP BY sa.offering_id";
+
+        var query = em.createNativeQuery(sql);
+        for (int i = 0; i < experimentIds.size(); i++) {
+            query.setParameter(i + 1, experimentIds.get(i));
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = query.getResultList();
+        for (Object[] row : rows) {
+            int experimentId = toInt(row[0]);
+            Map<String, Object> overview = new LinkedHashMap<>();
+            overview.put("rosterCount", toInt(row[1]));
+            overview.put("submittedCount", toInt(row[2]));
+            overview.put("scoredCount", toInt(row[3]));
+            overview.put("totalStudents", toLong(row[4]));
+            overview.put("avgScore", round2(toDouble(row[5])));
+            result.put(experimentId, overview);
+        }
+        return result;
     }
 
     private Map<String, Object> computeScoreDistribution(int experimentId) {
@@ -618,6 +691,10 @@ public class ExperimentAnalyticsController {
 
     private static Integer toInt(Object value) {
         return value == null ? 0 : ((Number) value).intValue();
+    }
+
+    private static Long toLong(Object value) {
+        return value == null ? 0L : ((Number) value).longValue();
     }
 
     private static double round2(double value) {
