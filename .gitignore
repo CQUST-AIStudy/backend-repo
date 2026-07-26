@@ -41,6 +41,10 @@ data/lucene-index/
 .deploy-venv/
 scripts/e2e-check-submission-detail.js
 
+### PTA crawler runtime state ###
+pta_cookies_*.pkl
+crawl_history.json
+
 ### Runtime logs ###
 *.log
 logs/
