@@ -12,7 +12,9 @@ import com.tap.backend.email.ExperimentWarningSummary;
 import com.tap.backend.email.ProblemWarningInfo;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -86,6 +88,9 @@ public class ErrorAnalysisService {
             // 1. 查数据库：获取该学生所有提交尝试
             List<StudentSubmissionAttempt> attempts = teacherExperimentQueryDao
                     .findSubmissionAttemptsForErrorAnalysis(studentNo, experimentId);
+            if (attempts == null || attempts.isEmpty()) {
+                attempts = teacherExperimentQueryDao.findSubmissionAttemptsFromRaw(studentNo, experimentId);
+            }
 
             if (attempts == null || attempts.isEmpty()) {
                 logger.info("AI pipeline skipped: no submission attempts for student={}, experiment={}",
@@ -118,7 +123,7 @@ public class ErrorAnalysisService {
             }
 
             // 4c. 干预预警（仅在错误次数 >= 3 时触发）
-            if (totalErrors >= 3) {
+            if (totalErrors >= 1) {
                 Map<String, Object> warningPayload = buildWarningPayload(studentNo, studentName,
                         experimentId, experimentName, attempts);
                 Map<String, Object> warningResult = callMicroservice("/analyze/warning", warningPayload);
@@ -160,6 +165,36 @@ public class ErrorAnalysisService {
 
         List<StudentSubmissionAttempt> attempts = teacherExperimentQueryDao
                 .findSubmissionAttemptsForErrorAnalysis(studentNo, experimentId);
+        // ── fallback: 主表无数据时走 pta_raw 三表桥接 ──
+        if (attempts == null || attempts.isEmpty()) {
+            attempts = teacherExperimentQueryDao.findSubmissionAttemptsFromRaw(studentNo, experimentId);
+            logger.info("analyzeErrorFromDb: {} raw fallback rows for student={}, experiment={}",
+                    attempts != null ? attempts.size() : 0, studentNo, experimentId);
+        }
+        // ── 通用优化：raw 数据中若代码含多题标记，拆分为每题独立提交 ──
+        if (attempts != null && !attempts.isEmpty()) {
+            String firstCode = attempts.get(0).getCode();
+            if (firstCode != null && firstCode.contains("第") && firstCode.contains("题")) {
+                String codeBlob = fetchCodeOnly(studentNo, experimentId);
+                if (codeBlob != null && !codeBlob.isBlank()) {
+                    List<String> chunks = splitCodePerProblem(codeBlob);
+                    if (chunks.size() > 1) {
+                        logger.info("analyzeErrorFromDb: split code blob into {} per-problem submissions for student={}, experiment={}",
+                                chunks.size(), studentNo, experimentId);
+                        attempts = buildAttemptsFromCode(codeBlob, experimentId);
+                    }
+                }
+            }
+        }
+        if (attempts == null || attempts.isEmpty()) {
+            // ── second fallback: student_code 表有代码但无判题记录 ──
+            String codeOnly = fetchCodeOnly(studentNo, experimentId);
+            if (codeOnly != null && !codeOnly.isBlank()) {
+                logger.info("analyzeErrorFromDb: code-only fallback for student={}, experiment={}",
+                        studentNo, experimentId);
+                attempts = buildAttemptsFromCode(codeOnly, experimentId);
+            }
+        }
         if (attempts == null || attempts.isEmpty()) {
             logger.info("analyzeErrorFromDb: no submissions for student={}, experiment={}", studentNo, experimentId);
             Map<String, Object> result = new LinkedHashMap<>();
@@ -176,6 +211,15 @@ public class ErrorAnalysisService {
 
         Map<String, Object> payload = buildErrorPayload(studentNo, studentName,
                 experimentId, experiment != null ? experiment.getName() : ("实验" + experimentId), submissions, attempts);
+        // ── debug: 打印发给 AI 的 submissions 概况 ──
+        logger.info("analyzeError payload: {} submissions, problemCount={}",
+                submissions.size(), payload.getOrDefault("problemCount", "N/A"));
+        if (!submissions.isEmpty()) {
+            Map<String, Object> first = submissions.get(0);
+            String firstCode = (String) first.getOrDefault("code", "");
+            logger.info("analyzeError — submission[0]: problemTitle={}, codeLen={}, judgeStatus={}",
+                    first.get("problemTitle"), firstCode.length(), first.get("judgeStatus"));
+        }
         Map<String, Object> result = callMicroservice("/analyze/error", payload);
 
         // ── 缓存 1h ──
@@ -192,6 +236,9 @@ public class ErrorAnalysisService {
     public Map<String, Object> learningSuggestFromDb(String studentNo, String studentName, int experimentId) {
         List<StudentSubmissionAttempt> attempts = teacherExperimentQueryDao
                 .findSubmissionAttemptsForErrorAnalysis(studentNo, experimentId);
+        if (attempts == null || attempts.isEmpty()) {
+            attempts = teacherExperimentQueryDao.findSubmissionAttemptsFromRaw(studentNo, experimentId);
+        }
         Map<String, Object> payload = buildLearningPayload(studentNo, studentName, attempts);
         if (!hasErrors(payload)) {
             logger.info("Learning suggest skipped: no errors for student={}, experiment={}", studentNo, experimentId);
@@ -213,6 +260,9 @@ public class ErrorAnalysisService {
 
         List<StudentSubmissionAttempt> attempts = teacherExperimentQueryDao
                 .findSubmissionAttemptsForErrorAnalysis(studentNo, experimentId);
+        if (attempts == null || attempts.isEmpty()) {
+            attempts = teacherExperimentQueryDao.findSubmissionAttemptsFromRaw(studentNo, experimentId);
+        }
         String experimentName = resolveExperimentName(experimentId);
         Map<String, Object> result = new LinkedHashMap<>();
 
@@ -338,6 +388,9 @@ public class ErrorAnalysisService {
 
                 List<StudentSubmissionAttempt> attempts =
                         teacherExperimentQueryDao.findSubmissionAttemptsForErrorAnalysis(studentNo, expId);
+                if (attempts == null || attempts.isEmpty()) {
+                    attempts = teacherExperimentQueryDao.findSubmissionAttemptsFromRaw(studentNo, expId);
+                }
                 if (attempts == null || attempts.isEmpty()) continue;
 
                 List<ProblemWarningInfo> problems = analyzeExperimentProblems(
@@ -386,7 +439,7 @@ public class ErrorAnalysisService {
             String warningType = "OK";
 
             // 仅 >=3 错误时调微服务获取 AI 建议
-            if (errorCount >= 3) {
+            if (errorCount >= 1) {
                 Map<String, Object> payload = buildWarningPayload(studentNo, studentName,
                         experimentId, experimentName, problemAttempts);
                 payload.put("problemTitle", problemTitle);
@@ -484,9 +537,16 @@ public class ErrorAnalysisService {
             sub.put("attemptNo", i + 1);
             sub.put("judgeStatus", a.getJudgeStatus() != null ? a.getJudgeStatus() : "UNKNOWN");
             sub.put("compiler", a.getCompiler() != null ? a.getCompiler() : "");
-            sub.put("errorMessage", a.getErrorMessage() != null ? a.getErrorMessage() : "");
-            sub.put("code", a.getCode() != null ? a.getCode() : "");
+            String code = cleanCode(a.getCode());
+            if (code.isEmpty()) {
+                code = "// 代码未保存，仅保留PTA判题记录，请根据判题结果分析";
+            }
+            sub.put("errorMessage", buildErrorMessage(a));
+            sub.put("code", code);
             sub.put("problemTitle", a.getProblemTitle() != null ? a.getProblemTitle() : "");
+            if (a.getProblemId() != null) {
+                sub.put("problemId", a.getProblemId());
+            }
             if (a.getSubmittedAt() != null) {
                 sub.put("submittedAt", ISO_FORMAT.format(a.getSubmittedAt()));
             }
@@ -495,11 +555,116 @@ public class ErrorAnalysisService {
         return submissions;
     }
 
+    /**
+     * 从 rawJson + judgeStatus + score 拼出 AI 可用的报错上下文。
+     */
+    private String buildErrorMessage(StudentSubmissionAttempt a) {
+        StringBuilder sb = new StringBuilder();
+        String status = a.getJudgeStatus() != null ? a.getJudgeStatus() : "UNKNOWN";
+        sb.append("判题: ").append(status);
+        if (a.getScore() != null) sb.append(", 得分: ").append(a.getScore());
+        if (a.getRuntimeMs() != null) sb.append(", 运行时间: ").append(a.getRuntimeMs()).append("ms");
+        if (a.getMemoryKb() != null) sb.append(", 内存: ").append(a.getMemoryKb()).append("KB");
+        String compiler = a.getCompiler();
+        if (compiler != null && !compiler.isEmpty()) sb.append(", 编译器: ").append(compiler);
+        // 题目描述（来自 pta_problem_detail）
+        if (a.getRawJson() != null && a.getRawJson().contains("problemDesc")) {
+            try {
+                Map<String, Object> raw = objectMapper.readValue(a.getRawJson(), Map.class);
+                Object desc = raw.get("problemDesc");
+                if (desc instanceof String s && !s.isBlank()) {
+                    sb.append("\n题目描述: ").append(s);
+                }
+            } catch (Exception ignored) {}
+        }
+        return sb.toString();
+    }
+
     private int countErrors(List<StudentSubmissionAttempt> attempts) {
         if (attempts == null) return 0;
         return (int) attempts.stream()
                 .filter(a -> a.getJudgeStatus() != null && !"ACCEPTED".equalsIgnoreCase(a.getJudgeStatus()))
                 .count();
+    }
+
+    /**
+     * 清洗单题代码：去掉PTA导出的测试表格。
+     */
+    private String cleanCode(String code) {
+        if (code == null || code.isEmpty()) return "";
+        return code
+                .replace("\r\n", "\n")
+                .lines()
+                .filter(line -> !line.matches("^\\s*\\|\\s*---"))       // 表头分隔线
+                .filter(line -> !line.matches("^\\s*\\|.*\\|\\s*$"))    // 测试点表格行
+                .map(String::stripTrailing)
+                .collect(java.util.stream.Collectors.joining("\n"))
+                .replaceAll("\n{3,}", "\n\n")
+                .trim();
+    }
+
+    /**
+     * 按"第N题如下:"分隔符拆分代码 blob，每题清洗后返回。
+     */
+    private List<String> splitCodePerProblem(String rawCode) {
+        List<String> chunks = new ArrayList<>();
+        if (rawCode == null || rawCode.isEmpty()) return chunks;
+
+        // 按 "第N题" 分隔
+        String[] parts = rawCode.split("(?=第\\d+题)");
+        for (String part : parts) {
+            String cleaned = cleanCode(part.replaceFirst("^第\\d+题.*?[\r\n]+", ""));
+            if (!cleaned.isBlank()) {
+                chunks.add(cleaned);
+            }
+        }
+        return chunks;
+    }
+
+    // ── 最后兜底：student_code 有代码但无判题记录 ──
+
+    /**
+     * 从 student_code 表取代码（学号+实验ID）。
+     */
+    private String fetchCodeOnly(String studentNo, int experimentId) {
+        try {
+            String code = teacherExperimentQueryDao.findCodeOnly(studentNo, experimentId);
+            return (code != null && !code.isBlank()) ? code : null;
+        } catch (Exception e) {
+            logger.debug("Code-only fallback query failed: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 拆分代码 blob 为每题一条虚拟提交，关联题目标题和题目描述。
+     */
+    private List<StudentSubmissionAttempt> buildAttemptsFromCode(String codeBlob, int experimentId) {
+        List<String> chunks = splitCodePerProblem(codeBlob);
+        List<Map<String, Object>> problems = teacherExperimentQueryDao.findProblemInfoForExperiment(experimentId);
+        List<StudentSubmissionAttempt> list = new ArrayList<>();
+
+        for (int i = 0; i < chunks.size(); i++) {
+            StudentSubmissionAttempt a = new StudentSubmissionAttempt();
+            a.setCode(chunks.get(i));
+            a.setJudgeStatus("UNKNOWN");
+            a.setCompiler("");
+            a.setSubmittedAt(new Date());
+
+            if (i < problems.size()) {
+                Map<String, Object> p = problems.get(i);
+                Object pid = p.get("id");
+                if (pid instanceof Number) a.setProblemId(((Number) pid).longValue());
+                a.setProblemTitle((String) p.getOrDefault("title", ""));
+                // 题目描述拼入 errorMessage
+                String desc = (String) p.getOrDefault("description", "");
+                if (!desc.isBlank() && desc.length() < 2000) {
+                    a.setRawJson("{\"problemDesc\":\"" + desc.replace("\"", "\\\"") + "\"}");
+                }
+            }
+            list.add(a);
+        }
+        return list;
     }
 
     private Map<String, Object> buildErrorPayload(String studentNo, String studentName,
@@ -511,13 +676,18 @@ public class ErrorAnalysisService {
         payload.put("studentName", (studentName != null && !studentName.isBlank()) ? studentName : studentNo);
         payload.put("experimentId", experimentId);
         payload.put("experimentName", experimentName);
-        // 从第一条 attempt 提取题目标题
-        String problemTitle = "编程练习";
-        if (attempts != null && !attempts.isEmpty()) {
-            String pt = attempts.get(0).getProblemTitle();
-            if (pt != null && !pt.isBlank()) problemTitle = pt;
+        // 提取去重的题目标题列表
+        LinkedHashSet<String> problemTitles = new LinkedHashSet<>();
+        if (attempts != null) {
+            for (StudentSubmissionAttempt a : attempts) {
+                String t = a.getProblemTitle();
+                if (t != null && !t.isBlank()) problemTitles.add(t);
+            }
         }
+        String problemTitle = problemTitles.isEmpty() ? "编程练习"
+                : String.join("；", problemTitles);
         payload.put("problemTitle", problemTitle);
+        payload.put("problemCount", problemTitles.size());
         payload.put("problemDescription", "");
         payload.put("submissions", submissions != null ? submissions : new ArrayList<>());
         return payload;

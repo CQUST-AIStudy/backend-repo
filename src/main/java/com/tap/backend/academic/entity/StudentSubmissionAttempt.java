@@ -19,6 +19,7 @@ public class StudentSubmissionAttempt {
     private Long problemId;
     private String problemTitle;
     private String errorMessage;
+    private String rawJson;
 
     public StudentSubmissionAttempt() {}
 
@@ -54,4 +55,7 @@ public class StudentSubmissionAttempt {
 
     public String getErrorMessage() { return errorMessage; }
     public void setErrorMessage(String errorMessage) { this.errorMessage = errorMessage; }
+
+    public String getRawJson() { return rawJson; }
+    public void setRawJson(String rawJson) { this.rawJson = rawJson; }
 }

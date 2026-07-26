@@ -689,7 +689,8 @@ public interface TeacherExperimentQueryDao {
             "  spa.memory_kb AS memoryKb,",
             "  code_artifact.text_content AS code,",
             "  spa.problem_id AS problemId,",
-            "  ap.title AS problemTitle",
+            "  ap.title AS problemTitle,",
+            "  prsr.raw_json AS rawJson",
             "FROM student_problem_attempt spa",
             "JOIN student_problem_state sps",
             "  ON sps.offering_id = spa.offering_id",
@@ -697,6 +698,7 @@ public interface TeacherExperimentQueryDao {
             " AND sps.student_id = spa.student_id",
             "JOIN assignment_problem ap ON ap.id = spa.problem_id",
             "LEFT JOIN artifact code_artifact ON code_artifact.id = sps.latest_code_artifact_id",
+            "LEFT JOIN pta_raw_submission_row prsr ON prsr.id = spa.raw_row_id",
             "WHERE spa.offering_id = #{experimentId}",
             "  AND spa.student_id = (",
             "    SELECT sp.id FROM student_profile sp",
@@ -710,6 +712,73 @@ public interface TeacherExperimentQueryDao {
             @Param("studentNo") String studentNo,
             @Param("experimentId") Integer experimentId
     );
+
+    /**
+     * 备选查询：当 student_problem_attempt 无数据时，直接从 PTA 原始表构建提交记录。
+     * 通过 external_identity_binding → assignment_problem → pta_raw_answer_sheet 三表桥接。
+     */
+    @Select({
+            "SELECT",
+            "  prsr.id AS attemptId,",
+            "  prsr.judge_status AS judgeStatus,",
+            "  prsr.compiler AS compiler,",
+            "  STR_TO_DATE(prsr.submitted_at_text, '%Y-%m-%dT%H:%i:%sZ') AS submittedAt,",
+            "  CAST(prsr.score_text AS DECIMAL(10,2)) AS score,",
+            "  CAST(prsr.runtime_text AS SIGNED) AS runtimeMs,",
+            "  CAST(prsr.memory_text AS SIGNED) AS memoryKb,",
+            "  COALESCE(art.text_content, sc.code) AS code,",
+            "  ap.id AS problemId,",
+            "  ap.title AS problemTitle,",
+            "  prsr.raw_json AS rawJson",
+            "FROM pta_raw_submission_row prsr",
+            "JOIN external_identity_binding eib",
+            "  ON eib.external_id = prsr.pta_user_id",
+            "  AND eib.source_system = 'PTA'",
+            "  AND eib.binding_type = 'PTA_USER_ID'",
+            "  AND eib.is_active = 1",
+            "JOIN student_profile sp ON sp.id = eib.entity_id",
+            "JOIN assignment_problem ap ON ap.source_problem_id = prsr.pta_problem_id",
+            "LEFT JOIN student_problem_state sps",
+            "  ON sps.offering_id = ap.offering_id",
+            "  AND sps.problem_id = ap.id",
+            "  AND sps.student_id = sp.id",
+            "LEFT JOIN artifact art ON art.id = sps.latest_code_artifact_id",
+            "LEFT JOIN student_code sc",
+            "  ON sc.student_id = sp.student_no",
+            "  AND sc.experiment_id = ap.offering_id",
+            "WHERE sp.student_no = #{studentNo}",
+            "  AND ap.offering_id = #{experimentId}",
+            "ORDER BY ap.id, prsr.submitted_at_text ASC"
+    })
+    List<com.tap.backend.academic.entity.StudentSubmissionAttempt> findSubmissionAttemptsFromRaw(
+            @Param("studentNo") String studentNo,
+            @Param("experimentId") Integer experimentId
+    );
+
+    /**
+     * 仅取代码（无判题记录时的最后兜底）。
+     */
+    @Select({
+            "SELECT sc.code",
+            "FROM student_code sc",
+            "WHERE sc.student_id = #{studentNo}",
+            "  AND sc.experiment_id = #{experimentId}",
+            "LIMIT 1"
+    })
+    String findCodeOnly(@Param("studentNo") String studentNo, @Param("experimentId") int experimentId);
+
+    /**
+     * 查实验中所有题目的信息（编号、标题、题面），按 sort_order 排序。
+     */
+    @Select({
+            "SELECT ap.id, ap.problem_no AS problemNo, ap.title, ",
+            "  COALESCE(apd.content, ap.statement_md, '') AS description",
+            "FROM assignment_problem ap",
+            "LEFT JOIN pta_problem_detail apd ON apd.problem_set_problem_id = ap.problem_no",
+            "WHERE ap.offering_id = #{experimentId}",
+            "ORDER BY COALESCE(ap.sort_order, 0), ap.id"
+    })
+    List<Map<String, Object>> findProblemInfoForExperiment(@Param("experimentId") int experimentId);
 
     @Select({
             "SELECT COALESCE(NULLIF(TRIM(ao.title_override), ''), at.title)",

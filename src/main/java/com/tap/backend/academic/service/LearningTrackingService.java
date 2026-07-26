@@ -76,16 +76,11 @@ public class LearningTrackingService {
                             "sa.accepted_problem_count, sa.submitted_problem_count, sa.problem_count, " +
                             "sa.best_total_score, sa.submission_status " +
                             "FROM student_profile sp " +
-                            "JOIN class_student cs ON cs.student_num = sp.student_no COLLATE utf8mb4_unicode_ci " +
-                            "JOIN teaching_class tc ON tc.id = cs.class_id " +
-                            "JOIN assignment_offering ao ON ao.class_id = cs.class_id " +
+                            "JOIN student_assignment sa ON sa.student_id = sp.id " +
+                            "JOIN assignment_offering ao ON ao.id = sa.offering_id " +
                             "JOIN assignment_template at ON at.id = ao.template_id " +
-                            "LEFT JOIN student_assignment sa ON sa.offering_id = ao.id AND sa.student_id = sp.id " +
                             "WHERE sp.student_no = ?1 " +
-                            "AND (tc.status IS NULL OR tc.status = 'ACTIVE') " +
                             "AND ao.status <> 'ARCHIVED' " +
-                            "AND (at.title LIKE '%推荐题目集%' OR at.title LIKE '%推荐练习%' " +
-                            "     OR ao.title_override LIKE '%推荐题目集%' OR ao.title_override LIKE '%推荐练习%') " +
                             "ORDER BY ao.id"
             ).setParameter(1, studentNo).getResultList();
 
