@@ -272,7 +272,7 @@ tap:
     s3:
       endpoint: ${MINIO_ENDPOINT:http://121.43.152.73:9000}
       access-key: ${MINIO_ACCESS_KEY:root}
-        secret-key: ${MINIO_SECRET_KEY:}
+      secret-key: ${MINIO_SECRET_KEY:}
       bucket: ${MINIO_BUCKET:tap-files}
   # RAG 检索增强知识库全套配置
   rag:
