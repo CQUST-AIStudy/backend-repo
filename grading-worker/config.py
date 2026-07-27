@@ -2,7 +2,7 @@
 
 import os
 
-from urllib.parse import urlparse
+from urllib.parse import quote_plus, urlparse
 
 
 
@@ -18,11 +18,11 @@ REDIS_PASSWORD = os.getenv("REDIS_PASSWORD") or os.getenv("REDIS_PASS", "")
 
 if REDIS_USERNAME and REDIS_PASSWORD:
 
-    _redis_auth = f"{REDIS_USERNAME}:{REDIS_PASSWORD}@"
+    _redis_auth = f"{quote_plus(REDIS_USERNAME)}:{quote_plus(REDIS_PASSWORD)}@"
 
 elif REDIS_PASSWORD:
 
-    _redis_auth = f":{REDIS_PASSWORD}@"
+    _redis_auth = f":{quote_plus(REDIS_PASSWORD)}@"
 
 else:
 
@@ -44,7 +44,7 @@ DB_USER = os.getenv("DB_USER") or os.getenv("DB_USERNAME", "root")
 
 DB_PASS = os.getenv("DB_PASS") or os.getenv("DB_PASSWORD", "123456")
 
-DATABASE_URL = f"mysql+pymysql://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}?charset=utf8mb4"
+DATABASE_URL = f"mysql+pymysql://{quote_plus(DB_USER)}:{quote_plus(DB_PASS)}@{DB_HOST}:{DB_PORT}/{DB_NAME}?charset=utf8mb4"
 
 
 
