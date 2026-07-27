@@ -31,7 +31,7 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 public class TeachingAdviceService {
     private static final Set<String> LEVELS = Set.of("EXPERIMENT", "CLASS", "COURSE");
-    private static final int FOCUS_STUDENT_LIMIT = 12;
+    private static final int FOCUS_STUDENT_AI_LIMIT = 12;
     private static final String COMPLETED =
             "(CAST(LOWER(COALESCE(sa.submission_status, '')) AS BINARY) " +
             "IN (CAST('submitted' AS BINARY), CAST('graded' AS BINARY), CAST('closed' AS BINARY)) " +
@@ -225,9 +225,10 @@ public class TeachingAdviceService {
         scoreDistribution.put("evidenceId", distributionEvidenceId);
         evidence.add(evidence(distributionEvidenceId, "本实验成绩分层", scoreDistribution));
 
-        List<Map<String, Object>> focusStudents = experimentFocusStudents(teacherId, anchor);
+        FocusStudentSelection focusSelection = experimentFocusStudents(teacherId, anchor);
+        List<Map<String, Object>> focusStudents = focusSelection.students();
         String focusEvidenceId = evidenceId(index++);
-        Map<String, Object> focusSnapshot = mapOf("evidenceId", focusEvidenceId, "students", focusStudents);
+        Map<String, Object> focusSnapshot = focusStudentSnapshot(focusEvidenceId, focusSelection);
         evidence.add(evidence(focusEvidenceId, "本实验重点关注学生", focusSnapshot));
 
         List<Map<String, Object>> problemErrorPoints = problemErrorPoints(
@@ -251,6 +252,7 @@ public class TeachingAdviceService {
                 "scoreDistribution", scoreDistribution, "focusStudents", focusStudents,
                 "problemErrorPoints", problemErrorPoints, "errorStatusSummary", errorStatusSummary,
                 "evidence", evidence, "dataCoverage", coverage(comparisons, problems));
+        addFocusStudentMetrics(metrics, focusSelection);
         metrics.put("learningDiagnosis", learningDiagnosis("EXPERIMENT", metrics));
         metrics.put("teachingSignals", teachingSignals("EXPERIMENT", metrics));
         metrics.put("teachingContext", teachingContext("EXPERIMENT", metrics));
@@ -295,9 +297,10 @@ public class TeachingAdviceService {
         scoreDistribution.put("evidenceId", distributionEvidenceId);
         evidence.add(evidence(distributionEvidenceId, "班级成绩分布", scoreDistribution));
 
-        List<Map<String, Object>> focusStudents = classFocusStudents(teacherId, anchor.classId());
+        FocusStudentSelection focusSelection = classFocusStudents(teacherId, anchor.classId());
+        List<Map<String, Object>> focusStudents = focusSelection.students();
         String focusEvidenceId = evidenceId(index++);
-        Map<String, Object> focusSnapshot = mapOf("evidenceId", focusEvidenceId, "students", focusStudents);
+        Map<String, Object> focusSnapshot = focusStudentSnapshot(focusEvidenceId, focusSelection);
         evidence.add(evidence(focusEvidenceId, "班级重点关注学生", focusSnapshot));
 
         List<Map<String, Object>> peerClasses = courseClassComparison(teacherId, anchor, false, index, evidence);
@@ -328,6 +331,7 @@ public class TeachingAdviceService {
                 "peerClassComparison", peerClasses, "history", history, "problemErrorPoints", problemErrorPoints,
                 "errorStatusSummary", errorStatusSummary, "evidence", evidence,
                 "dataCoverage", coverage(experiments, peerClasses));
+        addFocusStudentMetrics(metrics, focusSelection);
         metrics.put("learningDiagnosis", learningDiagnosis("CLASS", metrics));
         metrics.put("teachingSignals", teachingSignals("CLASS", metrics));
         metrics.put("teachingContext", teachingContext("CLASS", metrics));
@@ -371,9 +375,10 @@ public class TeachingAdviceService {
         scoreDistribution.put("evidenceId", distributionEvidenceId);
         evidence.add(evidence(distributionEvidenceId, "课程成绩分布", scoreDistribution));
 
-        List<Map<String, Object>> focusStudents = courseFocusStudents(teacherId, anchor);
+        FocusStudentSelection focusSelection = courseFocusStudents(teacherId, anchor);
+        List<Map<String, Object>> focusStudents = focusSelection.students();
         String focusEvidenceId = evidenceId(index++);
-        Map<String, Object> focusSnapshot = mapOf("evidenceId", focusEvidenceId, "students", focusStudents);
+        Map<String, Object> focusSnapshot = focusStudentSnapshot(focusEvidenceId, focusSelection);
         evidence.add(evidence(focusEvidenceId, "课程重点关注学生", focusSnapshot));
 
         List<Map<String, Object>> problemErrorPoints = problemErrorPoints(
@@ -397,6 +402,7 @@ public class TeachingAdviceService {
                 "scoreDistribution", scoreDistribution, "focusStudents", focusStudents,
                 "problemErrorPoints", problemErrorPoints, "errorStatusSummary", errorStatusSummary,
                 "history", history, "evidence", evidence, "dataCoverage", coverage(classes, experiments));
+        addFocusStudentMetrics(metrics, focusSelection);
         metrics.put("learningDiagnosis", learningDiagnosis("COURSE", metrics));
         metrics.put("teachingSignals", teachingSignals("COURSE", metrics));
         metrics.put("teachingContext", teachingContext("COURSE", metrics));
@@ -584,7 +590,7 @@ public class TeachingAdviceService {
         if (!focusStudents.isEmpty()) {
             result.add(mapOf(
                     "pattern", "FOCUS_STUDENTS",
-                    "studentCount", focusStudents.size(),
+                    "studentCount", Math.max(focusStudents.size(), toInt(metrics.get("focusStudentTotal"))),
                     "diagnosis", "系统已筛出需要短周期跟进的学生，应按原因分组处理，而不是统一要求重做。",
                     "teachingAdvice", "把重点学生分成未完成、低分、关键题未通过三类，分别核对提交、补基础、做同类复测。"
             ));
@@ -761,7 +767,7 @@ public class TeachingAdviceService {
             default -> weakestRows(metrics, "experimentSummary", "completionRate", 3);
         };
         List<Map<String, Object>> focusStudents = metrics.get("focusStudents") instanceof List<?> list
-                ? list.stream().filter(Map.class::isInstance).map(Map.class::cast).map(this::castGenericMap).limit(FOCUS_STUDENT_LIMIT).toList()
+                ? list.stream().filter(Map.class::isInstance).map(Map.class::cast).map(this::castGenericMap).limit(FOCUS_STUDENT_AI_LIMIT).toList()
                 : List.of();
         Map<String, Object> scoreDistribution = metrics.get("scoreDistribution") instanceof Map<?, ?> map
                 ? castGenericMap(map)
@@ -1457,7 +1463,7 @@ public class TeachingAdviceService {
         return distributionMap(result);
     }
 
-    private List<Map<String, Object>> experimentFocusStudents(Long teacherId, ScopeAnchor anchor) {
+    private FocusStudentSelection experimentFocusStudents(Long teacherId, ScopeAnchor anchor) {
         Map<String, Object> scopeParams = Map.of("teacherId", teacherId, "experimentId", anchor.experimentId());
         Map<String, Map<String, Object>> weakProblemByStudent = studentWeakProblemDetails(
                 "ao.teacher_id = :teacherId AND ao.id = :experimentId",
@@ -1496,24 +1502,23 @@ public class TeachingAdviceService {
             enrichStudentFollowUp(item, true);
             result.add(item);
         }
-        result.sort(this::compareStudentRisk);
-        return diversifiedFocusStudents(result, FOCUS_STUDENT_LIMIT);
+        return selectFocusStudents(result);
     }
 
-    private List<Map<String, Object>> classFocusStudents(Long teacherId, Long classId) {
+    private FocusStudentSelection classFocusStudents(Long teacherId, Long classId) {
         return focusStudentsByPredicate(
                 "ao.teacher_id = :teacherId AND ao.class_id = :classId",
                 Map.of("teacherId", teacherId, "classId", classId)
         );
     }
 
-    private List<Map<String, Object>> courseFocusStudents(Long teacherId, ScopeAnchor anchor) {
+    private FocusStudentSelection courseFocusStudents(Long teacherId, ScopeAnchor anchor) {
         Map<String, Object> params = courseTermParams(anchor, false);
         params.put("teacherId", teacherId);
         return focusStudentsByPredicate("tc.teacher_id = :teacherId AND " + courseTermPredicate(anchor, false), params);
     }
 
-    private List<Map<String, Object>> focusStudentsByPredicate(String predicate, Map<String, Object> params) {
+    private FocusStudentSelection focusStudentsByPredicate(String predicate, Map<String, Object> params) {
         Map<String, Map<String, Object>> weakProblemByStudent = studentWeakProblemDetails(predicate, params);
         List<Map<String, Object>> result = new ArrayList<>();
         for (Object[] row : rows(
@@ -1562,8 +1567,7 @@ public class TeachingAdviceService {
             enrichStudentFollowUp(item, false);
             result.add(item);
         }
-        result.sort(this::compareStudentRisk);
-        return diversifiedFocusStudents(result, FOCUS_STUDENT_LIMIT);
+        return selectFocusStudents(result);
     }
 
     private Map<String, Map<String, Object>> studentWeakProblemDetails(String predicate, Map<String, Object> params) {
@@ -1708,6 +1712,46 @@ public class TeachingAdviceService {
         return scores;
     }
 
+    private FocusStudentSelection selectFocusStudents(List<Map<String, Object>> students) {
+        List<Map<String, Object>> allStudents = students == null ? List.of() : new ArrayList<>(students);
+        allStudents.sort(this::compareStudentRisk);
+        Map<String, Integer> priorityCounts = new LinkedHashMap<>();
+        priorityCounts.put("P1", 0);
+        priorityCounts.put("P2", 0);
+        priorityCounts.put("P3", 0);
+        for (Map<String, Object> student : allStudents) {
+            String priority = mapText(student, "followUpPriority", "P3");
+            if (!priorityCounts.containsKey(priority)) priority = "P3";
+            priorityCounts.put(priority, priorityCounts.get(priority) + 1);
+        }
+        return new FocusStudentSelection(
+                diversifiedFocusStudents(allStudents, FOCUS_STUDENT_AI_LIMIT),
+                allStudents,
+                allStudents.size(),
+                priorityCounts
+        );
+    }
+
+    private Map<String, Object> focusStudentSnapshot(String evidenceId, FocusStudentSelection selection) {
+        return mapOf(
+                "evidenceId", evidenceId,
+                "totalCount", selection.totalCount(),
+                "aiAnalyzedCount", selection.students().size(),
+                "aiAnalysisLimit", FOCUS_STUDENT_AI_LIMIT,
+                "priorityCounts", selection.priorityCounts(),
+                "students", selection.students()
+        );
+    }
+
+    private void addFocusStudentMetrics(Map<String, Object> metrics, FocusStudentSelection selection) {
+        metrics.put("focusStudentTotal", selection.totalCount());
+        metrics.put("focusStudentDisplayed", selection.allStudents().size());
+        metrics.put("focusStudentAiAnalyzed", selection.students().size());
+        metrics.put("focusStudentAiLimit", FOCUS_STUDENT_AI_LIMIT);
+        metrics.put("focusStudentPriorityCounts", selection.priorityCounts());
+        metrics.put("focusStudentRoster", selection.allStudents());
+    }
+
     private List<Map<String, Object>> diversifiedFocusStudents(List<Map<String, Object>> students, int limit) {
         if (students == null || students.isEmpty() || limit <= 0) {
             return List.of();
@@ -1807,7 +1851,7 @@ public class TeachingAdviceService {
             );
             item.put("teacherAction", hasProblemDetail
                     ? "让学生打开" + problemLabel + "最后一次失败代码，围绕“" + textOr(errorPoint, "关键判断") + "”说明错因，再做 1 道“" + textOr(inferredKnowledge, "同类型") + "”最小变式题。"
-                    : "先同步该生未通过题目明细；拿到题号和最后一次代码后再安排针对性短练，不要直接要求重做全部实验。"
+                    : "先同步该生未通过题目明细；拿到题号和最后一次失败提交代码后再安排针对性短练，不要直接要求重做全部实验。"
             );
             item.put("validation", "学生能指出失败提交中的一个具体错误，并在同知识点小题中一次性通过或明显减少尝试次数。");
             item.put("followUpType", "REPEATED_FAILED_ATTEMPTS");
@@ -2211,7 +2255,7 @@ public class TeachingAdviceService {
         action.put("successMetric", "下一次同类实验完成率或平均分较当前指标提升至少 5 个百分点");
         ArrayNode focusStudents = root.putArray("focusStudents");
         List<?> students = metrics.get("focusStudents") instanceof List<?> list ? list : List.of();
-        for (Object item : students.stream().limit(FOCUS_STUDENT_LIMIT).toList()) {
+        for (Object item : students.stream().limit(FOCUS_STUDENT_AI_LIMIT).toList()) {
             if (!(item instanceof Map<?, ?> student)) continue;
             ObjectNode studentNode = focusStudents.addObject();
             studentNode.put("studentNo", mapText(student, "studentNo", ""));
@@ -2620,7 +2664,7 @@ public class TeachingAdviceService {
         markdown.append("- 拓展提升层：安排优化代码结构、补充异常样例或解释实验原理的拓展任务，避免只停留在完成层面。\n\n");
         if (!focusStudents.isEmpty()) {
             markdown.append("## 重点学生跟进\n\n");
-            for (Object item : focusStudents.stream().limit(FOCUS_STUDENT_LIMIT).toList()) {
+            for (Object item : focusStudents.stream().limit(FOCUS_STUDENT_AI_LIMIT).toList()) {
                 if (!(item instanceof Map<?, ?> student)) continue;
                 markdown.append("- ").append(mapText(student, "studentNo", "未知学号"))
                         .append("：").append(mapText(student, "reason", "需要进一步观察"))
@@ -2895,5 +2939,12 @@ public class TeachingAdviceService {
             Long experimentId,
             Long templateId,
             String experimentName
+    ) {}
+
+    private record FocusStudentSelection(
+            List<Map<String, Object>> students,
+            List<Map<String, Object>> allStudents,
+            int totalCount,
+            Map<String, Integer> priorityCounts
     ) {}
 }

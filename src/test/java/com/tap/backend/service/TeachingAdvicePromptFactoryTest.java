@@ -1,6 +1,7 @@
 package com.tap.backend.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -22,7 +23,7 @@ class TeachingAdvicePromptFactoryTest {
         String classAdvice = factory.build("CLASS", context);
         String course = factory.build("COURSE", context);
 
-        assertEquals("teaching-advice-v5", TeachingAdvicePromptFactory.VERSION);
+        assertEquals("teaching-advice-v8", TeachingAdvicePromptFactory.VERSION);
         assertTrue(experiment.contains("单个实验"));
         assertTrue(classAdvice.contains("阶段性核心教学问题"));
         assertTrue(course.contains("课程层面"));
@@ -56,6 +57,21 @@ class TeachingAdvicePromptFactoryTest {
         assertTrue(experiment.contains("\"focusStudents\""));
         assertTrue(experiment.contains("\"evidenceId\":\"M01\""));
         assertTrue(experiment.contains("仅输出严格 JSON"));
+    }
+
+    @Test
+    void keepsFullRosterOutOfAiPromptButRetainsSelectedStudents() {
+        Map<String, Object> context = Map.of(
+                "scope", Map.of("className", "软件工程1班"),
+                "metrics", Map.of(
+                        "focusStudents", List.of(Map.of("studentNo", "AI_SELECTED_STUDENT")),
+                        "focusStudentRoster", List.of(Map.of("studentNo", "ROSTER_ONLY_STUDENT"))
+                ));
+
+        String prompt = factory.build("CLASS", context);
+
+        assertTrue(prompt.contains("AI_SELECTED_STUDENT"));
+        assertFalse(prompt.contains("ROSTER_ONLY_STUDENT"));
     }
 
     @Test

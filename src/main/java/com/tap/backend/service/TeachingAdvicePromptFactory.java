@@ -2,12 +2,13 @@ package com.tap.backend.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import org.springframework.stereotype.Component;
 
 @Component
 public class TeachingAdvicePromptFactory {
-    public static final String VERSION = "teaching-advice-v6";
+    public static final String VERSION = "teaching-advice-v8";
 
     private final ObjectMapper objectMapper;
 
@@ -94,7 +95,18 @@ public class TeachingAdvicePromptFactory {
 
                 数据快照：
                 %s
-                """.formatted(scopeLevel, focus, toJson(context));
+                """.formatted(scopeLevel, focus, toJson(promptContext(context)));
+    }
+
+    private Map<String, Object> promptContext(Map<String, Object> context) {
+        Map<String, Object> filtered = new LinkedHashMap<>(context);
+        if (context.get("metrics") instanceof Map<?, ?> metrics) {
+            Map<String, Object> filteredMetrics = new LinkedHashMap<>();
+            metrics.forEach((key, value) -> filteredMetrics.put(String.valueOf(key), value));
+            filteredMetrics.remove("focusStudentRoster");
+            filtered.put("metrics", filteredMetrics);
+        }
+        return filtered;
     }
 
     private String toJson(Map<String, Object> value) {
