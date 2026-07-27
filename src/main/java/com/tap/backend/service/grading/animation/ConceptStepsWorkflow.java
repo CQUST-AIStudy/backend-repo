@@ -16,10 +16,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 /**
- * 概念/原理类错误的分步可视化工作流（路 B）。
+ * 错误演示的分步可视化工作流（统一生产线）。
  * <p>
- * 与已弃用的 {@link HtmlAnimationWorkflow} 的本质区别：<b>不让大模型直出整段 HTML</b>，
- * 而是让它只产出「结构化步骤数据」——每一步包含代码行高亮、旁白字幕、节点/边状态、变量。
+ * 核心原则：<b>不让大模型直出 HTML</b>，而是让它只产出「结构化步骤数据」——每一步包含代码行高亮、旁白字幕、节点/边状态、变量。
  * 渲染交给前端固定的 {@code PythonTutorRenderer}，从而保证：
  * <ul>
  *   <li>三条轨道同步：代码行 ↔ 画面 ↔ 字幕（对齐图码式教学动画）；</li>
@@ -81,7 +80,7 @@ public class ConceptStepsWorkflow {
               "title": "简短标题（<=16字）",
               "concept": "本动画讲解的核心概念，如：链表结构 / 指针与内存 / 递归执行过程",
               "dataStructure": "从下面选一个最贴切的（见末尾结构说明）：array | matrix | string | linked-list | doubly-linked-list | circular-linked-list | static-linked-list | stack | queue | circular-queue | tree | binary-tree | heap | graph | adjacency-matrix | adjacency-list | hash-table | pointer | loop | code",
-              "sourceCode": "一段<=25行的示意代码（可用C/伪代码），仅用于配合动画讲解，不必是学生原代码",
+              "sourceCode": "一段<=25行的代码；若提供了【学生代码】则必须截取学生代码中与错误最相关的片段（保持原样，不要修复错误）；没有学生代码时可用 C/伪代码自行编写示意代码",
               "errorLine": 0,
               "correctedCode": "关键的正确写法或要点（可留空字符串）",
               "explanation": "一句话讲清这个概念/为什么会错（<=60字）",
@@ -107,7 +106,8 @@ public class ConceptStepsWorkflow {
             - edges 用 from/to 引用 node 的 id；label 可写权重或“next”，kind 用于二叉树左右：'child-left'/'child-right'。
             - pointers 画指向某结点的具名箭头（栈 top、队列 front/rear、链表 pHead/头尾等），target 为 node id。
             - 出错的那一步把 error 设为 true，并让 caption 点明错在哪。
-            - 全程中文、术语准确、不啰嗦。
+            - 若提供了【学生代码】：步骤要围绕学生代码真实的执行/出错过程展开，line 指向 sourceCode（即截取后的学生代码）中的行号，errorLine 指向出错行。
+            - 全程中文、术语准确、不啭嗦。
 
             ## 各结构的数据怎么给（挑与 dataStructure 对应的填）
             - array/string：nodes 顺序即元素顺序，index 为下标；string 每个 node 放一个字符。
@@ -184,7 +184,7 @@ public class ConceptStepsWorkflow {
         }
 
         Map<String, Object> metadata = new LinkedHashMap<>();
-        metadata.put("errorType", "CONCEPT");
+        metadata.put("errorType", resolveErrorType(candidate));
         metadata.put("concept", concept);
         metadata.put("dataStructure", structure);
         // 让示意代码 / 修正写法 / 错误行随 metadata 流到前端（toErrorDemonstration 会优先读取）。
@@ -311,7 +311,7 @@ public class ConceptStepsWorkflow {
 
     private AnimationResult fallbackResult(AnimationCandidate candidate, String topic) {
         Map<String, Object> metadata = new LinkedHashMap<>();
-        metadata.put("errorType", "CONCEPT");
+        metadata.put("errorType", resolveErrorType(candidate));
         metadata.put("concept", extractConcept(candidate));
         metadata.put("dataStructure", "code");
         return new AnimationResult(
@@ -353,8 +353,21 @@ public class ConceptStepsWorkflow {
         }
         sb.append("【学生错误内容/位置】\n").append(nullToEmpty(candidate.anchor())).append("\n");
         sb.append("【教师批注】\n").append(nullToEmpty(candidate.note())).append("\n");
+        String studentCode = extractStudentCode(candidate);
+        if (!studentCode.isBlank()) {
+            sb.append("【学生代码】\n").append(studentCode).append("\n");
+        }
         sb.append("\n请只输出上述结构的 JSON。");
         return sb.toString();
+    }
+
+    /** 取候选里的学生代码上下文，让步骤动画围绕真实代码展开；过长时截断避免提示词膨胀。 */
+    private String extractStudentCode(AnimationCandidate candidate) {
+        CodeContext ctx = candidate.codeContext();
+        if (ctx == null || ctx.fullCode() == null || ctx.fullCode().isBlank()) {
+            return "";
+        }
+        return clampLines(ctx.fullCode(), 60);
     }
 
     private String buildTopic(AnimationCandidate candidate) {
@@ -372,6 +385,11 @@ public class ConceptStepsWorkflow {
             return problemTitle + "：概念讲解";
         }
         return "知识点讲解";
+    }
+
+    /** 现在所有错误类型都可能路由到本工作流，errorType 跟随真实检测结果而非固定 CONCEPT。 */
+    private String resolveErrorType(AnimationCandidate candidate) {
+        return candidate.detectedErrorType() == null ? "CONCEPT" : candidate.detectedErrorType().name();
     }
 
     private String extractConcept(AnimationCandidate candidate) {

@@ -11,19 +11,15 @@ import com.tap.backend.service.grading.animation.AnimationResult;
 import com.tap.backend.service.grading.animation.AnimationWorkflow;
 import com.tap.backend.service.grading.animation.AnimationWorkflowRouter;
 import com.tap.backend.service.grading.animation.CodeContext;
-import com.tap.backend.service.grading.animation.CodeHighlightAnimationWorkflow;
 import com.tap.backend.service.grading.animation.CodeContextExtractor;
 import com.tap.backend.service.grading.animation.CommentIssueExtractor;
 import com.tap.backend.service.grading.animation.ConceptStepsWorkflow;
 import com.tap.backend.service.grading.animation.ErrorPatternDetector;
 import com.tap.backend.service.grading.animation.ErrorPatternDetector.ErrorType;
-import com.tap.backend.service.grading.animation.GenericHighlightWorkflow;
-import com.tap.backend.service.grading.animation.HtmlAnimationWorkflow;
 import com.tap.backend.service.grading.animation.LLMCodeExtractor;
 import com.tap.backend.service.grading.animation.ProblemContext;
 import com.tap.backend.service.grading.animation.ProblemContextResolver;
 import com.tap.backend.service.grading.animation.PythonTutorWorkflow;
-import com.tap.backend.service.grading.animation.ResultCompareWorkflow;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -52,12 +48,8 @@ public class GradingErrorDemonstrationService {
     private final AnimationWorkflowRouter router;
     private final LLMCodeExtractor llmCodeExtractor;
     private final CommentIssueExtractor commentIssueExtractor;
-    private final CodeHighlightAnimationWorkflow codeHighlightWorkflow;
     private final PythonTutorWorkflow pythonTutorWorkflow;
-    private final HtmlAnimationWorkflow htmlAnimationWorkflow;
     private final ConceptStepsWorkflow conceptStepsWorkflow;
-    private final ResultCompareWorkflow resultCompareWorkflow;
-    private final GenericHighlightWorkflow genericHighlightWorkflow;
 
     public GradingErrorDemonstrationService(ProblemContextResolver problemContextResolver,
                                             CodeContextExtractor codeContextExtractor,
@@ -65,24 +57,16 @@ public class GradingErrorDemonstrationService {
                                             AnimationWorkflowRouter router,
                                             LLMCodeExtractor llmCodeExtractor,
                                             CommentIssueExtractor commentIssueExtractor,
-                                            CodeHighlightAnimationWorkflow codeHighlightWorkflow,
                                             PythonTutorWorkflow pythonTutorWorkflow,
-                                            HtmlAnimationWorkflow htmlAnimationWorkflow,
-                                            ConceptStepsWorkflow conceptStepsWorkflow,
-                                            ResultCompareWorkflow resultCompareWorkflow,
-                                            GenericHighlightWorkflow genericHighlightWorkflow) {
+                                            ConceptStepsWorkflow conceptStepsWorkflow) {
         this.problemContextResolver = problemContextResolver;
         this.codeContextExtractor = codeContextExtractor;
         this.errorPatternDetector = errorPatternDetector;
         this.router = router;
         this.llmCodeExtractor = llmCodeExtractor;
         this.commentIssueExtractor = commentIssueExtractor;
-        this.codeHighlightWorkflow = codeHighlightWorkflow;
         this.pythonTutorWorkflow = pythonTutorWorkflow;
-        this.htmlAnimationWorkflow = htmlAnimationWorkflow;
         this.conceptStepsWorkflow = conceptStepsWorkflow;
-        this.resultCompareWorkflow = resultCompareWorkflow;
-        this.genericHighlightWorkflow = genericHighlightWorkflow;
     }
 
     /**
@@ -126,9 +110,8 @@ public class GradingErrorDemonstrationService {
             AnimationCandidate candidate = candidates.get(i);
             AnimationWorkflow workflow = router.route(candidate);
             AnimationResult animationResult = executeWorkflow(workflow, candidate, result.size() + 1);
-            List<?> frames = animationResult.frames();
-            boolean isCodeHighlight = workflow == AnimationWorkflow.CODE_HIGHLIGHT;
-            if ((frames == null || frames.isEmpty()) && !isCodeHighlight) {
+            List<?> frames = animationResult == null ? null : animationResult.frames();
+            if (frames == null || frames.isEmpty()) {
                 continue;
             }
             ErrorDemonstration demo = toErrorDemonstration(candidate, animationResult, result.size() + 1);
@@ -352,20 +335,16 @@ public class GradingErrorDemonstrationService {
 
     private AnimationResult executeWorkflow(AnimationWorkflow workflow, AnimationCandidate candidate, int index) {
         return switch (workflow) {
-            case CODE_HIGHLIGHT -> codeHighlightWorkflow.generate(candidate, index);
             case PYTHON_TUTOR -> {
                 AnimationResult ptResult = pythonTutorWorkflow.generate(candidate, index);
-                // 真实执行失败或没有 trace 步骤时，回退到代码高亮
+                // 真实执行失败或没有 trace 步骤时，回退到结构化步骤动画
                 if (isPythonTutorFallback(ptResult)) {
-                    log.warn("PYTHON_TUTOR 回退到 CODE_HIGHLIGHT: candidate={}", candidate.anchor());
-                    yield codeHighlightWorkflow.generate(candidate, index);
+                    log.warn("PYTHON_TUTOR 回退到 CONCEPT_STEPS: candidate={}", candidate.anchor());
+                    yield conceptStepsWorkflow.generate(candidate, index);
                 }
                 yield ptResult;
             }
-            case HTML_ANIMATION -> htmlAnimationWorkflow.generate(candidate, index);
             case CONCEPT_STEPS -> conceptStepsWorkflow.generate(candidate, index);
-            case RESULT_COMPARE -> resultCompareWorkflow.generate(candidate, index);
-            case GENERIC_HIGHLIGHT -> genericHighlightWorkflow.generate(candidate, index);
         };
     }
 
@@ -402,9 +381,6 @@ public class GradingErrorDemonstrationService {
 
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> frames = (List<Map<String, Object>>) result.frames();
-        @SuppressWarnings("unchecked")
-        List<Map<String, Object>> errorRanges = (List<Map<String, Object>>) result.metadata().getOrDefault("errorRanges", List.of());
-        String popupHtml = result.metadata().getOrDefault("popupHtml", "").toString();
 
         return new ErrorDemonstration(
                 "error-" + index,
@@ -419,9 +395,7 @@ public class GradingErrorDemonstrationService {
                 highlightStart,
                 highlightEnd,
                 candidate.problemContext(),
-                anchorLine,
-                errorRanges,
-                popupHtml
+                anchorLine
         );
     }
 
@@ -477,9 +451,7 @@ public class GradingErrorDemonstrationService {
             int highlightStartLine,
             int highlightEndLine,
             ProblemContext problemContext,
-            int anchorLineInEvidence,
-            List<Map<String, Object>> errorRanges,
-            String popupHtml
+            int anchorLineInEvidence
     ) {
     }
 
