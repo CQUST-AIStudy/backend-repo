@@ -14,6 +14,8 @@ import org.springframework.stereotype.Service;
 @Service
 public class GradingUnifiedLinkService {
 
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(GradingUnifiedLinkService.class);
+
     private static final Pattern STUDENT_NO_PATTERN = Pattern.compile("(?<!\\d)(\\d{6,20})(?!\\d)");
 
     private final JdbcTemplate jdbcTemplate;
@@ -117,6 +119,61 @@ public class GradingUnifiedLinkService {
 
     public Long resolveEffectiveClassId(Long requestedClassId, Long teacherId) {
         return requestedClassId != null ? requestedClassId : findSoleOwnedClassId(teacherId);
+    }
+
+    /**
+     * 将 class_student（教师在学生管理里维护的名册）补齐到统一模型
+     * （student_profile + class_member），保证手动添加的学生也能出现在匹配候选里。
+     * 幂等操作：已存在的档案/成员记录不会被重复插入，也不会修改已有成员状态。
+     */
+    public void ensureRosterCoverage(GradingTaskEntity task) {
+        Long classId = resolveRosterClassId(task);
+        if (classId == null) {
+            return;
+        }
+        try {
+            jdbcTemplate.update("""
+                    INSERT IGNORE INTO student_profile (student_no, real_name, user_id, status)
+                    SELECT cs.student_num, cs.student_name, cs.user_id, 'ACTIVE'
+                    FROM class_student cs
+                    WHERE cs.class_id = ? AND cs.student_num IS NOT NULL AND cs.student_num <> ''
+                    """, classId);
+            jdbcTemplate.update("""
+                    INSERT IGNORE INTO class_member (class_id, student_id, member_status)
+                    SELECT cs.class_id, sp.id, 'ACTIVE'
+                    FROM class_student cs
+                    JOIN student_profile sp ON sp.student_no = cs.student_num
+                    WHERE cs.class_id = ?
+                    """, classId);
+        } catch (Exception e) {
+            log.warn("ensureRosterCoverage: failed to sync class_student into unified roster for class {}: {}",
+                    classId, e.getMessage());
+        }
+    }
+
+    /** 解析任务实际对应的教学班 ID，与 listRoster 的取数链路保持一致。 */
+    private Long resolveRosterClassId(GradingTaskEntity task) {
+        if (task == null) {
+            return null;
+        }
+        if (task.getAssignmentOfferingId() != null) {
+            List<Long> classIds = jdbcTemplate.query(
+                    "SELECT class_id FROM assignment_offering WHERE id = ?",
+                    (rs, rowNum) -> rs.getLong("class_id"),
+                    task.getAssignmentOfferingId()
+            );
+            if (!classIds.isEmpty() && classIds.get(0) != null && classIds.get(0) > 0) {
+                return classIds.get(0);
+            }
+        }
+        if (task.getClassId() != null) {
+            return task.getClassId();
+        }
+        Long teacherId = task.getTeacherId();
+        if (teacherId == null && task.getTeacher() != null) {
+            teacherId = task.getTeacher().getId();
+        }
+        return findSoleOwnedClassId(teacherId);
     }
 
     protected Long findSoleOwnedClassId(Long teacherId) {

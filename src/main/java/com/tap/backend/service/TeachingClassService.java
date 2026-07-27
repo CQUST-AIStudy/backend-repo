@@ -15,12 +15,15 @@ import java.util.LinkedHashSet;
 import java.util.NoSuchElementException;
 import java.util.Optional;
 import java.util.Set;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class TeachingClassService {
+
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(TeachingClassService.class);
 
     private final TeachingClassRepository classRepo;
     private final ClassStudentRepository studentRepo;
@@ -30,6 +33,7 @@ public class TeachingClassService {
     private final ClassMemberStatsService classMemberStatsService;
     private final TeachingClassDeletionGuard teachingClassDeletionGuard;
     private final ClassAssignmentCleanupRepository classAssignmentCleanupRepository;
+    private final JdbcTemplate jdbcTemplate;
 
     public TeachingClassService(
             TeachingClassRepository classRepo,
@@ -39,7 +43,8 @@ public class TeachingClassService {
             LegacyPtaRosterService legacyPtaRosterService,
             ClassMemberStatsService classMemberStatsService,
             TeachingClassDeletionGuard teachingClassDeletionGuard,
-            ClassAssignmentCleanupRepository classAssignmentCleanupRepository
+            ClassAssignmentCleanupRepository classAssignmentCleanupRepository,
+            JdbcTemplate jdbcTemplate
     ) {
         this.classRepo = classRepo;
         this.studentRepo = studentRepo;
@@ -49,6 +54,7 @@ public class TeachingClassService {
         this.classMemberStatsService = classMemberStatsService;
         this.teachingClassDeletionGuard = teachingClassDeletionGuard;
         this.classAssignmentCleanupRepository = classAssignmentCleanupRepository;
+        this.jdbcTemplate = jdbcTemplate;
     }
 
     public record StudentAccountImportItem(
@@ -241,7 +247,30 @@ public class TeachingClassService {
         student.setStudentName(normalizedStudentName);
         student.setStudentNum(normalizedStudentNum);
         student.setUserId(userId);
-        return studentRepo.save(student);
+        ClassStudentEntity saved = studentRepo.save(student);
+        // 同步到统一模型（student_profile + class_member），否则已回填过名册的班级
+        // 在批改匹配候选、学情分析等只读 class_member 的链路里看不到新加学生。
+        syncStudentToUnifiedRoster(classId, normalizedStudentNum, normalizedStudentName, userId);
+        return saved;
+    }
+
+    /** 幂等地把单个学生写入 student_profile / class_member，失败不阻断主流程。 */
+    private void syncStudentToUnifiedRoster(Long classId, String studentNum, String studentName, Long userId) {
+        if (classId == null || studentNum == null) {
+            return;
+        }
+        try {
+            jdbcTemplate.update(
+                    "INSERT INTO student_profile (student_no, real_name, user_id, status) VALUES (?, ?, ?, 'ACTIVE') "
+                            + "ON DUPLICATE KEY UPDATE user_id = COALESCE(student_profile.user_id, VALUES(user_id))",
+                    studentNum, studentName, userId);
+            jdbcTemplate.update(
+                    "INSERT IGNORE INTO class_member (class_id, student_id, member_status) "
+                            + "SELECT ?, sp.id, 'ACTIVE' FROM student_profile sp WHERE sp.student_no = ?",
+                    classId, studentNum);
+        } catch (Exception e) {
+            log.warn("syncStudentToUnifiedRoster: failed for class {} student {}: {}", classId, studentNum, e.getMessage());
+        }
     }
 
     @Transactional
