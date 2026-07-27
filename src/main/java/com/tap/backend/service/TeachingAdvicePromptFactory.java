@@ -7,7 +7,7 @@ import org.springframework.stereotype.Component;
 
 @Component
 public class TeachingAdvicePromptFactory {
-    public static final String VERSION = "teaching-advice-v5";
+    public static final String VERSION = "teaching-advice-v6";
 
     private final ObjectMapper objectMapper;
 
@@ -58,7 +58,7 @@ public class TeachingAdvicePromptFactory {
                 13. 禁止输出“建议加强课堂讲解”“建议关注薄弱学生”“继续保持当前节奏”这类没有题目、知识点、学生层或验证指标的模板句。
                 14. 页面主卡片会优先展示 summary、teachingConclusion.problem、nextTeachingPlan.steps 和 priorityProblems；这些字段必须短、硬、可扫读。长分析只放入 markdown。
                 15. summary 不超过 45 个汉字；teachingConclusion.problem 不超过 60 个汉字；nextTeachingPlan.steps 每个文本字段尽量 1 句话，不写长段落。
-                16. focusStudents 不能多名学生复制同一句建议。必须根据学生画像表口径和做题结果共同分型：studentPortraitRiskLabel、studentPortraitSummary、completionRate、averageScore、abilityTrend/abilityTrendLabel、recentAverageScore、riskLevel、riskScore、followUpPriority、riskReasons、reason、score、acceptedProblemCount/problemCount、failedProblemCount、averageAttempts、followUpType 都要参考。未完成先核对提交/PTA同步/环境；低分先定位最低分题；趋势下降要先比较最近三次与个人均分；关键题未通过先看最后一次代码和同知识点小题；反复尝试失败要看最后一次失败提交与边界样例。
+                16. focusStudents 不能多名学生复制同一句建议。必须根据学生画像表口径和做题结果共同分型：studentPortraitRiskLabel、studentPortraitSummary、completionRate、averageScore、abilityTrend/abilityTrendLabel、recentAverageScore、riskLevel、riskScore、followUpPriority、riskReasons、reason、score、acceptedProblemCount/problemCount、failedProblemCount、averageAttempts、followUpType 都要参考。后端如果提供 problemNo、problemTitle、inferredKnowledge、knowledgeSource、knowledgeConfidence、problemStatus、problemAttempts、errorPoint，必须在 problem 中明确写出“第几题、题名、哪个知识点、具体错误点”；不得改写成“关键题/知识点没有打通”。知识点来源为 TITLE_AND_STATUS_INFERENCE 时必须标明是推断知识点。只有数据库未匹配到题目明细时，才能写“题目知识点数据缺失”，不得让教师自行猜测。未完成先核对提交/PTA同步/环境；低分先定位最低分题；趋势下降要先比较最近三次与个人均分；关键题未通过先看最后一次代码和同知识点小题；反复尝试失败要看最后一次失败提交与边界样例。
                 17. nextTeachingPlan.steps 不能只写“展示典型错误样例、安排同类短练、检查清单”。必须让教师看完知道：打开哪道题/哪份材料、盯哪类学生、学生交什么产物、教师用什么标准验收。
 
                 输出结构：
@@ -72,7 +72,7 @@ public class TeachingAdvicePromptFactory {
                   "teacherFocus":[{"title":"教师重点讲什么","instruction":"具体讲解内容和讲法","target":"全班/风险学生/中等学生","when":"下节课前15分钟","evidenceRefs":["M01"],"successMetric":"验证指标"}],
                   "nextClassPlan":[{"step":1,"duration":"10分钟","teacherAction":"教师具体动作","studentTask":"学生任务","expectedChange":"希望发生的变化","material":"用哪道题/哪份材料","targetStudents":"盯哪类学生或哪些学生","deliverable":"学生交什么产物","checkMethod":"教师怎么检查","evidenceRefs":["M01"]}],
                   "differentiatedTeaching":{"support":"重点帮扶层怎么教","improve":"中等提升层怎么教","extend":"拓展提升层怎么教"},
-                  "focusStudents":[{"studentNo":"学号","studentName":"姓名","riskLevel":"HIGH|MEDIUM|LOW","riskScore":80,"followUpPriority":"P1|P2|P3","riskReasons":["分级依据"],"studentPortraitRiskLabel":"高风险|中风险|低风险|无风险","completionRate":64,"averageScore":82,"abilityTrendLabel":"上升|稳定|下降","recentAverageScore":78,"followUpType":"INCOMPLETE|LOW_SCORE|PROBLEM_NOT_PASSED|REPEATED_FAILED_ATTEMPTS|VOLATILE","problem":"具体问题","cause":"可能原因","teacherAction":"教师动作","followUpTime":"下一次实验前","validation":"验证方式","evidenceRefs":["M01"]}],
+                  "focusStudents":[{"studentNo":"学号","studentName":"姓名","riskLevel":"HIGH|MEDIUM|LOW","riskScore":80,"followUpPriority":"P1|P2|P3","riskReasons":["分级依据"],"studentPortraitRiskLabel":"高风险|中风险|低风险|无风险","completionRate":64,"averageScore":82,"abilityTrendLabel":"上升|稳定|下降","recentAverageScore":78,"followUpType":"INCOMPLETE|LOW_SCORE|PROBLEM_NOT_PASSED|REPEATED_FAILED_ATTEMPTS|VOLATILE","problemNo":"题号","problemTitle":"题名","inferredKnowledge":"具体知识点","knowledgeSource":"PTA_KNOWLEDGE_LEAF|TITLE_AND_STATUS_INFERENCE","knowledgeConfidence":"HIGH|MEDIUM|LOW","problemStatus":"WRONG_ANSWER 等","problemAttempts":3,"errorPoint":"具体错误点","problem":"第几题、哪个知识点、卡在哪一步","cause":"为什么卡在这里，必须能对应数据证据","teacherAction":"教师动作","followUpTime":"下一次实验前","validation":"验证方式","evidenceRefs":["M01"]}],
                   "experimentAdjustment":"本实验下次怎么改",
                   "termAdjustment":"本学期后续怎么调",
                   "courseAdjustment":"课程整体怎么调",

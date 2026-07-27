@@ -31,6 +31,7 @@ import org.springframework.web.server.ResponseStatusException;
 @Service
 public class TeachingAdviceService {
     private static final Set<String> LEVELS = Set.of("EXPERIMENT", "CLASS", "COURSE");
+    private static final int FOCUS_STUDENT_LIMIT = 12;
     private static final String COMPLETED =
             "(CAST(LOWER(COALESCE(sa.submission_status, '')) AS BINARY) " +
             "IN (CAST('submitted' AS BINARY), CAST('graded' AS BINARY), CAST('closed' AS BINARY)) " +
@@ -760,7 +761,7 @@ public class TeachingAdviceService {
             default -> weakestRows(metrics, "experimentSummary", "completionRate", 3);
         };
         List<Map<String, Object>> focusStudents = metrics.get("focusStudents") instanceof List<?> list
-                ? list.stream().filter(Map.class::isInstance).map(Map.class::cast).map(this::castGenericMap).limit(5).toList()
+                ? list.stream().filter(Map.class::isInstance).map(Map.class::cast).map(this::castGenericMap).limit(FOCUS_STUDENT_LIMIT).toList()
                 : List.of();
         Map<String, Object> scoreDistribution = metrics.get("scoreDistribution") instanceof Map<?, ?> map
                 ? castGenericMap(map)
@@ -1457,6 +1458,11 @@ public class TeachingAdviceService {
     }
 
     private List<Map<String, Object>> experimentFocusStudents(Long teacherId, ScopeAnchor anchor) {
+        Map<String, Object> scopeParams = Map.of("teacherId", teacherId, "experimentId", anchor.experimentId());
+        Map<String, Map<String, Object>> weakProblemByStudent = studentWeakProblemDetails(
+                "ao.teacher_id = :teacherId AND ao.id = :experimentId",
+                scopeParams
+        );
         List<Map<String, Object>> result = new ArrayList<>();
         for (Object[] row : rows(
                 "SELECT sp.student_no, sp.real_name, COALESCE(sa.best_total_score, sa.latest_total_score), " +
@@ -1477,7 +1483,7 @@ public class TeachingAdviceService {
                 "GROUP BY sp.student_no, sp.real_name, sa.best_total_score, sa.latest_total_score, sa.submission_status, " +
                 "sa.accepted_problem_count, sa.problem_count, sa.submission_status, sa.completion_evidence " +
                 "ORDER BY COALESCE(sa.best_total_score, sa.latest_total_score, 0), sp.student_no",
-                Map.of("teacherId", teacherId, "experimentId", anchor.experimentId())
+                scopeParams
         )) {
             Map<String, Object> item = mapOf(
                     "studentNo", row[0], "studentName", row[1], "score", toDouble(row[2]),
@@ -1486,11 +1492,12 @@ public class TeachingAdviceService {
                     "failedProblemCount", toInt(row[7]), "averageAttempts", toDouble(row[8]), "reason", row[9],
                     "suggestionHint", "优先检查本次实验关键题、基础语法和实验步骤理解情况"
             );
+            mergeStudentWeakProblem(item, weakProblemByStudent);
             enrichStudentFollowUp(item, true);
             result.add(item);
         }
         result.sort(this::compareStudentRisk);
-        return diversifiedFocusStudents(result, 8);
+        return diversifiedFocusStudents(result, FOCUS_STUDENT_LIMIT);
     }
 
     private List<Map<String, Object>> classFocusStudents(Long teacherId, Long classId) {
@@ -1507,6 +1514,7 @@ public class TeachingAdviceService {
     }
 
     private List<Map<String, Object>> focusStudentsByPredicate(String predicate, Map<String, Object> params) {
+        Map<String, Map<String, Object>> weakProblemByStudent = studentWeakProblemDetails(predicate, params);
         List<Map<String, Object>> result = new ArrayList<>();
         for (Object[] row : rows(
                 "SELECT sp.student_no, sp.real_name, ss.avg_score, ss.completion_rate, ss.experiment_count, " +
@@ -1549,12 +1557,80 @@ public class TeachingAdviceService {
                     "problemStateCount", toInt(row[11]), "reason", row[12],
                     "suggestionHint", "建议安排一次短周期跟进，确认基础知识、实验环境和报告分析问题"
             );
+            mergeStudentWeakProblem(item, weakProblemByStudent);
             enrichStudentPortraitFromTable(item, predicate, params);
             enrichStudentFollowUp(item, false);
             result.add(item);
         }
         result.sort(this::compareStudentRisk);
-        return diversifiedFocusStudents(result, 8);
+        return diversifiedFocusStudents(result, FOCUS_STUDENT_LIMIT);
+    }
+
+    private Map<String, Map<String, Object>> studentWeakProblemDetails(String predicate, Map<String, Object> params) {
+        Map<String, Map<String, Object>> result = new LinkedHashMap<>();
+        for (Object[] row : rows(
+                "SELECT sp.student_no, ap.problem_no, ap.title, ap.statement_md, " +
+                "apd.knowledge_leaf, apd.knowledge_path, apd.difficulty_label, apd.content, " +
+                "UPPER(COALESCE(NULLIF(TRIM(sps.latest_status), ''), 'UNKNOWN')), " +
+                "COALESCE(sps.attempt_count, 0), COALESCE(sps.best_score, 0) " +
+                "FROM student_problem_state sps " +
+                "JOIN student_profile sp ON sp.id = sps.student_id " +
+                "JOIN assignment_problem ap ON ap.id = sps.problem_id AND ap.offering_id = sps.offering_id AND ap.status = 'ACTIVE' " +
+                "JOIN assignment_offering ao ON ao.id = sps.offering_id " +
+                "JOIN teaching_class tc ON tc.id = ao.class_id " +
+                "LEFT JOIN course c ON c.id = tc.course_id " +
+                "LEFT JOIN pta_problem_detail apd ON apd.id = (" +
+                "SELECT pd.id FROM pta_problem_detail pd " +
+                "WHERE (pd.problem_set_problem_id COLLATE utf8mb4_unicode_ci = ap.problem_no COLLATE utf8mb4_unicode_ci " +
+                "OR (ap.source_problem_id IS NOT NULL AND pd.problem_set_problem_id COLLATE utf8mb4_unicode_ci = ap.source_problem_id COLLATE utf8mb4_unicode_ci) " +
+                "OR (ap.source_problem_id IS NOT NULL AND pd.pta_global_problem_id COLLATE utf8mb4_unicode_ci = ap.source_problem_id COLLATE utf8mb4_unicode_ci)) " +
+                "ORDER BY CASE " +
+                "WHEN ao.pta_problem_set_id IS NOT NULL AND pd.problem_set_id COLLATE utf8mb4_unicode_ci = ao.pta_problem_set_id COLLATE utf8mb4_unicode_ci THEN 0 " +
+                "WHEN CAST(pd.experiment_id AS CHAR) = CAST(ao.id AS CHAR) THEN 1 " +
+                "ELSE 2 END, pd.updated_at DESC, pd.id DESC LIMIT 1" +
+                ") " +
+                "WHERE " + predicate + " AND sps.accepted_at IS NULL " +
+                "AND ap.problem_no <> '0' AND ap.title <> 'PTA Problem 0' " +
+                "AND UPPER(COALESCE(sps.latest_status, '')) <> 'WAITING' " +
+                "ORDER BY sp.student_no, COALESCE(sps.attempt_count, 0) DESC, COALESCE(sps.best_score, 0) ASC, ap.sort_order, ap.id",
+                params
+        )) {
+            String studentNo = textOr(asText(row[0]), "");
+            if (studentNo.isBlank() || result.containsKey(studentNo)) continue;
+            String title = textOr(asText(row[2]), "未知题目");
+            String statementSummary = summarizeMarkdown(textOr(asText(row[3]), asText(row[7])), 240);
+            String directKnowledge = textOr(asText(row[4]), "");
+            String knowledge = !directKnowledge.isBlank()
+                    ? directKnowledge
+                    : inferKnowledge(title + " " + statementSummary);
+            String knowledgeSource = !directKnowledge.isBlank() ? "PTA_KNOWLEDGE_LEAF" : "TITLE_AND_STATUS_INFERENCE";
+            String status = textOr(asText(row[8]), "UNKNOWN");
+            double attempts = toDouble(row[9]);
+            result.put(studentNo, mapOf(
+                    "problemNo", row[1],
+                    "problemTitle", title,
+                    "problemStatementSummary", statementSummary,
+                    "inferredKnowledge", knowledge,
+                    "knowledgePath", row[5],
+                    "knowledgeSource", knowledgeSource,
+                    "knowledgeConfidence", !directKnowledge.isBlank() ? "HIGH" : "MEDIUM",
+                    "difficultyLabel", row[6],
+                    "problemStatus", status,
+                    "problemAttempts", attempts,
+                    "problemBestScore", toDouble(row[10]),
+                    "errorPoint", errorPointFor(title, knowledge, status, attempts, 0)
+            ));
+        }
+        return result;
+    }
+
+    private void mergeStudentWeakProblem(
+            Map<String, Object> student,
+            Map<String, Map<String, Object>> weakProblemByStudent
+    ) {
+        String studentNo = mapText(student, "studentNo", "");
+        Map<String, Object> detail = weakProblemByStudent.get(studentNo);
+        if (detail != null) student.putAll(detail);
     }
 
     private void enrichStudentPortraitFromTable(Map<String, Object> item, String predicate, Map<String, Object> params) {
@@ -1688,6 +1764,21 @@ public class TeachingAdviceService {
         int lowScoreCount = toInt(item.get("lowScoreExperimentCount"));
         int failedProblemCount = toInt(item.get("failedProblemCount"));
         double averageAttempts = toDouble(item.get("averageAttempts"));
+        String problemNo = mapText(item, "problemNo", "");
+        String problemTitle = mapText(item, "problemTitle", "");
+        String inferredKnowledge = mapText(item, "inferredKnowledge", "");
+        String errorPoint = mapText(item, "errorPoint", "");
+        String problemStatus = mapText(item, "problemStatus", "");
+        double problemAttempts = toDouble(item.get("problemAttempts"));
+        boolean hasKnowledge = !inferredKnowledge.isBlank() && !"待人工确认".equals(inferredKnowledge);
+        boolean hasProblemDetail = !problemTitle.isBlank() && !"未知题目".equals(problemTitle);
+        String problemLabel = hasProblemDetail
+                ? "第 " + (problemNo.isBlank() ? "-" : problemNo) + " 题“" + problemTitle + "”"
+                : "未通过题目";
+        String concreteWeakPoint = hasProblemDetail
+                ? problemLabel + (hasKnowledge ? "对应“" + inferredKnowledge + "”" : "")
+                    + (!errorPoint.isBlank() ? "，具体错误点是“" + errorPoint + "”" : "")
+                : "";
         boolean incomplete = reason.contains("未完成") || reason.contains("未提交")
                 || (!experimentScope && (incompleteCount > 0 || completionRate > 0 && completionRate < 80));
         boolean lowScore = reason.contains("低分")
@@ -1707,21 +1798,39 @@ public class TeachingAdviceService {
             item.put("validation", "下一次实验前必须补齐一次有效提交，并能说清楚自己卡在“环境/提交/题目步骤”中的哪一类。");
             item.put("followUpType", "INCOMPLETE");
         } else if ("REPEATED_FAILED_ATTEMPTS".equals(followUpGroup)) {
-            item.put("problem", "已提交但反复尝试仍未通过，说明主要问题不是补交，而是解题路径或调试方法没有打通。");
-            item.put("cause", "平均尝试次数偏高，可能卡在题意转代码、边界样例、调试顺序或某个核心知识点迁移。");
-            item.put("teacherAction", "让学生展示最后一次失败提交和一次最接近通过的提交，教师只追问一个关键分支或边界样例，再安排同知识点最小变式题。");
+            item.put("problem", concreteWeakPoint.isBlank()
+                    ? "已提交但反复尝试仍未通过；当前题目明细不足，暂不能准确命名知识点。"
+                    : "卡在" + concreteWeakPoint + "。");
+            item.put("cause", hasProblemDetail
+                    ? problemLabel + "状态为 " + problemStatus + "，该题已尝试 " + formatMetric(problemAttempts) + " 次仍未通过。"
+                    : "平均尝试次数偏高，但题目映射或知识点元数据缺失，需要先恢复题目明细。"
+            );
+            item.put("teacherAction", hasProblemDetail
+                    ? "让学生打开" + problemLabel + "最后一次失败代码，围绕“" + textOr(errorPoint, "关键判断") + "”说明错因，再做 1 道“" + textOr(inferredKnowledge, "同类型") + "”最小变式题。"
+                    : "先同步该生未通过题目明细；拿到题号和最后一次代码后再安排针对性短练，不要直接要求重做全部实验。"
+            );
             item.put("validation", "学生能指出失败提交中的一个具体错误，并在同知识点小题中一次性通过或明显减少尝试次数。");
             item.put("followUpType", "REPEATED_FAILED_ATTEMPTS");
         } else if ("PROBLEM_NOT_PASSED".equals(followUpGroup)) {
             String progress = experimentScope && total > 0 ? "本次实验只通过 " + accepted + "/" + total + " 题" : "存在 " + failedProblemCount + " 个未通过题目状态";
-            item.put("problem", progress + "，说明不是单纯未交，而是关键题没有完全打通。");
-            item.put("cause", "可能卡在题意转代码、边界样例、调试顺序或某个核心知识点迁移。");
-            item.put("teacherAction", "让学生拿出未通过题的最后一次代码，先口头说明输入、输出和关键判断条件；教师只追问一个错误点，再布置同知识点的最小变式题。");
+            item.put("problem", concreteWeakPoint.isBlank()
+                    ? progress + "；当前题目明细不足，暂不能准确命名知识点。"
+                    : progress + "；卡在" + concreteWeakPoint + "。");
+            item.put("cause", hasProblemDetail
+                    ? problemLabel + "状态为 " + problemStatus + "，尝试 " + formatMetric(problemAttempts) + " 次仍未通过。"
+                    : "数据库只记录到未通过数量，没有匹配到具体题目或知识点元数据。"
+            );
+            item.put("teacherAction", hasProblemDetail
+                    ? "让学生拿出" + problemLabel + "最后一次代码，先说明“" + textOr(errorPoint, "输入、输出和关键判断") + "”，再完成 1 道“" + textOr(inferredKnowledge, "同类型") + "”最小变式题。"
+                    : "先同步该生的题目状态和 PTA 题目知识点；在题号未确认前，不把问题笼统归因成知识点薄弱。"
+            );
             item.put("validation", "当场完成 1 道同知识点小题，且能指出原题中一个具体自查点。");
             item.put("followUpType", "PROBLEM_NOT_PASSED");
         } else if ("LOW_SCORE".equals(followUpGroup)) {
             String scoreText = experimentScope ? "本次得分 " + score : "平均分 " + averageScore + "，最低分 " + lowestScore;
-            item.put("problem", scoreText + "，需要定位是基础步骤不会、报告分析弱，还是某次实验断点明显。");
+            item.put("problem", concreteWeakPoint.isBlank()
+                    ? scoreText + "；当前没有匹配到具体未通过题，不能直接判定某个知识点薄弱。"
+                    : scoreText + "；当前最明显卡点是" + concreteWeakPoint + "。");
             item.put("cause", riskCount > 0
                     ? "该生在 " + riskCount + "/" + Math.max(experimentCount, 1) + " 次实验中出现低分或风险记录，可能存在连续薄弱环节。"
                     : "可能存在阶段性低分，需结合最低分实验和错题记录核对。");
@@ -2102,7 +2211,7 @@ public class TeachingAdviceService {
         action.put("successMetric", "下一次同类实验完成率或平均分较当前指标提升至少 5 个百分点");
         ArrayNode focusStudents = root.putArray("focusStudents");
         List<?> students = metrics.get("focusStudents") instanceof List<?> list ? list : List.of();
-        for (Object item : students.stream().limit(5).toList()) {
+        for (Object item : students.stream().limit(FOCUS_STUDENT_LIMIT).toList()) {
             if (!(item instanceof Map<?, ?> student)) continue;
             ObjectNode studentNode = focusStudents.addObject();
             studentNode.put("studentNo", mapText(student, "studentNo", ""));
@@ -2128,6 +2237,16 @@ public class TeachingAdviceService {
             studentNode.put("lowestScore", toDouble(student.get("lowestScore")));
             studentNode.put("failedProblemCount", toInt(student.get("failedProblemCount")));
             studentNode.put("averageAttempts", toDouble(student.get("averageAttempts")));
+            studentNode.put("problemNo", mapText(student, "problemNo", ""));
+            studentNode.put("problemTitle", mapText(student, "problemTitle", ""));
+            studentNode.put("problemStatementSummary", mapText(student, "problemStatementSummary", ""));
+            studentNode.put("inferredKnowledge", mapText(student, "inferredKnowledge", ""));
+            studentNode.put("knowledgePath", mapText(student, "knowledgePath", ""));
+            studentNode.put("knowledgeSource", mapText(student, "knowledgeSource", ""));
+            studentNode.put("knowledgeConfidence", mapText(student, "knowledgeConfidence", ""));
+            studentNode.put("problemStatus", mapText(student, "problemStatus", ""));
+            studentNode.put("problemAttempts", toDouble(student.get("problemAttempts")));
+            studentNode.put("errorPoint", mapText(student, "errorPoint", ""));
             ArrayNode riskReasons = studentNode.putArray("riskReasons");
             Object rawReasons = student.get("riskReasons");
             if (rawReasons instanceof List<?> reasons) {
@@ -2501,7 +2620,7 @@ public class TeachingAdviceService {
         markdown.append("- 拓展提升层：安排优化代码结构、补充异常样例或解释实验原理的拓展任务，避免只停留在完成层面。\n\n");
         if (!focusStudents.isEmpty()) {
             markdown.append("## 重点学生跟进\n\n");
-            for (Object item : focusStudents.stream().limit(5).toList()) {
+            for (Object item : focusStudents.stream().limit(FOCUS_STUDENT_LIMIT).toList()) {
                 if (!(item instanceof Map<?, ?> student)) continue;
                 markdown.append("- ").append(mapText(student, "studentNo", "未知学号"))
                         .append("：").append(mapText(student, "reason", "需要进一步观察"))
