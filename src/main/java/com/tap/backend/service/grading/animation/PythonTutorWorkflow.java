@@ -37,28 +37,31 @@ public class PythonTutorWorkflow {
             errorType = ErrorPatternDetector.ErrorType.GENERIC_HIGHLIGHT;
         }
 
-        // 1. 真实执行代码
-        ExecutionTrace trace = sandboxService.execute("c", sourceCode, buildStdin(candidate));
+        // 1. 真实执行代码（缺 main 的片段自动补最小 main 壳，保证可编译）
+        String executableCode = ensureMainFunction(sourceCode);
+        int lineOffset = countPrependedLines(sourceCode, executableCode);
+        int adjustedAnchorLine = anchorLine + lineOffset;
+        ExecutionTrace trace = sandboxService.execute("c", executableCode, buildStdin(candidate));
 
         if (!trace.success()) {
             log.warn("PYTHON_TUTOR 真实执行失败，回退: {}", trace.errorMessage());
             return fallbackResult(candidate, anchorLine, trace.errorMessage());
         }
 
-        // 2. 找到错误步骤
-        int errorStepIndex = findErrorStepIndex(trace, anchorLine, errorType);
+        // 2. 找到错误步骤（trace 行号基于 executableCode，需用平移后的锚点行）
+        int errorStepIndex = findErrorStepIndex(trace, adjustedAnchorLine, errorType);
 
         // 3. 生成解释文本
         String explanation = buildExplanation(candidate, errorType, trace, errorStepIndex);
         String correctedCode = buildCorrectedCode(candidate, errorType);
 
-        // 4. 组装结果
+        // 4. 组装结果（展示代码使用实际执行的代码，与 trace 行号对齐）
         Map<String, Object> metadata = new LinkedHashMap<>();
         metadata.put("errorType", errorType.name());
         metadata.put("dataStructure", mapToDataStructure(errorType));
-        metadata.put("sourceCode", sourceCode);
+        metadata.put("sourceCode", executableCode);
         metadata.put("correctedCode", correctedCode);
-        metadata.put("errorLine", anchorLine);
+        metadata.put("errorLine", adjustedAnchorLine);
         metadata.put("errorStepIndex", errorStepIndex);
         metadata.put("trace", trace.toFrameList());
 
@@ -112,6 +115,38 @@ public class PythonTutorWorkflow {
         // 如果题目或实验上下文提供了输入数据，可以在这里注入。
         // 目前先返回空输入，后续可从 problemContext 或测试用例中提取。
         return "";
+    }
+
+    /**
+     * 代码片段缺少 main 函数时，补一个最小 main 壳使其可编译执行。
+     * <p>补壳只保证编译通过（结构体/函数片段也能拿到编译诊断），
+     * 有意义的执行轨迹依赖上游 LLM 提取时补出的测试 main。</p>
+     */
+    private String ensureMainFunction(String sourceCode) {
+        if (sourceCode == null || sourceCode.contains("int main(") || sourceCode.contains("void main(")) {
+            return sourceCode;
+        }
+        StringBuilder sb = new StringBuilder();
+        if (!sourceCode.contains("#include")) {
+            sb.append("#include <stdio.h>\n#include <stdlib.h>\n\n");
+        }
+        sb.append(sourceCode);
+        sb.append("\n\n/* auto-added for trace */\nint main(void) {\n    return 0;\n}\n");
+        return sb.toString();
+    }
+
+    /**
+     * 计算补壳后原始代码前方被插入的行数，用于对齐 trace 行号与锚点行。
+     */
+    private int countPrependedLines(String sourceCode, String executableCode) {
+        if (sourceCode == null || executableCode == null || executableCode.equals(sourceCode)) {
+            return 0;
+        }
+        int idx = executableCode.indexOf(sourceCode);
+        if (idx <= 0) {
+            return 0;
+        }
+        return (int) executableCode.substring(0, idx).chars().filter(c -> c == '\n').count();
     }
 
     private String buildExplanation(AnimationCandidate candidate,

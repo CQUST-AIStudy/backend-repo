@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,9 +38,13 @@ public class CodeExecutionSandboxService {
     private final String pythonExecutable;
     private final String tracerScriptPath;
     private final long defaultTimeoutMs;
+    /** 已探测到的可用 python 命令；空串表示探测过但不可用 */
+    private volatile String resolvedPython;
+    /** 按语言缓存可用性检查结果，避免每个演示候选都重复起进程探测 */
+    private final Map<String, Boolean> availabilityCache = new ConcurrentHashMap<>();
 
     public CodeExecutionSandboxService(ObjectMapper objectMapper,
-                                       @Value("${tap.grading.code-tracer.python:python3.11}") String pythonExecutable,
+                                       @Value("${tap.grading.code-tracer.python:}") String pythonExecutable,
                                        @Value("${tap.grading.code-tracer.script:}") String tracerScriptPath,
                                        @Value("${tap.grading.code-tracer.timeout-ms:10000}") long defaultTimeoutMs) {
         this.objectMapper = objectMapper;
@@ -77,6 +82,12 @@ public class CodeExecutionSandboxService {
                     "Code tracer script not found. Please configure tap.grading.code-tracer.script");
         }
 
+        String python = resolvePythonExecutable();
+        if (python == null) {
+            return ExecutionTrace.failed(language, sourceCode,
+                    "No usable python executable found. Please configure tap.grading.code-tracer.python");
+        }
+
         Path tmpDir = null;
         try {
             tmpDir = Files.createTempDirectory("code-tracer-");
@@ -84,7 +95,7 @@ public class CodeExecutionSandboxService {
             Files.writeString(sourceFile, sourceCode, StandardCharsets.UTF_8);
 
             List<String> command = new ArrayList<>();
-            command.add(pythonExecutable);
+            command.add(python);
             command.add(tracerScript.toAbsolutePath().toString());
             command.add(normalizedLang);
             command.add(sourceFile.toAbsolutePath().toString());
@@ -126,21 +137,72 @@ public class CodeExecutionSandboxService {
 
     /**
      * 检查当前环境是否可以执行指定语言的代码。
+     * <p>结果按语言缓存，进程探测只做一次；环境变化后需重启应用刷新。</p>
      */
     public boolean isAvailable(String language) {
         String normalized = normalizeLanguage(language);
         if (!"c".equals(normalized) && !"python".equals(normalized)) {
             return false;
         }
-        Path tracerScript = resolveTracerScript();
-        if (tracerScript == null) {
+        return availabilityCache.computeIfAbsent(normalized, this::checkAvailability);
+    }
+
+    private boolean checkAvailability(String language) {
+        if (resolveTracerScript() == null) {
+            log.info("Code tracer unavailable: tracer script not found");
             return false;
         }
+        if (resolvePythonExecutable() == null) {
+            log.info("Code tracer unavailable: no usable python executable");
+            return false;
+        }
+        if ("c".equals(language) && !commandWorks("gcc", "--version")) {
+            log.info("Code tracer unavailable for c: gcc not found");
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * 解析可用的 python 命令：优先使用配置值，否则依次探测常见命令。
+     */
+    private String resolvePythonExecutable() {
+        String cached = resolvedPython;
+        if (cached != null) {
+            return cached.isBlank() ? null : cached;
+        }
+        List<String> candidates = new ArrayList<>();
+        if (pythonExecutable != null && !pythonExecutable.isBlank()) {
+            candidates.add(pythonExecutable.trim());
+        }
+        candidates.add("python3.11");
+        candidates.add("python3");
+        candidates.add("python");
+        for (String candidate : candidates) {
+            if (commandWorks(candidate, "--version")) {
+                resolvedPython = candidate;
+                log.info("Code tracer python executable resolved: {}", candidate);
+                return candidate;
+            }
+        }
+        resolvedPython = "";
+        return null;
+    }
+
+    private boolean commandWorks(String... command) {
         try {
-            ProcessBuilder pb = new ProcessBuilder(pythonExecutable, "--version");
+            ProcessBuilder pb = new ProcessBuilder(command);
+            pb.redirectErrorStream(true);
             Process process = pb.start();
             boolean finished = process.waitFor(5, TimeUnit.SECONDS);
-            return finished && process.exitValue() == 0;
+            if (!finished) {
+                process.destroyForcibly();
+                return false;
+            }
+            return process.exitValue() == 0;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
         } catch (Exception e) {
             return false;
         }
@@ -253,8 +315,12 @@ public class CodeExecutionSandboxService {
                 return path;
             }
         }
-        // 默认查找路径（支持从项目根目录或 backend-repo 子目录启动）
+        // 默认查找路径（支持从 backend-repo、项目根目录或 Docker 容器 /app 启动）
         String[] candidates = {
+                "grading-worker/code_tracer.py",
+                "backend-repo/grading-worker/code_tracer.py",
+                "../backend-repo/grading-worker/code_tracer.py",
+                "/app/tools/code_tracer.py",
                 "_inspect_grading_worker/grading_worker/code_tracer.py",
                 "../_inspect_grading_worker/grading_worker/code_tracer.py"
         };
@@ -263,11 +329,6 @@ public class CodeExecutionSandboxService {
             if (Files.exists(path)) {
                 return path.toAbsolutePath().normalize();
             }
-        }
-        // Try absolute from current working directory
-        Path rootPath = Path.of(System.getProperty("user.dir"), "_inspect_grading_worker/grading_worker/code_tracer.py");
-        if (Files.exists(rootPath)) {
-            return rootPath.toAbsolutePath().normalize();
         }
         return null;
     }

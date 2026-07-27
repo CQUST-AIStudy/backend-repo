@@ -339,6 +339,13 @@ tap:
     export:
       max-concurrency: ${GRADING_EXPORT_MAX_CONCURRENCY:6}
       submit-interval-ms: ${GRADING_EXPORT_SUBMIT_INTERVAL_MS:30}
+    # 错误演示真实执行沙箱（Python Tutor 式可视化）
+    code-tracer:
+      # 留空则自动探测 python3.11 / python3 / python
+      python: ${CODE_TRACER_PYTHON:}
+      # 留空则按默认路径查找 grading-worker/code_tracer.py 或 /app/tools/code_tracer.py
+      script: ${CODE_TRACER_SCRIPT:}
+      timeout-ms: ${CODE_TRACER_TIMEOUT_MS:10000}
 
 # PTA爬虫微服务对接配置
 pta:
