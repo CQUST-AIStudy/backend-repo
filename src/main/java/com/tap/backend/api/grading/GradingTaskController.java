@@ -185,6 +185,8 @@ public class GradingTaskController {
         Long teacherId = teacherPrincipalResolver.requireTeacherId(principal);
         try {
             GradingTaskEntity task = taskService.getTaskDetail(id, teacherId);
+            // 先把学生管理里手动维护的名册幂等补齐到统一模型，再取候选列表。
+            gradingUnifiedLinkService.ensureRosterCoverage(task);
             List<GradingUnifiedLinkService.SubmissionIdentity> roster = gradingUnifiedLinkService.listRoster(task);
             List<Map<String, Object>> result = roster.stream()
                     .map(identity -> {
