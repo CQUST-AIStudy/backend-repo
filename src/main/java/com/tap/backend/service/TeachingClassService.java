@@ -257,7 +257,9 @@ public class TeachingClassService {
         if (normalizedStudentNum == null) {
             throw new IllegalArgumentException("studentNum is required when adding a student manually");
         }
-        Long resolvedUserId = userId == null ? resolveRequiredStudentUserId(normalizedStudentNum) : userId;
+        Long resolvedUserId = userId == null
+                ? resolveOrCreateStudentUserId(normalizedStudentNum, studentName)
+                : userId;
         return addStudent(classId, studentName, normalizedStudentNum, resolvedUserId);
     }
 
@@ -657,20 +659,31 @@ public class TeachingClassService {
         return user.getId();
     }
 
-    private Long resolveRequiredStudentUserId(String username) {
+    private Long resolveOrCreateStudentUserId(String username, String studentName) {
         String normalizedUsername = blankToNull(username);
         if (normalizedUsername == null) {
             throw new IllegalArgumentException("studentNum is required when adding a student manually");
         }
         UserEntity user = userRepo.findByUsername(normalizedUsername).orElse(null);
         if (user == null) {
-            throw new IllegalArgumentException("学生账号不存在，不需要添加");
+            // 账号不存在时自动创建 STUDENT 账号：用户名=学号，初始密码=学号
+            String displayName = blankToNull(studentName);
+            UserEntity created = new UserEntity();
+            created.setUsername(normalizedUsername);
+            created.setUsernum(normalizedUsername);
+            created.setDisplayName(displayName != null ? displayName : normalizedUsername);
+            created.setRole(UserRole.STUDENT);
+            created.setPasswordHash(passwordEncoder.encode(normalizedUsername));
+            created.setEnabled(true);
+            created = userRepo.save(created);
+            return created.getId();
         }
         if (user.getRole() != UserRole.STUDENT) {
-            throw new IllegalArgumentException("matched account is not a STUDENT role: " + normalizedUsername);
+            throw new IllegalArgumentException("用户名 " + normalizedUsername + " 已被非学生账号占用，无法添加为学生");
         }
         if (!Boolean.TRUE.equals(user.getEnabled())) {
-            throw new IllegalArgumentException("student account is disabled: " + normalizedUsername);
+            user.setEnabled(true);
+            userRepo.save(user);
         }
         return user.getId();
     }
