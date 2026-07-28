@@ -48,6 +48,9 @@ public class TeachingAdviceReportEntity {
     @Column(name = "model", length = 128)
     private String model;
 
+    @Column(name = "source_hash", length = 64)
+    private String sourceHash;
+
     @Column(name = "status", nullable = false, length = 16)
     private String status;
 
@@ -80,6 +83,8 @@ public class TeachingAdviceReportEntity {
     public void setPromptVersion(String promptVersion) { this.promptVersion = promptVersion; }
     public String getModel() { return model; }
     public void setModel(String model) { this.model = model; }
+    public String getSourceHash() { return sourceHash; }
+    public void setSourceHash(String sourceHash) { this.sourceHash = sourceHash; }
     public String getStatus() { return status; }
     public void setStatus(String status) { this.status = status; }
     public String getErrorMessage() { return errorMessage; }

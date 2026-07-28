@@ -13,6 +13,9 @@ import com.tap.backend.repo.TeachingClassRepository;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import jakarta.persistence.Query;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -24,6 +27,9 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Set;
+import java.util.concurrent.Executor;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
@@ -49,19 +55,34 @@ public class TeachingAdviceService {
     private final TeachingAdvicePromptFactory promptFactory;
     private final AiProvider aiProvider;
     private final ObjectMapper objectMapper;
+    private final Executor aiExecutor;
+    private final Object generationLock = new Object();
 
+    @Autowired
     public TeachingAdviceService(
             TeachingClassRepository classRepository,
             TeachingAdviceReportRepository reportRepository,
             TeachingAdvicePromptFactory promptFactory,
             AiProvider aiProvider,
-            ObjectMapper objectMapper
+            ObjectMapper objectMapper,
+            @Qualifier("aiExecutor") Executor aiExecutor
     ) {
         this.classRepository = classRepository;
         this.reportRepository = reportRepository;
         this.promptFactory = promptFactory;
         this.aiProvider = aiProvider;
         this.objectMapper = objectMapper;
+        this.aiExecutor = aiExecutor;
+    }
+
+    TeachingAdviceService(
+            TeachingClassRepository classRepository,
+            TeachingAdviceReportRepository reportRepository,
+            TeachingAdvicePromptFactory promptFactory,
+            AiProvider aiProvider,
+            ObjectMapper objectMapper
+    ) {
+        this(classRepository, reportRepository, promptFactory, aiProvider, objectMapper, Runnable::run);
     }
 
     public Map<String, Object> options(Long teacherId) {
@@ -127,7 +148,52 @@ public class TeachingAdviceService {
         Map<String, Object> context = context(teacherId, level, classId, experimentId, includeHistory);
         Map<String, Object> scope = castMap(context.get("scope"));
         Map<String, Object> metrics = castMap(context.get("metrics"));
-        TeachingAdviceReportEntity report = newReport(teacherId, level, scope, metrics);
+        String sourceHash = sourceHash(level, scope, metrics);
+        TeachingAdviceReportEntity savedReport;
+        synchronized (generationLock) {
+            TeachingAdviceReportEntity reusableReport = reusableReport(teacherId, sourceHash);
+            if (reusableReport != null) return reportMap(reusableReport);
+
+            TeachingAdviceReportEntity report = newReport(teacherId, level, scope, metrics, sourceHash);
+            report.setStatus("GENERATING");
+            report.setErrorMessage(null);
+            savedReport = reportRepository.save(report);
+        }
+        Long reportId = savedReport.getId();
+
+        aiExecutor.execute(() -> completeReportGeneration(reportId, level, context, metrics));
+        return reportRepository.findByIdAndTeacherId(reportId, teacherId)
+                .map(this::reportMap)
+                .orElseGet(() -> reportMap(savedReport));
+    }
+
+    private TeachingAdviceReportEntity reusableReport(Long teacherId, String sourceHash) {
+        if (sourceHash == null || sourceHash.isBlank()) return null;
+        for (TeachingAdviceReportEntity report : reportRepository.findTop10ByTeacherIdAndSourceHashOrderByCreatedAtDesc(teacherId, sourceHash)) {
+            String status = textOr(report.getStatus(), "").toUpperCase(Locale.ROOT);
+            if ("GENERATING".equals(status)) return report;
+            if ("COMPLETED".equals(status)
+                    && TeachingAdvicePromptFactory.VERSION.equals(report.getPromptVersion())
+                    && adviceQualityPassed(report)) {
+                return report;
+            }
+        }
+        return null;
+    }
+
+    private boolean adviceQualityPassed(TeachingAdviceReportEntity report) {
+        JsonNode advice = readJson(report.getAdviceJson());
+        return advice != null && "PASS".equals(advice.path("qualityGate").path("status").asText(""));
+    }
+
+    private void completeReportGeneration(
+            Long reportId,
+            String level,
+            Map<String, Object> context,
+            Map<String, Object> metrics
+    ) {
+        TeachingAdviceReportEntity report = reportRepository.findById(reportId).orElse(null);
+        if (report == null) return;
 
         try {
             ObjectNode advice;
@@ -140,19 +206,18 @@ public class TeachingAdviceService {
             }
             report.setAdviceJson(writeJson(advice));
             report.setStatus("COMPLETED");
-            report = reportRepository.save(report);
-            return reportMap(report);
+            report.setErrorMessage(null);
+            reportRepository.save(report);
         } catch (RuntimeException error) {
             report.setStatus("FAILED");
             report.setErrorMessage(limit(error.getMessage(), 1000));
             reportRepository.save(report);
-            throw error;
         }
     }
 
     public List<Map<String, Object>> listReports(Long teacherId) {
         return reportRepository.findTop20ByTeacherIdOrderByCreatedAtDesc(teacherId).stream()
-                .map(this::reportMap)
+                .map(this::reportSummaryMap)
                 .toList();
     }
 
@@ -2086,7 +2151,8 @@ public class TeachingAdviceService {
             Long teacherId,
             String level,
             Map<String, Object> scope,
-            Map<String, Object> metrics
+            Map<String, Object> metrics,
+            String sourceHash
     ) {
         TeachingAdviceReportEntity report = new TeachingAdviceReportEntity();
         report.setTeacherId(teacherId);
@@ -2099,6 +2165,7 @@ public class TeachingAdviceService {
         report.setMetricsJson(writeJson(metrics));
         report.setPromptVersion(TeachingAdvicePromptFactory.VERSION);
         report.setModel(aiProvider.model());
+        report.setSourceHash(sourceHash);
         return report;
     }
 
@@ -2405,12 +2472,12 @@ public class TeachingAdviceService {
 
                 修复轮次：%d
 
-                原始任务提示词：
+                原始任务提示词摘要（已截断，仅用于保持数据证据和 schema，不要扩写原始数据）：
                 %s
 
-                上一次不合格输出：
+                上一次不合格输出摘要（已截断，请只修复质量门禁指出的问题）：
                 %s
-                """.formatted(validationError, repairAttempt, originalPrompt, limit(invalidOutput, 12000));
+                """.formatted(validationError, repairAttempt, limit(originalPrompt, 30000), limit(invalidOutput, 10000));
     }
 
     private ObjectNode parseAndValidateAdvice(String raw, Set<String> allowedEvidenceIds) {
@@ -3113,7 +3180,23 @@ public class TeachingAdviceService {
                 "id", report.getId(), "scopeLevel", report.getScopeLevel(),
                 "scope", readJson(report.getScopeJson()), "metrics", readJson(report.getMetricsJson()),
                 "advice", readJson(report.getAdviceJson()), "promptVersion", report.getPromptVersion(),
-                "model", report.getModel(), "status", report.getStatus(), "errorMessage", report.getErrorMessage(),
+                "model", report.getModel(), "sourceHash", report.getSourceHash(),
+                "status", report.getStatus(), "errorMessage", report.getErrorMessage(),
+                "createdAt", report.getCreatedAt()
+        );
+    }
+
+    private Map<String, Object> reportSummaryMap(TeachingAdviceReportEntity report) {
+        JsonNode scope = readJson(report.getScopeJson());
+        JsonNode advice = readJson(report.getAdviceJson());
+        JsonNode gate = advice == null ? null : advice.path("qualityGate");
+        return mapOf(
+                "id", report.getId(), "scopeLevel", report.getScopeLevel(),
+                "scope", scope, "summary", advice == null ? null : advice.path("summary").asText(null),
+                "promptVersion", report.getPromptVersion(), "model", report.getModel(),
+                "sourceHash", report.getSourceHash(),
+                "status", report.getStatus(), "errorMessage", report.getErrorMessage(),
+                "qualityStatus", gate == null || gate.isMissingNode() ? null : gate.path("status").asText(null),
                 "createdAt", report.getCreatedAt()
         );
     }
@@ -3188,6 +3271,23 @@ public class TeachingAdviceService {
     private String writeJson(Object value) {
         try { return objectMapper.writeValueAsString(value); }
         catch (JsonProcessingException e) { throw new IllegalStateException("failed to serialize teaching advice report", e); }
+    }
+    private String sourceHash(String level, Map<String, Object> scope, Map<String, Object> metrics) {
+        String payload = writeJson(mapOf(
+                "promptVersion", TeachingAdvicePromptFactory.VERSION,
+                "model", aiProvider.model(),
+                "level", level,
+                "scope", scope,
+                "metrics", metrics
+        ));
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(payload.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hash = new StringBuilder(digest.length * 2);
+            for (byte item : digest) hash.append("%02x".formatted(item));
+            return hash.toString();
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is not available", e);
+        }
     }
     private JsonNode readJson(String value) {
         if (value == null || value.isBlank()) return null;

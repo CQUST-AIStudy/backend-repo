@@ -2,13 +2,15 @@ package com.tap.backend.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import org.springframework.stereotype.Component;
 
 @Component
 public class TeachingAdvicePromptFactory {
-    public static final String VERSION = "teaching-advice-v9";
+    public static final String VERSION = "teaching-advice-v10";
 
     private final ObjectMapper objectMapper;
 
@@ -107,11 +109,114 @@ public class TeachingAdvicePromptFactory {
         Map<String, Object> filtered = new LinkedHashMap<>(context);
         if (context.get("metrics") instanceof Map<?, ?> metrics) {
             Map<String, Object> filteredMetrics = new LinkedHashMap<>();
-            metrics.forEach((key, value) -> filteredMetrics.put(String.valueOf(key), value));
-            filteredMetrics.remove("focusStudentRoster");
+            copyIfPresent(filteredMetrics, metrics, "scoreDistribution");
+            copyIfPresent(filteredMetrics, metrics, "studentSegments");
+            copyIfPresent(filteredMetrics, metrics, "focusStudentTotal");
+            copyIfPresent(filteredMetrics, metrics, "focusStudentDisplayed");
+            copyIfPresent(filteredMetrics, metrics, "focusStudentAiAnalyzed");
+            copyIfPresent(filteredMetrics, metrics, "focusStudentAiLimit");
+            copyIfPresent(filteredMetrics, metrics, "focusStudentPriorityCounts");
+            copyIfPresent(filteredMetrics, metrics, "dataCoverage");
+            filteredMetrics.put("learningDiagnosis", compactLearningDiagnosis(metrics.get("learningDiagnosis")));
+            filteredMetrics.put("teachingContext", metrics.get("teachingContext"));
+            filteredMetrics.put("teachingSignals", metrics.get("teachingSignals"));
+            filteredMetrics.put("problemErrorPoints", limitList(metrics.get("problemErrorPoints"), 8));
+            filteredMetrics.put("errorStatusSummary", limitList(metrics.get("errorStatusSummary"), 6));
+            filteredMetrics.put("history", limitList(metrics.get("history"), 4));
+            filteredMetrics.put("peerClassComparison", limitList(metrics.get("peerClassComparison"), 4));
+            filteredMetrics.put("classComparison", limitList(metrics.get("classComparison"), 4));
+            filteredMetrics.put("experiments", limitList(metrics.get("experiments"), 6));
+            filteredMetrics.put("experimentSummary", limitList(metrics.get("experimentSummary"), 6));
+            filteredMetrics.put("problemPerformance", limitList(metrics.get("problemPerformance"), 8));
+            filteredMetrics.put("focusStudents", compactFocusStudents(metrics.get("focusStudents"), 18));
+            filteredMetrics.put("evidence", compactEvidence(metrics.get("evidence")));
+            filteredMetrics.put("promptCompression", Map.of(
+                    "rule", "完整 metrics_json 已保存数据库；这里仅给 AI 使用压缩证据包，禁止因未看到全量明细而写数据缺失。",
+                    "focusStudentRule", "focusStudentTotal/priorityCounts 表示全量重点学生规模，focusStudents 是代表性样本；分层建议必须覆盖 P1/P2/P3 全部人群。"
+            ));
             filtered.put("metrics", filteredMetrics);
         }
         return filtered;
+    }
+
+    private void copyIfPresent(Map<String, Object> target, Map<?, ?> source, String key) {
+        if (source.containsKey(key)) target.put(key, source.get(key));
+    }
+
+    private Map<String, Object> compactLearningDiagnosis(Object value) {
+        if (!(value instanceof Map<?, ?> diagnosis)) return Map.of();
+        Map<String, Object> result = new LinkedHashMap<>();
+        copyIfPresent(result, diagnosis, "conclusion");
+        copyIfPresent(result, diagnosis, "nextTeachingAction");
+        copyIfPresent(result, diagnosis, "reliability");
+        copyIfPresent(result, diagnosis, "usageRule");
+        result.put("problemErrorPoints", limitList(diagnosis.get("problemErrorPoints"), 8));
+        result.put("weakProblemSignals", limitList(diagnosis.get("weakProblemSignals"), 5));
+        result.put("trendSignals", limitList(diagnosis.get("trendSignals"), 5));
+        result.put("errorTypeSignals", limitList(diagnosis.get("errorTypeSignals"), 5));
+        result.put("studentPatternSignals", limitList(diagnosis.get("studentPatternSignals"), 5));
+        result.put("inferredKnowledgeSignals", limitList(diagnosis.get("inferredKnowledgeSignals"), 6));
+        result.put("dataQualityIssues", limitList(diagnosis.get("dataQualityIssues"), 5));
+        return result;
+    }
+
+    private List<Object> compactEvidence(Object value) {
+        if (!(value instanceof List<?> rows)) return List.of();
+        List<Object> result = new ArrayList<>();
+        for (Object item : rows) {
+            if (item instanceof Map<?, ?> map) {
+                Map<String, Object> evidence = new LinkedHashMap<>();
+                copyIfPresent(evidence, map, "evidenceId");
+                copyIfPresent(evidence, map, "label");
+                Object rawValue = map.get("value");
+                if (rawValue instanceof Map<?, ?> valueMap) {
+                    Map<String, Object> compactValue = new LinkedHashMap<>();
+                    copyIfPresent(compactValue, valueMap, "evidenceId");
+                    copyIfPresent(compactValue, valueMap, "totalCount");
+                    copyIfPresent(compactValue, valueMap, "priorityCounts");
+                    Object items = valueMap.get("items");
+                    if (items != null) compactValue.put("items", limitList(items, 6));
+                    evidence.put("value", compactValue);
+                }
+                result.add(evidence);
+            }
+            if (result.size() >= 12) break;
+        }
+        return result;
+    }
+
+    private List<Object> compactFocusStudents(Object value, int max) {
+        if (!(value instanceof List<?> rows)) return List.of();
+        List<Object> result = new ArrayList<>();
+        for (Object item : rows) {
+            if (item instanceof Map<?, ?> map) {
+                Map<String, Object> student = new LinkedHashMap<>();
+                for (String key : List.of(
+                        "studentNo", "studentName", "riskLevel", "riskScore", "followUpPriority",
+                        "riskReasons", "studentPortraitRiskLabel", "studentPortraitSummary",
+                        "completionRate", "averageScore", "abilityTrendLabel", "recentAverageScore",
+                        "followUpType", "reason", "problemNo", "problemTitle", "problemStatementSummary",
+                        "inferredKnowledge", "knowledgePath", "knowledgeSource", "knowledgeConfidence",
+                        "problemStatus", "problemAttempts", "failedProblemCount", "averageAttempts",
+                        "errorPoint", "problem", "teacherAction", "validation", "evidenceRefs"
+                )) {
+                    copyIfPresent(student, map, key);
+                }
+                result.add(student);
+            }
+            if (result.size() >= max) break;
+        }
+        return result;
+    }
+
+    private List<Object> limitList(Object value, int max) {
+        if (!(value instanceof List<?> rows) || max <= 0) return List.of();
+        List<Object> result = new ArrayList<>();
+        for (Object item : rows) {
+            result.add(item);
+            if (result.size() >= max) break;
+        }
+        return result;
     }
 
     private String toJson(Map<String, Object> value) {

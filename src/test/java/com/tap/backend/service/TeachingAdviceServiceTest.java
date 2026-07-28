@@ -404,4 +404,43 @@ class TeachingAdviceServiceTest {
         List<Map<String, Object>> dataQualityIssues = (List<Map<String, Object>>) diagnosis.get("dataQualityIssues");
         assertTrue(dataQualityIssues.stream().noneMatch(item -> "KNOWLEDGE_TAG_COVERAGE".equals(item.get("type"))));
     }
+
+    @Test
+    void sourceHashIsStableForSameSnapshotAndChangesWhenMetricsChange() {
+        Map<String, Object> scope = Map.of("level", "CLASS", "classId", 1L, "includeHistory", false);
+        Map<String, Object> metrics = Map.of(
+                "scoreDistribution", Map.of("total", 30, "highRisk", 3),
+                "problemErrorPoints", List.of(Map.of("problemNo", "1", "errorPoint", "链表指针移动顺序错误"))
+        );
+
+        String first = ReflectionTestUtils.invokeMethod(service, "sourceHash", "CLASS", scope, metrics);
+        String second = ReflectionTestUtils.invokeMethod(service, "sourceHash", "CLASS", scope, metrics);
+        String changed = ReflectionTestUtils.invokeMethod(service, "sourceHash", "CLASS", scope,
+                Map.of("scoreDistribution", Map.of("total", 30, "highRisk", 4)));
+
+        assertEquals(first, second);
+        assertEquals(64, first.length());
+        assertTrue(!first.equals(changed));
+    }
+
+    @Test
+    void repairPromptLimitsOriginalPromptAndInvalidOutput() {
+        String originalPrompt = "原始提示".repeat(8000) + "SHOULD_NOT_APPEAR";
+        String invalidOutput = "不合格输出".repeat(3000) + "INVALID_TAIL_SHOULD_NOT_APPEAR";
+
+        String repairPrompt = ReflectionTestUtils.invokeMethod(
+                service,
+                "buildAdviceRepairPrompt",
+                originalPrompt,
+                invalidOutput,
+                "nextTeachingPlan.steps[0].studentTask is incomplete",
+                1
+        );
+
+        assertTrue(repairPrompt.contains("已截断"));
+        assertTrue(repairPrompt.contains("nextTeachingPlan.steps[0].studentTask"));
+        assertTrue(!repairPrompt.contains("SHOULD_NOT_APPEAR"));
+        assertTrue(!repairPrompt.contains("INVALID_TAIL_SHOULD_NOT_APPEAR"));
+        assertTrue(repairPrompt.length() < originalPrompt.length() + invalidOutput.length());
+    }
 }
