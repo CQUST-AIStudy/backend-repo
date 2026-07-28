@@ -69,22 +69,22 @@ class ExperimentAnalyticsControllerTest {
     }
 
     @Test
-    void classPrefixesUseCourseNameOnlyWhenCourseIdIsUnavailable() {
+    void classPrefixesReturnActiveClassesWithOfferings() {
         stubTeacher();
-        stubNamedParameters();
-        when(query.getResultList()).thenReturn(List.of("计科25"));
+        when(query.setParameter(anyString(), org.mockito.ArgumentMatchers.any())).thenReturn(query);
+        when(query.getResultList()).thenReturn(Collections.singletonList(new Object[] {7L, "计科25-1"}));
 
-        List<String> result = controller.getClassPrefixes(7L, null, "数据结构", request).data();
+        List<Map<String, Object>> result = controller.getClassPrefixes(request).data();
 
-        assertEquals(List.of("计科25"), result);
+        assertEquals(1, result.size());
+        assertEquals(7L, result.get(0).get("classId"));
+        assertEquals("计科25-1", result.get(0).get("name"));
         verify(query).setParameter("teacherId", 42);
-        verify(query).setParameter("classId", 7L);
-        verify(query).setParameter("courseName", "数据结构");
 
         ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
         verify(entityManager).createNativeQuery(sql.capture());
-        assertTrue(sql.getValue().contains("ao.class_id = :classId"));
-        assertTrue(sql.getValue().contains("= :courseName"));
+        assertTrue(sql.getValue().contains("FROM teaching_class tc"));
+        assertTrue(sql.getValue().contains("EXISTS (SELECT 1 FROM assignment_offering ao"));
         assertTrue(sql.getValue().contains("tc.teacher_id = :teacherId"));
     }
 
