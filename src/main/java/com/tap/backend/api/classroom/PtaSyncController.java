@@ -63,7 +63,9 @@ public class PtaSyncController {
             String ptaGroupId,
             String ptaGroupName,
             String mode,
-            Boolean force
+            Boolean force,
+            Boolean bypassCooldown,
+            Boolean dryRun
     ) {}
 
     record ConnectionTestRequest(
@@ -91,7 +93,9 @@ public class PtaSyncController {
                 req == null ? null : req.ptaGroupId(),
                 req == null ? null : req.ptaGroupName(),
                 req == null ? null : req.mode(),
-                req == null ? null : req.force()));
+                req == null ? null : req.force(),
+                req == null ? null : req.bypassCooldown(),
+                req == null ? null : req.dryRun()));
     }
 
     @PostMapping("/test")

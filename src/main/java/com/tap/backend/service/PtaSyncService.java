@@ -123,9 +123,23 @@ public class PtaSyncService {
             String ptaGroupId,
             String ptaGroupName,
             String mode,
-            Boolean force
+            Boolean force,
+            Boolean bypassCooldown,
+            Boolean dryRun
     ) {
-        return doTriggerSync(classId, teacherId, true, ptaUsername, ptaPassword, ptaKeyword, ptaGroupId, ptaGroupName, mode, force);
+        return doTriggerSync(
+                classId,
+                teacherId,
+                true,
+                ptaUsername,
+                ptaPassword,
+                ptaKeyword,
+                ptaGroupId,
+                ptaGroupName,
+                mode,
+                force,
+                bypassCooldown,
+                dryRun);
     }
 
     @Transactional
@@ -135,7 +149,18 @@ public class PtaSyncService {
         String mode = scheduledSyncMode == null || scheduledSyncMode.isBlank()
                 ? "full"
                 : scheduledSyncMode.trim();
-        return doTriggerSync(teachingClass, false, null, null, null, null, null, mode, false);
+        return doTriggerSync(
+                teachingClass,
+                false,
+                null,
+                null,
+                null,
+                null,
+                null,
+                mode,
+                false,
+                false,
+                false);
     }
 
     public Map<String, Object> getSyncStatus(Long classId, Long teacherId) {
@@ -390,9 +415,22 @@ public class PtaSyncService {
             String ptaGroupId,
             String ptaGroupName,
             String mode,
-            Boolean force
+            Boolean force,
+            Boolean bypassCooldown,
+            Boolean dryRun
     ) {
-        return doTriggerSync(requireOwnedClass(classId, teacherId), checkCooldown, ptaUsername, ptaPassword, ptaKeyword, ptaGroupId, ptaGroupName, mode, force);
+        return doTriggerSync(
+                requireOwnedClass(classId, teacherId),
+                checkCooldown,
+                ptaUsername,
+                ptaPassword,
+                ptaKeyword,
+                ptaGroupId,
+                ptaGroupName,
+                mode,
+                force,
+                bypassCooldown,
+                dryRun);
     }
 
     private Map<String, Object> doTriggerSync(
@@ -404,7 +442,9 @@ public class PtaSyncService {
             String ptaGroupId,
             String ptaGroupName,
             String mode,
-            Boolean force
+            Boolean force,
+            Boolean bypassCooldown,
+            Boolean dryRun
     ) {
         if (ptaGroupId != null) {
             teachingClass.setPtaGroupId(normalizeNullableText(ptaGroupId));
@@ -436,8 +476,8 @@ public class PtaSyncService {
         TeacherPtaCredentialService.ResolvedPtaCredential credential = resolvedCredential.credential();
         String credentialSource = resolvedCredential.source();
 
-        boolean bypassCooldown = Boolean.TRUE.equals(force);
-        if (checkCooldown && !bypassCooldown && teachingClass.getLastSyncAt() != null) {
+        boolean skipCooldown = Boolean.TRUE.equals(force) || Boolean.TRUE.equals(bypassCooldown);
+        if (checkCooldown && !skipCooldown && teachingClass.getLastSyncAt() != null) {
             Duration since = Duration.between(teachingClass.getLastSyncAt(), Instant.now());
             if (since.compareTo(COOLDOWN) < 0) {
                 long remainingHours = COOLDOWN.minus(since).toHours();
@@ -474,6 +514,9 @@ public class PtaSyncService {
             if (Boolean.TRUE.equals(force)) {
                 body.put("force", true);
             }
+            if (Boolean.TRUE.equals(dryRun)) {
+                body.put("dry_run", true);
+            }
             body.put("credential_source", credentialSource);
             if (credential != null) {
                 body.put("username", credential.username());
@@ -481,6 +524,10 @@ public class PtaSyncService {
             }
             String resolvedMode = String.valueOf(body.getOrDefault("mode", "incremental"));
             String triggerType = checkCooldown ? "MANUAL" : "SCHEDULED";
+            Map<String, Object> auditBody = new LinkedHashMap<>(body);
+            boolean credentialProvided = auditBody.remove("username") != null;
+            credentialProvided = auditBody.remove("password") != null || credentialProvided;
+            auditBody.put("credentialProvided", credentialProvided);
             crawlJobId = createCrawlJob(
                     teachingClass.getId(),
                     crawlGroupId,
@@ -488,7 +535,7 @@ public class PtaSyncService {
                     resolvedMode,
                     triggerType,
                     credentialSource,
-                    body
+                    auditBody
             );
 
             HttpHeaders headers = new HttpHeaders();
