@@ -2405,12 +2405,19 @@ public class ApiController {
     public ResponseEntity<Map<String, Object>> generateAiComment(
             @PathVariable int experimentId,
             @RequestParam(defaultValue = "false") boolean force,
+            @RequestParam(required = false) String studentId,
+            @RequestBody(required = false) Map<String, Object> body,
             HttpServletRequest request) {
 
         Map<String, Object> response = new HashMap<>();
         try {
             HttpSession session = request.getSession(false);
-            String currentUsername = studentSessionResolver.requireStudentId(request);
+            String currentUsername;
+            if (studentId != null && !studentId.isBlank()) {
+                currentUsername = studentId;
+            } else {
+                currentUsername = studentSessionResolver.requireStudentId(request);
+            }
             if (currentUsername == null) {
                 response.put("success", false);
                 response.put("message", "用户未登录");
@@ -2428,44 +2435,43 @@ public class ApiController {
                 }
             }
 
-            // 直接复用实验详情页已验证能拿到代码的 getExperimentById 路径
+            // 获取代码：优先从请求体，否则从DB查
             String code = null;
+            if (body != null && body.get("code") != null) {
+                code = body.get("code").toString();
+            }
             String expName = "实验" + experimentId;
+            StringBuilder expContent = new StringBuilder();
             String studentName = currentUsername;
             try {
-                ResponseEntity<Map<String, Object>> expResp = getExperimentById(experimentId, request);
-                Map<String, Object> detailBody = expResp.getBody();
-                if (detailBody != null && Boolean.TRUE.equals(detailBody.get("success"))) {
-                    @SuppressWarnings("unchecked")
-                    Map<String, Object> expData = (Map<String, Object>) detailBody.get("data");
-                    if (expData != null) {
-                        Object codeObj = expData.get("code");
-                        if (codeObj != null && !codeObj.toString().isBlank()) {
-                            code = codeObj.toString();
+                Experiment exp = experimentService.findExperimentById(experimentId);
+                if (exp != null) {
+                    if (exp.getName() != null) expName = exp.getName();
+                    if (exp.getDescribe() != null) expContent.append("实验描述：").append(exp.getDescribe()).append("\n");
+                }
+                if (code == null || code.isBlank()) {
+                    try {
+                        int sid = Integer.parseInt(currentUsername);
+                        StudentCode sc = studentCodeService.findCodeByStudentIdAndExperimentId(sid, experimentId);
+                        if (sc != null && sc.getCode() != null && !sc.getCode().isBlank()) {
+                            code = sc.getCode();
                         }
-                        Object nameObj = expData.get("name");
-                        if (nameObj != null && !nameObj.toString().isBlank()) {
-                            expName = nameObj.toString();
-                        }
-                        Object stuNameObj = expData.get("studentName");
-                        if (stuNameObj != null && !stuNameObj.toString().isBlank()) {
-                            studentName = stuNameObj.toString();
-                        }
-                    }
+                    } catch (NumberFormatException ignored) {}
                 }
             } catch (Exception e) {
-                System.out.println("[AI点评] getExperimentById 获取代码异常: " + e.getMessage());
+                System.out.println("[AI点评] 获取实验信息异常: " + e.getMessage());
             }
-            if (code == null || code.isBlank()) {
-                response.put("success", false);
-                response.put("message", "该实验暂无代码提交，无法生成AI点评");
-                return ResponseEntity.ok(response);
+
+            // 构建分析内容：优先用代码，否则用实验信息
+            String analysisContent;
+            if (code != null && !code.isBlank()) {
+                analysisContent = "学生代码：\n```c\n" + code + "\n```";
+            } else {
+                analysisContent = expContent.length() > 0 ? expContent.toString() : "实验名称：" + expName;
             }
 
             // 调用DeepSeek生成AI点评
-            System.out.println("[AI点评] deepseekApiKey已加载=" + (deepseekApiKey != null && !deepseekApiKey.isBlank()) 
-                + " (前缀=" + (deepseekApiKey != null && !deepseekApiKey.isBlank() ? deepseekApiKey.substring(0, 7) : "null") + ")");
-            String aiComment = callDeepSeekForCodeReview(code, expName, studentName);
+            String aiComment = callDeepSeekForCodeReview(analysisContent, expName, studentName);
             if (aiComment == null || aiComment.isBlank()) {
                 response.put("success", false);
                 response.put("message", "AI点评生成失败，请稍后重试");
@@ -2502,33 +2508,20 @@ public class ApiController {
             code = code.substring(0, 6000) + "\n... (代码过长，已截断)";
         }
 
-        String systemPrompt = "你是一位经验丰富的高校数据结构课程助教，负责对学生在PTA编程平台上提交的C语言代码进行专业点评。\n\n"
-                + "## 点评要求\n"
-                + "1. 使用Markdown格式输出\n"
-                + "2. 语气友善、鼓励为主，同时指出不足\n"
-                + "3. 必须结合代码的具体内容进行分析，不要泛泛而谈\n"
-                + "4. 如果代码中包含多道题目（以'第X题如下'分隔），请逐题点评\n\n"
-                + "## 输出结构（严格遵守）\n"
-                + "### 📊 总体评价\n"
-                + "（2-3句话概括代码整体质量、完成度）\n\n"
-                + "### 📝 逐题分析\n"
-                + "（针对每道题：指出算法思路是否正确、代码风格、潜在问题）\n\n"
-                + "### ✅ 亮点\n"
-                + "（列出代码中做得好的地方，如算法选择、边界处理等）\n\n"
-                + "### ⚠️ 改进建议\n"
-                + "（具体的改进方向，如内存管理、代码可读性、算法优化等）\n\n"
-                + "### 💡 学习建议\n"
-                + "（针对该实验涉及的知识点，给出1-2条可执行的学习建议）\n";
+        String systemPrompt = "分析学生代码，用纯文本（不用Markdown）输出三条，总共不超过250字：\n"
+                + "1. 代码问题：该学生在本次实验中的具体代码问题\n"
+                + "2. 薄弱点：该同学的知识薄弱点，依据代码说明\n"
+                + "3. 教学建议：针对性的教学建议（如抓某某知识点）\n";
 
-        String userPrompt = "请对以下学生的代码进行专业点评：\n\n"
-                + "**学生**: " + studentName + "\n"
-                + "**实验**: " + experimentName + "\n\n"
-                + "```c\n" + code + "\n```";
+        String userPrompt = "学生: " + studentName + "\n"
+                + "实验: " + experimentName + "\n\n"
+                + (code != null && code.contains("```c") ? code
+                   : "实验内容:\n" + code.substring(0, Math.min(code.length(), 3000)));
 
         JsonObject reqBody = new JsonObject();
         reqBody.addProperty("model", deepseekModel);
         reqBody.addProperty("stream", false);
-        reqBody.addProperty("max_tokens", 2000);
+        reqBody.addProperty("max_tokens", 400);
         reqBody.addProperty("temperature", 0.7);
 
         JsonArray messages = new JsonArray();
