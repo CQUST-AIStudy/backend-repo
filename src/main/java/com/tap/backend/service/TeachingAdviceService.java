@@ -32,6 +32,8 @@ import org.springframework.web.server.ResponseStatusException;
 public class TeachingAdviceService {
     private static final Set<String> LEVELS = Set.of("EXPERIMENT", "CLASS", "COURSE");
     private static final int FOCUS_STUDENT_AI_LIMIT = 12;
+    private static final int AI_ADVICE_REPAIR_ATTEMPTS = 2;
+    private static final String QUALITY_GATE_VERSION = "teaching-advice-quality-v1";
     private static final String COMPLETED =
             "(CAST(LOWER(COALESCE(sa.submission_status, '')) AS BINARY) " +
             "IN (CAST('submitted' AS BINARY), CAST('graded' AS BINARY), CAST('closed' AS BINARY)) " +
@@ -131,9 +133,10 @@ public class TeachingAdviceService {
             ObjectNode advice;
             if ("mock".equalsIgnoreCase(aiProvider.name())) {
                 advice = fallbackAdvice(level, metrics);
+                validateAdviceQuality(advice, evidenceIds(metrics));
+                markQualityPassed(advice, 0);
             } else {
-                String prompt = promptFactory.build(level, context);
-                advice = parseAndValidateAdvice(aiProvider.chat(prompt, null), evidenceIds(metrics));
+                advice = generateValidatedAiAdvice(level, context, evidenceIds(metrics));
             }
             report.setAdviceJson(writeJson(advice));
             report.setStatus("COMPLETED");
@@ -2309,7 +2312,97 @@ public class TeachingAdviceService {
         if (ids.isEmpty()) limitations.add("当前范围没有形成可引用的有效指标");
         limitations.add("本地环境使用 mock 模型，正式环境会基于同一数据快照生成更细化的 Markdown 教学建议报告");
         root.put("markdown", fallbackMarkdown(level, ids, metrics));
+        finalizeFallbackAdvice(root);
         return root;
+    }
+
+    private void finalizeFallbackAdvice(ObjectNode root) {
+        for (JsonNode item : root.withArray("teacherFocus")) {
+            if (!(item instanceof ObjectNode node)) continue;
+            ensureSentenceField(node, "instruction");
+            ensureSentenceField(node, "target");
+            ensureSentenceField(node, "when");
+            ensureSentenceField(node, "successMetric");
+        }
+        for (JsonNode item : root.withArray("focusStudents")) {
+            if (!(item instanceof ObjectNode node)) continue;
+            if (!hasMeaningfulText(node.path("problem").asText(""))) {
+                String reason = node.path("reason").asText("");
+                node.put("problem", hasMeaningfulText(reason)
+                        ? reason
+                        : "现有数据定位到该学生存在低分、未完成或题目未通过风险，原因需通过课堂追问或最小样例核验。");
+            }
+            if (!hasMeaningfulText(node.path("teacherAction").asText(""))) {
+                node.put("teacherAction", node.path("suggestion").asText("教师让学生现场说明最近一次提交卡点，并用同知识点最小样例复测。"));
+            }
+            if (!hasMeaningfulText(node.path("validation").asText(""))) {
+                node.put("validation", "学生能完成同知识点最小样例，并说出原错误点和修正依据。");
+            }
+            ensureSentenceField(node, "problem");
+            ensureSentenceField(node, "cause");
+            ensureSentenceField(node, "teacherAction");
+            ensureSentenceField(node, "suggestion");
+            ensureSentenceField(node, "validation");
+            ensureSentenceField(node, "reason");
+        }
+    }
+
+    private void ensureSentenceField(ObjectNode node, String field) {
+        if (!node.hasNonNull(field)) return;
+        String value = node.path(field).asText("");
+        if (value.isBlank() || hasCompleteEnding(value)) return;
+        node.put(field, value.trim() + "。");
+    }
+
+    private ObjectNode generateValidatedAiAdvice(String level, Map<String, Object> context, Set<String> allowedEvidenceIds) {
+        String originalPrompt = promptFactory.build(level, context);
+        String currentPrompt = originalPrompt;
+        String raw = "";
+        IllegalArgumentException lastError = null;
+        for (int attempt = 0; attempt <= AI_ADVICE_REPAIR_ATTEMPTS; attempt++) {
+            raw = aiProvider.chat(currentPrompt, null);
+            try {
+                ObjectNode advice = parseAndValidateAdvice(raw, allowedEvidenceIds);
+                markQualityPassed(advice, attempt);
+                return advice;
+            } catch (IllegalArgumentException error) {
+                lastError = error;
+                if (attempt >= AI_ADVICE_REPAIR_ATTEMPTS) break;
+                currentPrompt = buildAdviceRepairPrompt(originalPrompt, raw, error.getMessage(), attempt + 1);
+            }
+        }
+        throw new IllegalArgumentException(
+                "AI teaching advice failed quality gate after " + (AI_ADVICE_REPAIR_ATTEMPTS + 1)
+                        + " attempt(s): " + (lastError == null ? "unknown validation error" : lastError.getMessage()),
+                lastError
+        );
+    }
+
+    private String buildAdviceRepairPrompt(String originalPrompt, String invalidOutput, String validationError, int repairAttempt) {
+        return """
+                你刚才生成的教学建议没有通过系统质量门禁，不能展示给教师。
+
+                修复要求：
+                1. 只输出严格 JSON，不要 Markdown 代码围栏，不要解释。
+                2. 保持原始 schema，不得删除 summary、teachingConclusion、nextTeachingPlan、teacherFocus、focusStudents、markdown 等字段。
+                3. 修复所有未说完的句子，所有自然语言字段必须以 。！？!? 之一结尾。
+                4. “核心教学结论”第一句话必须直接告诉教师下节课先做什么。
+                5. 不能把没有证据的原因写成事实；数据只能定位现象时，要写课堂追问或最小样例核验动作。
+                6. “下一节课怎么教”必须写清材料/题目、盯哪类学生、学生交什么、教师怎么验收。
+                7. 重点学生不能复制同一句建议；能定位题目时要写题号、题名、知识点、错误点；不能定位时要明确数据缺失和核验动作。
+                8. Markdown 必须包含：核心教学结论、下一节课怎么教、分层教学安排、重点学生跟进、实验/学期/课程调整、依据与局限。
+
+                质量门禁错误：
+                %s
+
+                修复轮次：%d
+
+                原始任务提示词：
+                %s
+
+                上一次不合格输出：
+                %s
+                """.formatted(validationError, repairAttempt, originalPrompt, limit(invalidOutput, 12000));
     }
 
     private ObjectNode parseAndValidateAdvice(String raw, Set<String> allowedEvidenceIds) {
@@ -2347,10 +2440,253 @@ public class TeachingAdviceService {
             validateReferences(root.path("actions"), allowedEvidenceIds);
             validateReferences(root.path("quickActions"), allowedEvidenceIds);
             validateReferences(root.path("focusStudents"), allowedEvidenceIds);
+            validateAdviceQuality(root, allowedEvidenceIds);
             return root;
         } catch (JsonProcessingException e) {
             throw new IllegalArgumentException("AI output is not valid JSON", e);
         }
+    }
+
+    private void validateAdviceQuality(ObjectNode root, Set<String> allowedEvidenceIds) {
+        List<String> errors = new ArrayList<>();
+        requireCompleteText(errors, "summary", root.path("summary").asText(""));
+        JsonNode conclusion = root.path("teachingConclusion");
+        requireCompleteText(errors, "teachingConclusion.problem", conclusion.path("problem").asText(""));
+        requireCompleteText(errors, "teachingConclusion.cause", conclusion.path("cause").asText(""));
+        requireCompleteText(errors, "teachingConclusion.impact", conclusion.path("impact").asText(""));
+        requireEvidenceBackedCause(errors, conclusion.path("cause").asText(""));
+
+        JsonNode plan = root.path("nextTeachingPlan");
+        requireCompleteText(errors, "nextTeachingPlan.summary", plan.path("summary").asText(""));
+        JsonNode steps = plan.path("steps");
+        if (!steps.isArray() || steps.size() < 3) {
+            errors.add("nextTeachingPlan.steps must contain at least 3 executable steps");
+        } else {
+            int index = 0;
+            for (JsonNode step : steps) {
+                validateTeachingStep(errors, step, "nextTeachingPlan.steps[" + index + "]");
+                index++;
+            }
+        }
+
+        if (root.path("teacherFocus").isArray()) {
+            int index = 0;
+            for (JsonNode item : root.path("teacherFocus")) {
+                requireCompleteText(errors, "teacherFocus[" + index + "].instruction", item.path("instruction").asText(""));
+                requireCompleteText(errors, "teacherFocus[" + index + "].successMetric", item.path("successMetric").asText(""));
+                rejectGenericText(errors, "teacherFocus[" + index + "]", item.path("instruction").asText(""));
+                index++;
+            }
+        }
+
+        validateFocusStudentsQuality(errors, root.path("focusStudents"));
+        validateMarkdownQuality(errors, root.path("markdown").asText(""));
+
+        if (!allowedEvidenceIds.isEmpty() && !hasAnyAllowedEvidence(root, allowedEvidenceIds)) {
+            errors.add("advice must keep at least one valid evidence reference");
+        }
+        if (!errors.isEmpty()) {
+            throw new IllegalArgumentException("AI advice quality gate failed: " + String.join("; ", errors));
+        }
+    }
+
+    private void validateTeachingStep(List<String> errors, JsonNode step, String path) {
+        requireCompleteText(errors, path + ".teacherAction", step.path("teacherAction").asText(step.path("howToTeach").asText("")));
+        requireCompleteText(errors, path + ".studentTask", step.path("studentTask").asText(""));
+        requireCompleteText(errors, path + ".successMetric", step.path("successMetric").asText(step.path("expectedChange").asText("")));
+        requireSpecificTeachingStep(errors, path, step);
+    }
+
+    private void requireSpecificTeachingStep(List<String> errors, String path, JsonNode step) {
+        String merged = String.join(" ",
+                step.path("teacherAction").asText(""),
+                step.path("howToTeach").asText(""),
+                step.path("studentTask").asText(""),
+                step.path("material").asText(""),
+                step.path("targetStudents").asText(""),
+                step.path("deliverable").asText(""),
+                step.path("checkMethod").asText("")
+        );
+        rejectGenericText(errors, path, merged);
+        boolean hasMaterial = hasMeaningfulText(step.path("material").asText(""));
+        boolean hasTarget = hasMeaningfulText(step.path("targetStudents").asText(""));
+        boolean hasDeliverable = hasMeaningfulText(step.path("deliverable").asText(""));
+        boolean hasCheck = hasMeaningfulText(step.path("checkMethod").asText(""));
+        boolean hasProblemOrKnowledge = containsAny(merged, "第", "题", "知识点", "错误点", "提交", "代码", "样例", "验收", "复测");
+        if (!(hasMaterial && hasTarget && hasDeliverable && hasCheck && hasProblemOrKnowledge)) {
+            errors.add(path + " must name material/problem, target students, deliverable, check method and concrete learning object");
+        }
+    }
+
+    private void validateFocusStudentsQuality(List<String> errors, JsonNode students) {
+        if (!students.isArray() || students.isEmpty()) return;
+        Set<String> actions = new LinkedHashSet<>();
+        int index = 0;
+        for (JsonNode student : students) {
+            String path = "focusStudents[" + index + "]";
+            String problem = student.path("problem").asText(student.path("reason").asText(""));
+            String action = student.path("teacherAction").asText(student.path("suggestion").asText(""));
+            String validation = student.path("validation").asText("");
+            requireCompleteText(errors, path + ".problem", problem);
+            requireCompleteText(errors, path + ".teacherAction", action);
+            requireCompleteText(errors, path + ".validation", validation);
+            rejectGenericText(errors, path + ".problem", problem);
+            rejectGenericText(errors, path + ".teacherAction", action);
+            boolean hasConcreteLocator =
+                    hasMeaningfulText(student.path("problemNo").asText(""))
+                    || hasMeaningfulText(student.path("problemTitle").asText(""))
+                    || hasMeaningfulText(student.path("inferredKnowledge").asText(""))
+                    || hasMeaningfulText(student.path("errorPoint").asText(""))
+                    || hasMeaningfulText(student.path("followUpType").asText(""))
+                    || containsAny(problem, "题", "知识点", "错误点", "提交", "低分", "趋势", "尝试", "未完成");
+            if (!hasConcreteLocator) {
+                errors.add(path + " must identify the student's concrete stuck point or data gap");
+            }
+            if (!action.isBlank()) actions.add(normalizeQualityText(action));
+            index++;
+        }
+        if (students.size() > 1 && actions.size() <= 1) {
+            errors.add("focusStudents must not reuse the same teacher action for every student");
+        }
+    }
+
+    private void validateMarkdownQuality(List<String> errors, String markdown) {
+        if (!hasMeaningfulText(markdown)) {
+            errors.add("markdown is empty");
+            return;
+        }
+        for (String section : List.of("核心教学结论", "下一节课怎么教", "分层教学安排", "重点学生跟进", "实验/学期/课程调整", "依据与局限")) {
+            if (!markdown.contains(section)) errors.add("markdown missing section: " + section);
+        }
+        String[] blocks = markdown.split("(?m)^##\\s+");
+        for (String block : blocks) {
+            String trimmed = block.trim();
+            if (trimmed.isBlank()) continue;
+            String body = trimmed.contains("\n") ? trimmed.substring(trimmed.indexOf('\n') + 1).trim() : "";
+            if (body.isBlank()) {
+                errors.add("markdown section has no body: " + firstLine(trimmed));
+                continue;
+            }
+            String plain = markdownPlainText(body);
+            if (!hasCompleteEnding(plain)) {
+                errors.add("markdown section is not a complete sentence: " + firstLine(trimmed));
+            }
+            if (hasBrokenColon(plain)) {
+                errors.add("markdown section contains unfinished colon phrase: " + firstLine(trimmed));
+            }
+        }
+    }
+
+    private void requireCompleteText(List<String> errors, String path, String value) {
+        if (!hasMeaningfulText(value)) {
+            errors.add(path + " is empty");
+            return;
+        }
+        if (hasBrokenColon(value) || !hasCompleteEnding(value)) {
+            errors.add(path + " is not a complete sentence");
+        }
+        rejectGenericText(errors, path, value);
+    }
+
+    private void requireEvidenceBackedCause(List<String> errors, String value) {
+        if (!hasMeaningfulText(value)) return;
+        if (containsAny(value, "可能原因", "原因是", "导致", "因为")
+                && !containsAny(value, "证据", "数据", "提交", "题", "错误", "核验", "追问", "样例", "现有数据")) {
+            errors.add("teachingConclusion.cause must be evidence-backed or ask for classroom verification");
+        }
+    }
+
+    private void rejectGenericText(List<String> errors, String path, String value) {
+        String text = normalizeQualityText(value);
+        if (text.isBlank()) return;
+        List<String> genericPhrases = List.of(
+                "关键知识点没有打通",
+                "某个核心知识点",
+                "需要进一步观察",
+                "展示典型错误样例",
+                "安排同类短练",
+                "检查清单",
+                "短周期跟进",
+                "基础知识、实验环境和报告分析",
+                "当前分析范围",
+                "教师自行查找",
+                "下一步直接做"
+        );
+        for (String phrase : genericPhrases) {
+            if (text.contains(phrase) && !containsAny(text, "第", "题", "提交", "错误点", "知识点", "验收", "核验", "样例", "代码")) {
+                errors.add(path + " is too generic: " + phrase);
+                return;
+            }
+        }
+    }
+
+    private boolean hasAnyAllowedEvidence(JsonNode node, Set<String> allowedEvidenceIds) {
+        if (node == null || node.isMissingNode() || node.isNull()) return false;
+        if (node.isTextual() && allowedEvidenceIds.contains(node.asText())) return true;
+        if (node.isContainerNode()) {
+            for (JsonNode child : node) {
+                if (hasAnyAllowedEvidence(child, allowedEvidenceIds)) return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean hasMeaningfulText(String value) {
+        return value != null && normalizeQualityText(value).length() >= 6;
+    }
+
+    private boolean hasCompleteEnding(String value) {
+        String text = normalizeQualityText(value);
+        if (text.isBlank()) return false;
+        while (!text.isBlank() && "）)】]》\"'”’".indexOf(text.charAt(text.length() - 1)) >= 0) {
+            text = text.substring(0, text.length() - 1).trim();
+        }
+        if (text.isBlank()) return false;
+        char last = text.charAt(text.length() - 1);
+        return "。！？!?.；;".indexOf(last) >= 0;
+    }
+
+    private boolean hasBrokenColon(String value) {
+        String text = normalizeQualityText(value);
+        if (text.isBlank()) return true;
+        if (text.matches(".*[：:]\\s*$")) return true;
+        return text.matches(".*[：:]\\s*[，,、；;。]?$");
+    }
+
+    private String normalizeQualityText(String value) {
+        return String.valueOf(value == null ? "" : value)
+                .replaceAll("[#>*_`|\\[\\]（）()【】]+", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
+    }
+
+    private String markdownPlainText(String value) {
+        return normalizeQualityText(String.valueOf(value == null ? "" : value)
+                .replaceAll("(?m)^\\s*(?:[-*]|\\d+[.)])\\s+", "")
+                .replaceAll("!\\[[^\\]]*]\\([^)]+\\)", "")
+                .replaceAll("\\[[^\\]]+]\\([^)]+\\)", ""));
+    }
+
+    private String firstLine(String value) {
+        String text = String.valueOf(value == null ? "" : value).trim();
+        int newline = text.indexOf('\n');
+        return newline >= 0 ? text.substring(0, newline).trim() : limit(text, 60);
+    }
+
+    private boolean containsAny(String value, String... needles) {
+        String text = String.valueOf(value == null ? "" : value);
+        for (String needle : needles) {
+            if (text.contains(needle)) return true;
+        }
+        return false;
+    }
+
+    private void markQualityPassed(ObjectNode root, int repairAttempts) {
+        ObjectNode gate = root.putObject("qualityGate");
+        gate.put("status", "PASS");
+        gate.put("version", QUALITY_GATE_VERSION);
+        gate.put("repairAttempts", repairAttempts);
+        gate.put("checkedAt", Instant.now().toString());
     }
 
     private void ensureArray(ObjectNode root, String field) {

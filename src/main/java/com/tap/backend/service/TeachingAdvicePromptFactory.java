@@ -8,7 +8,7 @@ import org.springframework.stereotype.Component;
 
 @Component
 public class TeachingAdvicePromptFactory {
-    public static final String VERSION = "teaching-advice-v8";
+    public static final String VERSION = "teaching-advice-v9";
 
     private final ObjectMapper objectMapper;
 
@@ -61,6 +61,10 @@ public class TeachingAdvicePromptFactory {
                 15. summary 不超过 45 个汉字；teachingConclusion.problem 不超过 60 个汉字；nextTeachingPlan.steps 每个文本字段尽量 1 句话，不写长段落。
                 16. focusStudents 不能多名学生复制同一句建议。必须根据学生画像表口径和做题结果共同分型：studentPortraitRiskLabel、studentPortraitSummary、completionRate、averageScore、abilityTrend/abilityTrendLabel、recentAverageScore、riskLevel、riskScore、followUpPriority、riskReasons、reason、score、acceptedProblemCount/problemCount、failedProblemCount、averageAttempts、followUpType 都要参考。后端如果提供 problemNo、problemTitle、inferredKnowledge、knowledgeSource、knowledgeConfidence、problemStatus、problemAttempts、errorPoint，必须在 problem 中明确写出“第几题、题名、哪个知识点、具体错误点”；不得改写成“关键题/知识点没有打通”。知识点来源为 TITLE_AND_STATUS_INFERENCE 时必须标明是推断知识点。只有数据库未匹配到题目明细时，才能写“题目知识点数据缺失”，不得让教师自行猜测。未完成先核对提交/PTA同步/环境；低分先定位最低分题；趋势下降要先比较最近三次与个人均分；关键题未通过先看最后一次代码和同知识点小题；反复尝试失败要看最后一次失败提交与边界样例。
                 17. nextTeachingPlan.steps 不能只写“展示典型错误样例、安排同类短练、检查清单”。必须让教师看完知道：打开哪道题/哪份材料、盯哪类学生、学生交什么产物、教师用什么标准验收。
+                18. “核心教学结论”的第一句话必须直接写教师下一步动作，使用“下节课先……”或同等明确的行动句；不能以“最核心教学问题是……”开头后只停留在诊断。
+                19. cause 和 Markdown 中的“可能原因”只能写数据快照能够支持的原因。若只有错误现象、没有认知原因证据，必须写“现有数据只能定位到错误表现，原因需通过课堂追问或最小样例核验”，并给出核验动作；不得把推测写成事实。
+                20. 每个字符串字段和 Markdown 段落都必须使用完整句子并正常收尾，禁止在“可能原因：”“影响：”“下一步：”等冒号后中断。输出前逐项检查 summary、teachingConclusion、nextTeachingPlan、teacherFocus、focusStudents 和 markdown，发现未完成句必须补全后再输出 JSON。
+                21. Markdown 不得机械复述 JSON 字段。每节只保留教师需要的结论、动作和验收方式；证据编号放在对应完整句句末。
 
                 输出结构：
                 {
@@ -86,12 +90,13 @@ public class TeachingAdvicePromptFactory {
                 }
 
                 Markdown 写作要求：
-                - ## 核心教学结论：2-3 句话，直接说教学问题、可能原因和优先级。
+                - ## 核心教学结论：严格写 3 个完整句子。第 1 句给教师动作；第 2 句说明具体题目、知识点或错误表现及证据；第 3 句写验证方式。没有原因证据时不猜原因，改写为课堂核验动作。
                 - ## 下一节课怎么教：给 3 个按时间顺序执行的教师动作，写清讲什么、学生做什么、怎么验证。
                 - ## 分层教学安排：区分重点帮扶层、中等提升层、拓展提升层。
                 - ## 重点学生跟进：只列 AI 判断后最需要跟进的学生，每人给具体教师动作和验证方式。
                 - ## 实验/学期/课程调整：分别给本实验、本学期、课程整体建议；不适用也要说明原因。
                 - ## 依据与局限：只列关键证据编号和简短依据，不展开全部数据表。
+                - 所有标题下至少有一个完整句子；最后一句必须以“。 / ！ / ？”之一结束，不能留下半句话或未闭合的冒号。
 
                 数据快照：
                 %s

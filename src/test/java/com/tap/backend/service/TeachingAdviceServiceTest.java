@@ -101,6 +101,7 @@ class TeachingAdviceServiceTest {
                 )));
 
         JsonNode advice = ReflectionTestUtils.invokeMethod(service, "fallbackAdvice", "CLASS", metrics);
+        ReflectionTestUtils.invokeMethod(service, "validateAdviceQuality", advice, Set.of("M01", "M02"));
 
         assertTrue(advice.hasNonNull("summary"));
         assertTrue(advice.hasNonNull("teachingConclusion"));
@@ -135,7 +136,7 @@ class TeachingAdviceServiceTest {
     }
 
     @Test
-    void legacyStructuredAdviceGetsMarkdownAndNewArrays() {
+    void legacyStructuredAdviceWithoutExecutableDetailsIsRejected() {
         String raw = """
                 {
                   "summary":"建议优先处理低分题目",
@@ -145,18 +146,10 @@ class TeachingAdviceServiceTest {
                 }
                 """;
 
-        JsonNode advice = ReflectionTestUtils.invokeMethod(service, "parseAndValidateAdvice", raw, Set.of("M01"));
+        IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
+                () -> ReflectionTestUtils.invokeMethod(service, "parseAndValidateAdvice", raw, Set.of("M01")));
 
-        assertTrue(advice.hasNonNull("markdown"));
-        assertTrue(advice.path("teachingConclusion").isObject());
-        assertTrue(advice.path("teacherFocus").isArray());
-        assertTrue(advice.path("nextTeachingPlan").isObject());
-        assertTrue(advice.path("nextTeachingPlan").path("steps").isArray());
-        assertTrue(advice.path("nextClassPlan").isArray());
-        assertTrue(advice.path("differentiatedTeaching").isObject());
-        assertTrue(advice.path("quickActions").isArray());
-        assertTrue(advice.path("focusStudents").isArray());
-        assertTrue(advice.path("markdown").asText().contains("## 核心教学结论"));
+        assertTrue(error.getMessage().contains("quality gate"));
     }
 
     @Test

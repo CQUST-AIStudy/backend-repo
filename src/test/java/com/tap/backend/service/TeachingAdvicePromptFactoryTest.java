@@ -23,7 +23,7 @@ class TeachingAdvicePromptFactoryTest {
         String classAdvice = factory.build("CLASS", context);
         String course = factory.build("COURSE", context);
 
-        assertEquals("teaching-advice-v8", TeachingAdvicePromptFactory.VERSION);
+        assertEquals("teaching-advice-v9", TeachingAdvicePromptFactory.VERSION);
         assertTrue(experiment.contains("单个实验"));
         assertTrue(classAdvice.contains("阶段性核心教学问题"));
         assertTrue(course.contains("课程层面"));
@@ -57,6 +57,10 @@ class TeachingAdvicePromptFactoryTest {
         assertTrue(experiment.contains("\"focusStudents\""));
         assertTrue(experiment.contains("\"evidenceId\":\"M01\""));
         assertTrue(experiment.contains("仅输出严格 JSON"));
+        assertTrue(experiment.contains("第一句话必须直接写教师下一步动作"));
+        assertTrue(experiment.contains("原因需通过课堂追问或最小样例核验"));
+        assertTrue(experiment.contains("禁止在“可能原因：”“影响：”“下一步：”等冒号后中断"));
+        assertTrue(experiment.contains("最后一句必须以“。 / ！ / ？”之一结束"));
     }
 
     @Test
