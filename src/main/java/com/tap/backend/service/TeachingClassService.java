@@ -29,7 +29,7 @@ public class TeachingClassService {
     private final ClassStudentRepository studentRepo;
     private final UserRepository userRepo;
     private final PasswordEncoder passwordEncoder;
-    private final LegacyPtaRosterService legacyPtaRosterService;
+    private final PtaUserGroupRosterService ptaUserGroupRosterService;
     private final ClassMemberStatsService classMemberStatsService;
     private final TeachingClassDeletionGuard teachingClassDeletionGuard;
     private final ClassAssignmentCleanupRepository classAssignmentCleanupRepository;
@@ -40,7 +40,7 @@ public class TeachingClassService {
             ClassStudentRepository studentRepo,
             UserRepository userRepo,
             PasswordEncoder passwordEncoder,
-            LegacyPtaRosterService legacyPtaRosterService,
+            PtaUserGroupRosterService ptaUserGroupRosterService,
             ClassMemberStatsService classMemberStatsService,
             TeachingClassDeletionGuard teachingClassDeletionGuard,
             ClassAssignmentCleanupRepository classAssignmentCleanupRepository,
@@ -50,7 +50,7 @@ public class TeachingClassService {
         this.studentRepo = studentRepo;
         this.userRepo = userRepo;
         this.passwordEncoder = passwordEncoder;
-        this.legacyPtaRosterService = legacyPtaRosterService;
+        this.ptaUserGroupRosterService = ptaUserGroupRosterService;
         this.classMemberStatsService = classMemberStatsService;
         this.teachingClassDeletionGuard = teachingClassDeletionGuard;
         this.classAssignmentCleanupRepository = classAssignmentCleanupRepository;
@@ -607,19 +607,19 @@ public class TeachingClassService {
     @Transactional
     public java.util.Map<String, Object> importStudentsFromPta(Long classId, Long teacherId) {
         TeachingClassEntity teachingClass = requireOwnedClass(classId, teacherId);
-        List<LegacyPtaRosterService.RosterStudent> roster = legacyPtaRosterService.findRoster(
-                teachingClass.getName(),
-                teachingClass.getPtaKeyword()
+        List<PtaUserGroupRosterService.RosterStudent> roster = ptaUserGroupRosterService.findActiveRoster(
+                classId,
+                teachingClass.getPtaGroupId()
         );
 
         int createdCount = 0;
         int updatedCount = 0;
         int unchangedCount = 0;
 
-        for (LegacyPtaRosterService.RosterStudent item : roster) {
+        for (PtaUserGroupRosterService.RosterStudent item : roster) {
             String studentNum = blankToNull(item.studentNum());
             String studentName = blankToNull(item.studentName());
-            Long userId = findActiveStudentUserIdByUsername(studentNum);
+            Long userId = item.userId();
             var existing = studentNum == null
                     ? Optional.<ClassStudentEntity>empty()
                     : studentRepo.findByClassIdAndStudentNum(classId, studentNum);
@@ -695,18 +695,6 @@ public class TeachingClassService {
             return second.trim();
         }
         return null;
-    }
-
-    private Long findActiveStudentUserIdByUsername(String username) {
-        String normalizedUsername = blankToNull(username);
-        if (normalizedUsername == null) {
-            return null;
-        }
-        UserEntity user = userRepo.findByUsername(normalizedUsername).orElse(null);
-        if (user == null || user.getRole() != UserRole.STUDENT || !Boolean.TRUE.equals(user.getEnabled())) {
-            return null;
-        }
-        return user.getId();
     }
 
     private Long resolveOrCreateStudentUserId(String username, String studentName) {
