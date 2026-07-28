@@ -164,13 +164,19 @@ class CTracer:
         Insert trace calls into C source.
 
         Strategy:
+        - Normalize单语句 if/else/for/while 体为带花括号形式（保行号），
+          避免在 if 与 else 之间插入语句破坏控制流。
         - Maintain a stack of scopes based on '{' and '}'.
         - Track variable declarations in the current scope.
         - After each executable line, emit __trace_line() and __trace_vars().
         """
+        code = self._normalize_braces(code)
         lines = code.splitlines()
         scope_stack: list[list[dict[str, str]]] = [[]]  # global/function-level scope
         output_lines: list[str] = []
+        # for(int i=...) 的循环变量应归属循环体作用域；当 '{' 在后续行时，
+        # 先暂存，等下一个 '{' 打开作用域时再注入，避免泄漏到外层导致 undeclared。
+        pending_for_init: list[dict[str, str]] = []
 
         # Insert runtime header at top
         output_lines.extend(self._runtime_header().splitlines())
@@ -190,11 +196,20 @@ class CTracer:
             # Open new scopes for '{' on this line.
             open_count = raw_line.count('{')
             for _ in range(open_count):
-                scope_stack.append([])
+                new_scope: list[dict[str, str]] = []
+                if pending_for_init:
+                    new_scope.extend(pending_for_init)
+                    pending_for_init = []
+                scope_stack.append(new_scope)
 
             # Extract declarations into current (innermost) scope.
             decls = self._extract_declarations(stripped, line_no)
-            scope_stack[-1].extend(decls)
+            for decl in decls:
+                # for-init 且本行未开花括号：暂存到下一个作用域（循环体）。
+                if decl.get("for_init") and open_count == 0:
+                    pending_for_init.append(decl)
+                else:
+                    scope_stack[-1].append(decl)
 
             # Only emit trace calls inside a function body (scope depth > 1).
             # Trace before function definitions would appear at global scope and fail to compile.
@@ -207,6 +222,216 @@ class CTracer:
             output_lines.append(raw_line)
 
         return "\n".join(output_lines)
+
+    def _normalize_braces(self, code: str) -> str:
+        """
+        为单语句的 if/else if/else/for/while/do 体补上花括号，插入位置：
+        '{' 紧跟在控制头（')' 或 else/do 关键字）之后，'}' 紧跟在体语句结尾之后。
+        仅插入单字符、不新增行，因此源代码行号保持不变（前端展示的行号仍然对应）。
+
+        识别错误只会导致插桩后编译失败 -> 上层优雅回退，不会产生错误的可视化。
+        """
+        n = len(code)
+        if n == 0:
+            return code
+
+        def is_ident(ch: str) -> bool:
+            return ch.isalnum() or ch == '_'
+
+        def skip_string(i: int) -> int:
+            q = code[i]
+            i += 1
+            while i < n:
+                if code[i] == '\\':
+                    i += 2
+                    continue
+                if code[i] == q:
+                    return i + 1
+                i += 1
+            return i
+
+        def skip_comment(i: int) -> int:
+            if code[i + 1] == '/':
+                i += 2
+                while i < n and code[i] != '\n':
+                    i += 1
+                return i
+            i += 2
+            while i + 1 < n and not (code[i] == '*' and code[i + 1] == '/'):
+                i += 1
+            return i + 2
+
+        def skip_ws(i: int) -> int:
+            while i < n:
+                ch = code[i]
+                if ch in ' \t\r\n':
+                    i += 1
+                elif ch == '/' and i + 1 < n and code[i + 1] in '/*':
+                    i = skip_comment(i)
+                else:
+                    break
+            return i
+
+        def match_paren(i: int) -> int:
+            depth = 0
+            while i < n:
+                ch = code[i]
+                if ch in '"\'':
+                    i = skip_string(i)
+                    continue
+                if ch == '/' and i + 1 < n and code[i + 1] in '/*':
+                    i = skip_comment(i)
+                    continue
+                if ch == '(':
+                    depth += 1
+                elif ch == ')':
+                    depth -= 1
+                    if depth == 0:
+                        return i
+                i += 1
+            return -1
+
+        def match_brace(i: int) -> int:
+            depth = 0
+            while i < n:
+                ch = code[i]
+                if ch in '"\'':
+                    i = skip_string(i)
+                    continue
+                if ch == '/' and i + 1 < n and code[i + 1] in '/*':
+                    i = skip_comment(i)
+                    continue
+                if ch == '{':
+                    depth += 1
+                elif ch == '}':
+                    depth -= 1
+                    if depth == 0:
+                        return i
+                i += 1
+            return -1
+
+        def find_stmt_end(i: int) -> int:
+            """返回从 i 处开始的单条语句结束后的下标（exclusive）。"""
+            i = skip_ws(i)
+            if i >= n:
+                return n
+            ch = code[i]
+            if ch == '{':
+                m = match_brace(i)
+                return m + 1 if m != -1 else n
+            if ch.isalpha() or ch == '_':
+                j = i
+                while j < n and is_ident(code[j]):
+                    j += 1
+                word = code[i:j]
+                if word in ('if', 'for', 'while', 'switch'):
+                    k = skip_ws(j)
+                    if k < n and code[k] == '(':
+                        k = match_paren(k)
+                        if k != -1:
+                            body_end = find_stmt_end(k + 1)
+                            if word == 'if':
+                                e = skip_ws(body_end)
+                                if code[e:e + 4] == 'else' and (e + 4 >= n or not is_ident(code[e + 4])):
+                                    return find_stmt_end(e + 4)
+                            return body_end
+                elif word == 'do':
+                    body_end = find_stmt_end(j)
+                    e = skip_ws(body_end)
+                    if code[e:e + 5] == 'while':
+                        e2 = skip_ws(e + 5)
+                        if e2 < n and code[e2] == '(':
+                            e2 = match_paren(e2)
+                            if e2 != -1:
+                                e3 = skip_ws(e2 + 1)
+                                if e3 < n and code[e3] == ';':
+                                    return e3 + 1
+                    return body_end
+                elif word == 'else':
+                    return find_stmt_end(j)
+            # 普通语句：扫描到括号深度 0 处的 ';'
+            depth = 0
+            k = i
+            while k < n:
+                c = code[k]
+                if c in '"\'':
+                    k = skip_string(k)
+                    continue
+                if c == '/' and k + 1 < n and code[k + 1] in '/*':
+                    k = skip_comment(k)
+                    continue
+                if c in '([':
+                    depth += 1
+                elif c in ')]':
+                    depth -= 1
+                elif c == '{':
+                    m = match_brace(k)
+                    return m + 1 if m != -1 else n
+                elif c == ';' and depth == 0:
+                    return k + 1
+                k += 1
+            return n
+
+        opens: dict[int, int] = {}
+        closes: dict[int, int] = {}
+
+        def wrap(header_end: int, body_scan_start: int) -> None:
+            b = skip_ws(body_scan_start)
+            if b >= n or code[b] == '{' or code[b] == ';':
+                return  # 已有花括号 / 空体，无需处理
+            end = find_stmt_end(b)
+            opens[header_end] = opens.get(header_end, 0) + 1
+            closes[end] = closes.get(end, 0) + 1
+
+        i = 0
+        while i < n:
+            ch = code[i]
+            if ch in '"\'':
+                i = skip_string(i)
+                continue
+            if ch == '/' and i + 1 < n and code[i + 1] in '/*':
+                i = skip_comment(i)
+                continue
+            if ch.isalpha() or ch == '_':
+                j = i
+                while j < n and is_ident(code[j]):
+                    j += 1
+                word = code[i:j]
+                prev = code[i - 1] if i > 0 else ''
+                if word in ('if', 'for', 'while') and not is_ident(prev):
+                    k = skip_ws(j)
+                    if k < n and code[k] == '(':
+                        close = match_paren(k)
+                        if close != -1:
+                            wrap(close + 1, close + 1)
+                            i = close + 1
+                            continue
+                elif word == 'else' and not is_ident(prev):
+                    k = skip_ws(j)
+                    # else if -> 交给 if 处理；else { -> 已有花括号；else stmt -> 补花括号
+                    if not (code[k:k + 2] == 'if' and (k + 2 >= n or not is_ident(code[k + 2]))):
+                        wrap(j, j)
+                    i = j
+                    continue
+                elif word == 'do' and not is_ident(prev):
+                    wrap(j, j)
+                    i = j
+                    continue
+                i = j
+                continue
+            i += 1
+
+        if not opens and not closes:
+            return code
+        out: list[str] = []
+        for pos in range(n + 1):
+            if pos in closes:
+                out.append('}' * closes[pos])
+            if pos in opens:
+                out.append('{' * opens[pos])
+            if pos < n:
+                out.append(code[pos])
+        return ''.join(out)
 
     def _runtime_header(self) -> str:
         return r'''
@@ -290,6 +515,7 @@ static void __trace_array_int(const char* name, int* arr, int size) {
                 "type": for_init_match.group(1),
                 "kind": "scalar",
                 "decl_line": str(line_no),
+                "for_init": True,
             })
 
         # Normal declarations: int x; int* p; int arr[10];
@@ -340,6 +566,9 @@ static void __trace_array_int(const char* name, int* arr, int size) {
         if stripped in {"{", "}", "};"}:
             return False
         if stripped.startswith("}"):
+            return False
+        # 控制流延续行不插桩：在 'else' / 'else if' 前插入语句会打断 if/else 配对。
+        if re.match(r"^\}?\s*else\b", stripped):
             return False
         # Don't instrument declarations without executable effect unless they have initializer
         if re.match(r"^(int|float|double|char|long)\s+\w+\s*;\s*$", stripped):
