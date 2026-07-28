@@ -46,8 +46,11 @@ public class PtaSyncService {
     @Value("${pta.spider-url:http://127.0.0.1:8100}")
     private String spiderUrl;
 
-    @Value("${pta.scheduler.mode:full}")
+    @Value("${pta.scheduler.mode:incremental}")
     private String scheduledSyncMode;
+
+    @Value("${pta.scheduler.submission-policy:LATEST_200}")
+    private String scheduledSubmissionPolicy;
 
     public PtaSyncService(
             TeachingClassRepository classRepo,
@@ -123,6 +126,7 @@ public class PtaSyncService {
             String ptaGroupId,
             String ptaGroupName,
             String mode,
+            String submissionPolicy,
             Boolean force,
             Boolean bypassCooldown,
             Boolean dryRun
@@ -137,6 +141,7 @@ public class PtaSyncService {
                 ptaGroupId,
                 ptaGroupName,
                 mode,
+                submissionPolicy,
                 force,
                 bypassCooldown,
                 dryRun);
@@ -147,8 +152,12 @@ public class PtaSyncService {
         TeachingClassEntity teachingClass = classRepo.findById(classId)
                 .orElseThrow(() -> new NoSuchElementException("class not found"));
         String mode = scheduledSyncMode == null || scheduledSyncMode.isBlank()
-                ? "full"
+                ? "incremental"
                 : scheduledSyncMode.trim();
+        String submissionPolicy = scheduledSubmissionPolicy == null
+                || scheduledSubmissionPolicy.isBlank()
+                ? "LATEST_200"
+                : scheduledSubmissionPolicy.trim();
         return doTriggerSync(
                 teachingClass,
                 false,
@@ -158,8 +167,33 @@ public class PtaSyncService {
                 null,
                 null,
                 mode,
+                submissionPolicy,
                 false,
                 false,
+                false);
+    }
+
+    @Transactional
+    public Map<String, Object> triggerSyncAsAdmin(
+            Long classId,
+            String mode,
+            String submissionPolicy,
+            Boolean force
+    ) {
+        TeachingClassEntity teachingClass = classRepo.findById(classId)
+                .orElseThrow(() -> new NoSuchElementException("class not found"));
+        return doTriggerSync(
+                teachingClass,
+                true,
+                null,
+                null,
+                null,
+                null,
+                null,
+                mode,
+                submissionPolicy,
+                force,
+                force,
                 false);
     }
 
@@ -415,6 +449,7 @@ public class PtaSyncService {
             String ptaGroupId,
             String ptaGroupName,
             String mode,
+            String submissionPolicy,
             Boolean force,
             Boolean bypassCooldown,
             Boolean dryRun
@@ -428,6 +463,7 @@ public class PtaSyncService {
                 ptaGroupId,
                 ptaGroupName,
                 mode,
+                submissionPolicy,
                 force,
                 bypassCooldown,
                 dryRun);
@@ -442,6 +478,7 @@ public class PtaSyncService {
             String ptaGroupId,
             String ptaGroupName,
             String mode,
+            String submissionPolicy,
             Boolean force,
             Boolean bypassCooldown,
             Boolean dryRun
@@ -511,6 +548,10 @@ public class PtaSyncService {
             putIfNotBlank(body, "group_name", crawlGroupName);
             putIfNotBlank(body, "keyword", firstNotBlank(crawlGroupName, crawlGroupId));
             body.put("mode", normalizeMode(mode));
+            String resolvedSubmissionPolicy = normalizeSubmissionPolicy(
+                    submissionPolicy,
+                    String.valueOf(body.get("mode")));
+            body.put("submission_policy", resolvedSubmissionPolicy);
             if (Boolean.TRUE.equals(force)) {
                 body.put("force", true);
             }
@@ -533,6 +574,7 @@ public class PtaSyncService {
                     crawlGroupId,
                     crawlGroupName == null ? crawlGroupId : crawlGroupName,
                     resolvedMode,
+                    resolvedSubmissionPolicy,
                     triggerType,
                     credentialSource,
                     auditBody
@@ -588,6 +630,7 @@ public class PtaSyncService {
 
             result.put("syncStatus", "RUNNING");
             result.put("taskId", responseBody.get("task_id"));
+            result.put("submissionPolicy", resolvedSubmissionPolicy);
             updateCrawlJob(crawlJobId, "QUEUED", "SPIDER_ACCEPTED",
                     String.valueOf(responseBody.get("task_id")), responseBody, responseMessage, null, false);
             result.put("credentialSource", responseBody != null && responseBody.get("credential_source") != null
@@ -649,6 +692,7 @@ public class PtaSyncService {
             String ptaGroupId,
             String ptaGroupName,
             String mode,
+            String submissionPolicy,
             String triggerType,
             String credentialSource,
             Map<String, Object> requestBody
@@ -656,17 +700,18 @@ public class PtaSyncService {
         try {
             Object rawId = entityManager.createNativeQuery("""
                             INSERT INTO pta_crawl_job
-                              (class_id, pta_group_id, pta_group_name, mode, trigger_type, credential_source, status, status_code, request_json)
+                              (class_id, pta_group_id, pta_group_name, mode, submission_policy, trigger_type, credential_source, status, status_code, request_json)
                             VALUES
-                              (?1, ?2, ?3, ?4, ?5, ?6, 'REQUESTING', 'REQUESTING', ?7)
+                              (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'REQUESTING', 'REQUESTING', ?8)
                             """)
                     .setParameter(1, classId)
                     .setParameter(2, ptaGroupId)
                     .setParameter(3, ptaGroupName)
                     .setParameter(4, mode)
-                    .setParameter(5, triggerType)
-                    .setParameter(6, credentialSource)
-                    .setParameter(7, toJson(sanitizeSpiderRequest(requestBody)))
+                    .setParameter(5, submissionPolicy)
+                    .setParameter(6, triggerType)
+                    .setParameter(7, credentialSource)
+                    .setParameter(8, toJson(sanitizeSpiderRequest(requestBody)))
                     .executeUpdate();
             Object id = entityManager.createNativeQuery("SELECT LAST_INSERT_ID()").getSingleResult();
             return ((Number) id).longValue();
@@ -896,6 +941,19 @@ public class PtaSyncService {
         return switch (normalized) {
             case "incremental", "submissions", "refresh", "full" -> normalized;
             default -> "incremental";
+        };
+    }
+
+    private String normalizeSubmissionPolicy(String submissionPolicy, String mode) {
+        String normalized = firstNotBlank(submissionPolicy);
+        if (normalized == null) {
+            return "full".equalsIgnoreCase(mode) ? "FULL_HISTORY" : "LATEST_200";
+        }
+        normalized = normalized.toUpperCase(Locale.ROOT);
+        return switch (normalized) {
+            case "LATEST_200", "FULL_HISTORY" -> normalized;
+            default -> throw new IllegalArgumentException(
+                    "submissionPolicy must be LATEST_200 or FULL_HISTORY");
         };
     }
 

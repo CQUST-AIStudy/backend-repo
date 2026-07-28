@@ -48,6 +48,7 @@ public class AdminDashboardService {
   private final TeachingClassService teachingClassService;
   private final GradingTaskRepository gradingTaskRepository;
   private final GradingSubmissionRepository gradingSubmissionRepository;
+  private final PtaSyncService ptaSyncService;
   private final RestTemplate restTemplate;
 
   @Value("${tap.quota.translation-chars-per-day:200000}")
@@ -100,6 +101,7 @@ public class AdminDashboardService {
       TeachingClassService teachingClassService,
       GradingTaskRepository gradingTaskRepository,
       GradingSubmissionRepository gradingSubmissionRepository,
+      PtaSyncService ptaSyncService,
       @Value("${pta.connect-timeout-ms:5000}") int connectTimeoutMs,
       @Value("${pta.read-timeout-ms:20000}") int readTimeoutMs) {
     this.userRepository = userRepository;
@@ -109,6 +111,7 @@ public class AdminDashboardService {
     this.teachingClassService = teachingClassService;
     this.gradingTaskRepository = gradingTaskRepository;
     this.gradingSubmissionRepository = gradingSubmissionRepository;
+    this.ptaSyncService = ptaSyncService;
 
     SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
     requestFactory.setConnectTimeout(Math.max(1000, connectTimeoutMs));
@@ -467,64 +470,16 @@ public class AdminDashboardService {
   }
 
   @Transactional
-  public Map<String, Object> triggerClassSync(Long classId, String mode, boolean force) {
-    TeachingClassEntity tc = classRepository.findById(classId)
-        .orElseThrow(() -> new NoSuchElementException("class not found"));
-    String groupName = firstNonBlank(tc.getPtaGroupName(), null);
-    String groupId = firstNonBlank(tc.getPtaGroupId(), null);
-    if ((groupName == null || groupName.isBlank()) && (groupId == null || groupId.isBlank())) {
-      throw new IllegalStateException("PTA user group is not configured for this class");
-    }
-
-    Map<String, Object> body = new LinkedHashMap<>();
-    body.put("class_id", classId.intValue());
-    if (groupId != null && !groupId.isBlank()) {
-      body.put("group_id", groupId.trim());
-    }
-    if (groupName != null && !groupName.isBlank()) {
-      body.put("group_name", groupName.trim());
-    }
-    body.put("keyword", firstNonBlank(groupName, groupId));
-    body.put("mode", normalizeMode(mode));
-    body.put("force", force);
-
-    HttpHeaders headers = new HttpHeaders();
-    headers.setContentType(MediaType.APPLICATION_JSON);
-    HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);
-
-    String previousStatus = tc.getSyncStatus();
-    tc.setSyncStatus("RUNNING");
-    classRepository.save(tc);
-    try {
-      ResponseEntity<Map> response = restTemplate.postForEntity(spiderUrl + "/crawl", entity, Map.class);
-      Map<String, Object> result = new LinkedHashMap<>();
-      result.put("classId", classId);
-      result.put("className", tc.getName());
-      result.put("mode", body.get("mode"));
-      result.put("force", force);
-      Map<?, ?> responseBody = response.getBody();
-      boolean blocked = responseBody != null && Boolean.TRUE.equals(responseBody.get("blocked"));
-      boolean accepted = responseBody != null && responseBody.get("task_id") != null;
-      if (blocked || !accepted) {
-        tc.setSyncStatus(previousStatus == null || previousStatus.isBlank() ? "IDLE" : previousStatus);
-        classRepository.save(tc);
-        result.put("syncStatus", tc.getSyncStatus());
-        result.put("blocked", blocked);
-        Object message = responseBody == null ? null : responseBody.get("message");
-        result.put("message", message == null ? "task not accepted" : String.valueOf(message));
-        return result;
-      }
-      result.put("syncStatus", "RUNNING");
-      result.put("taskId", responseBody.get("task_id"));
-      Object message = responseBody.get("message");
-      result.put("message", message == null ? "task submitted" : String.valueOf(message));
-      result.put("blocked", false);
-      return result;
-    } catch (Exception ex) {
-      tc.setSyncStatus("FAILED");
-      classRepository.save(tc);
-      throw new RuntimeException("spider call failed: " + ex.getMessage(), ex);
-    }
+  public Map<String, Object> triggerClassSync(
+      Long classId,
+      String mode,
+      String submissionPolicy,
+      boolean force) {
+    return ptaSyncService.triggerSyncAsAdmin(
+        classId,
+        mode,
+        submissionPolicy,
+        force);
   }
 
   private List<Map<String, Object>> buildApiServices(long aiRequestsUsed, long translationCharsUsed) {

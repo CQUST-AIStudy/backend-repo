@@ -63,6 +63,7 @@ public class PtaSyncController {
             String ptaGroupId,
             String ptaGroupName,
             String mode,
+            String submissionPolicy,
             Boolean force,
             Boolean bypassCooldown,
             Boolean dryRun
@@ -93,6 +94,7 @@ public class PtaSyncController {
                 req == null ? null : req.ptaGroupId(),
                 req == null ? null : req.ptaGroupName(),
                 req == null ? null : req.mode(),
+                req == null ? null : req.submissionPolicy(),
                 req == null ? null : req.force(),
                 req == null ? null : req.bypassCooldown(),
                 req == null ? null : req.dryRun()));

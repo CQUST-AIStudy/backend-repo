@@ -29,7 +29,7 @@ public class AdminDashboardController {
     this.legacySessionAccessResolver = legacySessionAccessResolver;
   }
 
-  record SyncRequest(String mode, Boolean force) {}
+  record SyncRequest(String mode, String submissionPolicy, Boolean force) {}
 
   @GetMapping("/overview")
   public ResponseEntity<Map<String, Object>> getOverview(HttpServletRequest request) {
@@ -52,7 +52,9 @@ public class AdminDashboardController {
 
     String mode = req == null ? "incremental" : req.mode();
     boolean force = req != null && Boolean.TRUE.equals(req.force());
-    return ResponseEntity.ok(adminDashboardService.triggerClassSync(classId, mode, force));
+    String submissionPolicy = req == null ? null : req.submissionPolicy();
+    return ResponseEntity.ok(
+        adminDashboardService.triggerClassSync(classId, mode, submissionPolicy, force));
   }
 
   private ResponseEntity<Map<String, Object>> ensureAdmin(HttpServletRequest request) {

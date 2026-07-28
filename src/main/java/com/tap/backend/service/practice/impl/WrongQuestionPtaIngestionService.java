@@ -4,7 +4,6 @@ import com.tap.backend.domain.practice.WrongQuestionEntity;
 import com.tap.backend.dto.practice.RecordSubmissionCommand;
 import com.tap.backend.service.practice.WrongQuestionService;
 import jakarta.persistence.EntityManager;
-import jakarta.persistence.PersistenceException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -64,7 +63,13 @@ public class WrongQuestionPtaIngestionService {
           SELECT
             spa.student_id            AS student_id,
             ap.source_problem_id      AS source_problem_id,
-            MAX(spa.submitted_at)     AS max_submitted_at
+            spa.judge_status           AS judge_status,
+            spa.runtime_ms             AS runtime_ms,
+            spa.memory_kb              AS memory_kb,
+            ROW_NUMBER() OVER (
+              PARTITION BY spa.student_id, ap.source_problem_id
+              ORDER BY spa.submitted_at DESC, spa.id DESC
+            ) AS rn
           FROM student_problem_attempt spa
           JOIN class_student cs ON cs.student_num COLLATE utf8mb4_unicode_ci = (
             SELECT sp2.student_no FROM student_profile sp2
@@ -76,24 +81,18 @@ public class WrongQuestionPtaIngestionService {
             AND ap.source_problem_id IS NOT NULL
             AND UPPER(COALESCE(spa.judge_status, '')) NOT IN ('C', 'AC', 'ACCEPTED')
             AND spa.submitted_at >= DATE_SUB(NOW(), INTERVAL ?2 DAY)
-          GROUP BY spa.student_id, ap.source_problem_id
         ) latest
         JOIN student_profile sp ON sp.id = latest.student_id
         JOIN leetcode_problem_bank lb
           ON lb.source_key COLLATE utf8mb4_unicode_ci = latest.source_problem_id COLLATE utf8mb4_unicode_ci
+        WHERE latest.rn = 1
         """;
 
     @SuppressWarnings("unchecked")
-    List<Object[]> rows;
-    try {
-      rows = em.createNativeQuery(sql)
-          .setParameter(1, classId)
-          .setParameter(2, ingestWindowDays)
-          .getResultList();
-    } catch (PersistenceException ex) {
-      log.error("PTA wrong-question ingest query failed for class {}: {}", classId, ex.getMessage());
-      return new IngestionSummary(0, 0, 0);
-    }
+    List<Object[]> rows = em.createNativeQuery(sql)
+        .setParameter(1, classId)
+        .setParameter(2, ingestWindowDays)
+        .getResultList();
 
     int ingested = 0;
     int skipped = 0;
