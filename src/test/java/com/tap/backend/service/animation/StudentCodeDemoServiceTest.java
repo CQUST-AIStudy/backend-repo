@@ -57,8 +57,9 @@ class StudentCodeDemoServiceTest {
 
     @BeforeEach
     void setUp() {
+        CodeDemoComposer composer = new CodeDemoComposer(sandboxService, conceptStepsWorkflow, aiClient);
         service = new StudentCodeDemoService(
-                studentPrincipalResolver, repository, sandboxService, conceptStepsWorkflow, aiClient, objectMapper);
+                studentPrincipalResolver, repository, composer, objectMapper);
         ReflectionTestUtils.setField(service, "em", em);
 
         when(studentPrincipalResolver.requireStudent(nullable(UserPrincipal.class)))
@@ -71,22 +72,7 @@ class StudentCodeDemoServiceTest {
                 java.util.Collections.singletonList(new Object[]{1L, "两数之和", STATEMENT, CODE}));
     }
 
-    // (c) 输入样例解析
-    @Test
-    void resolveStdinParsesInputSample() {
-        assertEquals("3 4", service.resolveStdin(STATEMENT));
-    }
-
-    @Test
-    void resolveStdinParsesFencedInputSample() {
-        String md = "输入样例：\n```\n5 6\n```\n输出样例\n11";
-        assertEquals("5 6", service.resolveStdin(md));
-    }
-
-    @Test
-    void resolveStdinReturnsEmptyWhenAbsent() {
-        assertEquals("", service.resolveStdin("没有样例的题面"));
-    }
+    // 输入样例解析用例已迁移至 CodeDemoComposerTest（resolveStdin 逻辑随抽取而移动）
 
     // (a) 真实执行出 frames → PYTHON_TUTOR
     @Test

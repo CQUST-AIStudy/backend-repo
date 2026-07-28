@@ -6,24 +6,12 @@ import com.tap.backend.domain.animation.StudentCodeDemoEntity;
 import com.tap.backend.repo.StudentCodeDemoRepository;
 import com.tap.backend.security.StudentPrincipalResolver;
 import com.tap.backend.security.UserPrincipal;
-import com.tap.backend.service.grading.animation.AnimationCandidate;
-import com.tap.backend.service.grading.animation.AnimationResult;
-import com.tap.backend.service.grading.animation.AnimationWorkflow;
-import com.tap.backend.service.grading.animation.CodeContext;
-import com.tap.backend.service.grading.animation.ConceptStepsWorkflow;
-import com.tap.backend.service.grading.animation.ErrorPatternDetector;
-import com.tap.backend.service.grading.animation.ProblemContext;
-import com.tap.backend.service.grading.animation.execution.CodeExecutionSandboxService;
-import com.tap.backend.service.grading.animation.execution.ExecutionTrace;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
-import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -36,23 +24,16 @@ import org.springframework.web.server.ResponseStatusException;
  * <p>
  * 只演示学生本人已入库的代码（按 {@code student_no + offering_id + problem_no} 重查 artifact），
  * 不接受前端直接提交任意代码执行。stdin 允许自定义（默认取题面「输入样例」）。
- * 真实执行（gcc 插桩沙箱）优先，失败/空轨迹时回退 LLM 概念分步动画（CONCEPT_STEPS）。
- * 结果按题缓存（upsert），可 {@code force} 重新生成。
+ * 动画合成（真实执行优先→LLM 兜底）委托 {@link CodeDemoComposer}。结果按题缓存（upsert），可 {@code force} 重新生成。
  */
 @Service
 public class StudentCodeDemoService {
 
     private static final Logger log = LoggerFactory.getLogger(StudentCodeDemoService.class);
 
-    /** 从题面提取首个「输入样例」：兼容围栏代码块与纯文本，止于「输出样例」或结尾。 */
-    private static final Pattern INPUT_SAMPLE = Pattern.compile(
-            "输入样例[^\\n：:]*[：:]?\\s*(?:```[a-zA-Z]*\\s*)?([\\s\\S]*?)(?:```|输出样例|$)");
-
     private final StudentPrincipalResolver studentPrincipalResolver;
     private final StudentCodeDemoRepository repository;
-    private final CodeExecutionSandboxService sandboxService;
-    private final ConceptStepsWorkflow conceptStepsWorkflow;
-    private final AnimationAiClient aiClient;
+    private final CodeDemoComposer composer;
     private final ObjectMapper objectMapper;
 
     @PersistenceContext
@@ -60,15 +41,11 @@ public class StudentCodeDemoService {
 
     public StudentCodeDemoService(StudentPrincipalResolver studentPrincipalResolver,
                                   StudentCodeDemoRepository repository,
-                                  CodeExecutionSandboxService sandboxService,
-                                  ConceptStepsWorkflow conceptStepsWorkflow,
-                                  AnimationAiClient aiClient,
+                                  CodeDemoComposer composer,
                                   ObjectMapper objectMapper) {
         this.studentPrincipalResolver = studentPrincipalResolver;
         this.repository = repository;
-        this.sandboxService = sandboxService;
-        this.conceptStepsWorkflow = conceptStepsWorkflow;
-        this.aiClient = aiClient;
+        this.composer = composer;
         this.objectMapper = objectMapper;
     }
 
@@ -101,10 +78,10 @@ public class StudentCodeDemoService {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "该题暂无已提交的代码，无法生成演示");
         }
 
-        String resolvedStdin = stdin != null ? stdin : autoStdin(target.statementMd(), code);
+        String resolvedStdin = stdin != null ? stdin : composer.autoStdin(target.statementMd(), code);
         String title = firstNonBlank(target.title(), "代码执行演示");
 
-        Map<String, Object> demonstration = buildDemonstration(code, resolvedStdin, title, experimentId);
+        Map<String, Object> demonstration = composer.buildDemonstration(code, resolvedStdin, title, experimentId);
 
         StudentCodeDemoEntity entity = existing.orElseGet(StudentCodeDemoEntity::new);
         entity.setStudentProfileId(target.studentProfileId());
@@ -121,188 +98,6 @@ public class StudentCodeDemoService {
         repository.save(entity);
 
         return toView(entity);
-    }
-
-    // ---- 演示合成 ---------------------------------------------------------
-
-    private Map<String, Object> buildDemonstration(String code, String stdin, String title, Long experimentId) {
-        // 1. 真实执行优先（缺 main 的片段补最小 main 壳）
-        String executable = ensureMainFunction(code);
-        try {
-            ExecutionTrace trace = sandboxService.execute("c", executable, stdin);
-            if (trace.success()) {
-                List<Map<String, Object>> frames = trace.toFrameList();
-                if (!frames.isEmpty()) {
-                    return demonstration(
-                            title,
-                            "逐行展示这段代码的真实执行过程。",
-                            executable,
-                            "",
-                            0,
-                            frames,
-                            AnimationWorkflow.PYTHON_TUTOR.name());
-                }
-            }
-            log.info("代码演示真实执行无有效轨迹，回退 LLM：success={}", trace.success());
-        } catch (RuntimeException e) {
-            log.warn("代码演示真实执行异常，回退 LLM：{}", e.getMessage());
-        }
-
-        // 2. LLM 概念分步兜底
-        AnimationResult result = conceptStepsWorkflow.generate(buildCandidate(code, title, experimentId), 0);
-        Object metaSource = result.metadata().get("sourceCode");
-        String sourceCode = metaSource != null && !metaSource.toString().isBlank() ? metaSource.toString() : code;
-        return demonstration(
-                firstNonBlank(result.title(), title),
-                result.explanation(),
-                sourceCode,
-                String.valueOf(result.metadata().getOrDefault("correctedCode", "")),
-                toInt(result.metadata().get("errorLine")),
-                result.frames(),
-                result.workflow());
-    }
-
-    private AnimationCandidate buildCandidate(String code, String title, Long experimentId) {
-        List<String> lines = Arrays.asList(code.split("\n", -1));
-        CodeContext codeContext = new CodeContext(lines, 1, lines.size(), 1, lines.size());
-        ProblemContext problemContext = new ProblemContext(experimentId, title, "", List.of(), null, null);
-        AnimationCandidate.AnnotationInfo annotation = new AnimationCandidate.AnnotationInfo(
-                "GENERIC", null, code, "演示这段代码的执行过程", false);
-        return new AnimationCandidate(null, annotation, null, codeContext, problemContext,
-                ErrorPatternDetector.ErrorType.GENERIC_HIGHLIGHT);
-    }
-
-    private Map<String, Object> demonstration(String title, String explanation, String sourceCode,
-                                              String correctedCode, int errorLine, Object frames, String workflow) {
-        Map<String, Object> demo = new LinkedHashMap<>();
-        demo.put("id", "code-demo");
-        demo.put("title", title);
-        demo.put("explanation", explanation == null ? "" : explanation);
-        demo.put("sourceCode", sourceCode);
-        demo.put("correctedCode", correctedCode == null ? "" : correctedCode);
-        demo.put("errorLine", errorLine);
-        demo.put("frames", frames == null ? List.of() : frames);
-        demo.put("workflow", workflow);
-        demo.put("highlightStartLine", 0);
-        demo.put("highlightEndLine", 0);
-        return demo;
-    }
-
-    /**
-     * 代码片段缺少 main 函数时补最小 main 壳，保证可编译执行。
-     * 逻辑照搬 PythonTutorWorkflow.ensureMainFunction。
-     */
-    private String ensureMainFunction(String sourceCode) {
-        if (sourceCode == null || sourceCode.contains("int main(") || sourceCode.contains("void main(")) {
-            return sourceCode;
-        }
-        StringBuilder sb = new StringBuilder();
-        if (!sourceCode.contains("#include")) {
-            sb.append("#include <stdio.h>\n#include <stdlib.h>\n\n");
-        }
-        sb.append(sourceCode);
-        sb.append("\n\n/* auto-added for trace */\nint main(void) {\n    return 0;\n}\n");
-        return sb.toString();
-    }
-
-    /** 从题面解析首个「输入样例」作为默认 stdin；解析不到返回空串。 */
-    String resolveStdin(String statementMd) {
-        if (statementMd == null || statementMd.isBlank()) {
-            return "";
-        }
-        Matcher m = INPUT_SAMPLE.matcher(statementMd);
-        if (m.find()) {
-            String sample = m.group(1);
-            if (sample != null) {
-                return cleanSample(sample);
-            }
-        }
-        return "";
-    }
-
-    /**
-     * 清洗题面样例：去除模板占位说明（如「在这里给出一组输入。例如：」），提取真正的输入数据。
-     * <p>PTA 题面常为模板 stub：真实样例往往跟在「例如：」之后，或前置一行以冒号结尾的提示语。
-     */
-    private String cleanSample(String raw) {
-        String s = raw == null ? "" : raw.strip();
-        if (s.isEmpty()) {
-            return "";
-        }
-        // 真实样例常跟在「例如：/例如:」之后，取其后内容
-        int idx = Math.max(s.lastIndexOf("例如："), s.lastIndexOf("例如:"));
-        if (idx >= 0) {
-            s = s.substring(idx + 3).strip();
-        }
-        // 丢弃开头以冒号结尾的提示行（如「在这里给出一组输入。」）与空行
-        String[] lines = s.split("\n", -1);
-        StringBuilder kept = new StringBuilder();
-        boolean started = false;
-        for (String line : lines) {
-            String t = line.strip();
-            if (!started) {
-                if (t.isEmpty() || t.endsWith("：") || t.endsWith(":")) {
-                    continue;
-                }
-                started = true;
-            }
-            if (kept.length() > 0) {
-                kept.append("\n");
-            }
-            kept.append(line);
-        }
-        return kept.toString().strip();
-    }
-
-    /**
-     * 无用户输入时自动决定 stdin：优先调用 LLM 按题意+代码生成一组合法输入，
-     * LLM 不可用/失败时回退题面「输入样例」解析。
-     */
-    private String autoStdin(String statementMd, String code) {
-        String llm = llmGenerateStdin(statementMd, code);
-        if (!llm.isBlank()) {
-            return llm;
-        }
-        return resolveStdin(statementMd);
-    }
-
-    /** 调用 LLM 依据题目描述与代码构造一组可直接喂给程序的合法 stdin；失败返回空串。 */
-    private String llmGenerateStdin(String statementMd, String code) {
-        if (statementMd == null || statementMd.isBlank() || !aiClient.isChatAvailable()) {
-            return "";
-        }
-        try {
-            String system = "你是编程题的输入构造器。根据题目描述与程序代码，构造一组能让程序正常运行、"
-                    + "符合题意的合法标准输入(stdin)。严格要求：只输出输入内容本身（可包含多行与空格），"
-                    + "不要输出任何解释、标签、引号或 Markdown 代码块围栏。";
-            String user = "题目描述：\n" + truncate(statementMd, 4000)
-                    + "\n\n程序代码：\n" + truncate(code, 4000)
-                    + "\n\n请只输出一组可直接作为 stdin 的输入：";
-            return sanitizeStdin(aiClient.chat(system, user, 0.2));
-        } catch (RuntimeException e) {
-            log.warn("LLM 生成 stdin 失败，回退题面解析：{}", e.getMessage());
-            return "";
-        }
-    }
-
-    /** 清洗 LLM 返回：去除代码块围栏与首尾空白，限制长度。 */
-    private static String sanitizeStdin(String raw) {
-        if (raw == null) {
-            return "";
-        }
-        String s = raw.strip();
-        if (s.startsWith("```")) {
-            int nl = s.indexOf('\n');
-            s = nl >= 0 ? s.substring(nl + 1) : s.substring(3);
-            if (s.endsWith("```")) {
-                s = s.substring(0, s.length() - 3);
-            }
-        }
-        s = s.strip();
-        if (s.length() > 2000) {
-            s = s.substring(0, 2000);
-        }
-        return s.strip();
     }
 
     // ---- 目标定位与持久化视图 ---------------------------------------------
@@ -385,13 +180,6 @@ public class StudentCodeDemoService {
             }
         }
         return "";
-    }
-
-    private static String truncate(String value, int max) {
-        if (value == null) {
-            return "";
-        }
-        return value.length() <= max ? value : value.substring(0, max);
     }
 
     private record StudentTarget(Long studentProfileId, String title, String statementMd, String code) {}
