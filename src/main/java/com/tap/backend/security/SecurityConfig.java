@@ -101,6 +101,7 @@ public class SecurityConfig {
         .requestMatchers("/api/student/animation-explain/**").hasRole(UserRole.STUDENT.name())
         .requestMatchers("/api/student/grading-results/**").hasRole(UserRole.STUDENT.name())
         .requestMatchers("/api/student/code-demo/**").hasRole(UserRole.STUDENT.name())
+        .requestMatchers("/api/student/ai-assistant/**").hasRole(UserRole.STUDENT.name())
         .requestMatchers("/api/student/notifications/**").hasRole(UserRole.STUDENT.name())
         .requestMatchers("/api/analytics/**").hasAnyRole(UserRole.TEACHER.name(), UserRole.ADMIN.name())
         .anyRequest().authenticated()
