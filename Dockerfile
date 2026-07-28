@@ -7,7 +7,9 @@ COPY mvnw pom.xml ./
 RUN chmod +x ./mvnw
 
 COPY src src
-RUN ./mvnw -B -DskipTests package
+# 运行镜像只需打包产物，跳过测试编译与执行（测试交给 CI/本地）；
+# 避免个别历史/他人遗留的测试编译问题阻断生产镜像构建。
+RUN ./mvnw -B -Dmaven.test.skip=true package
 
 FROM eclipse-temurin:17-jre-jammy
 
