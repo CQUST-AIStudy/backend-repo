@@ -2317,6 +2317,14 @@ public class TeachingAdviceService {
     }
 
     private void finalizeFallbackAdvice(ObjectNode root) {
+        JsonNode conclusionNode = root.path("teachingConclusion");
+        if (conclusionNode instanceof ObjectNode conclusion) {
+            String cause = conclusion.path("cause").asText("");
+            if (hasMeaningfulText(cause)
+                    && !containsAny(cause, "证据", "数据", "提交", "题目", "错误", "核验", "追问", "样例", "现有数据")) {
+                conclusion.put("cause", cause.trim() + " 该判断需要结合提交记录、题目错误类型和课堂追问继续核验。");
+            }
+        }
         for (JsonNode item : root.withArray("teacherFocus")) {
             if (!(item instanceof ObjectNode node)) continue;
             ensureSentenceField(node, "instruction");
