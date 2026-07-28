@@ -407,7 +407,7 @@ public class GradingSubmissionService {
             throw new IllegalStateException("请先撤回发布后再修改学生匹配");
         }
         GradingUnifiedLinkService.SubmissionIdentity identity =
-                gradingUnifiedLinkService.requireRosterStudent(submission.getTask(), studentProfileId);
+                gradingUnifiedLinkService.requireRosterStudent(submission.getTask(), studentProfileId, teacherId);
         applyIdentity(submission, identity);
         submission.setMatchStatus(com.tap.backend.domain.grading.SubmissionMatchStatus.MANUAL_CONFIRMED);
         submissionRepo.save(submission);

@@ -185,15 +185,18 @@ public class GradingTaskController {
         Long teacherId = teacherPrincipalResolver.requireTeacherId(principal);
         try {
             GradingTaskEntity task = taskService.getTaskDetail(id, teacherId);
-            // 先把学生管理里手动维护的名册幂等补齐到统一模型，再取候选列表。
-            gradingUnifiedLinkService.ensureRosterCoverage(task);
-            List<GradingUnifiedLinkService.SubmissionIdentity> roster = gradingUnifiedLinkService.listRoster(task);
+            // 先把学生管理里手动维护的名册幂等补齐到统一模型（覆盖老师名下所有班级），再取候选列表。
+            gradingUnifiedLinkService.ensureRosterCoverageForTeacher(teacherId);
+            // 候选放宽到老师名下所有教学班，任务无论绑定在哪个班都能跨班搜索并匹配学生。
+            List<GradingUnifiedLinkService.SubmissionIdentity> roster =
+                    gradingUnifiedLinkService.listCandidateRoster(task, teacherId);
             List<Map<String, Object>> result = roster.stream()
                     .map(identity -> {
                         Map<String, Object> row = new LinkedHashMap<>();
                         row.put("studentId", identity.studentProfileId());
                         row.put("studentNo", identity.studentNo());
                         row.put("studentName", identity.studentName());
+                        row.put("className", identity.className());
                         return row;
                     })
                     .toList();

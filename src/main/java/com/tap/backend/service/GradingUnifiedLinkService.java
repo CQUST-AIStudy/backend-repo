@@ -251,6 +251,94 @@ public class GradingUnifiedLinkService {
                 .orElseThrow(() -> new IllegalArgumentException("所选学生不在当前教学班中"));
     }
 
+    /**
+     * 手动改匹配时的候选放宽：优先任务所属班级，其次覆盖老师名下所有 ACTIVE 教学班，
+     * 使批改任务无论绑定在哪个班，老师都能匹配到自己任意一个班的学生。
+     */
+    public SubmissionIdentity requireRosterStudent(GradingTaskEntity task, Long studentProfileId, Long teacherId) {
+        return listCandidateRoster(task, teacherId).stream()
+                .filter(item -> Objects.equals(item.studentProfileId(), studentProfileId))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException("所选学生不在你的任何教学班中"));
+    }
+
+    /** 匹配候选名册：任务班级花名册 + 老师名下所有班级花名册，按 student_profile 主键去重。 */
+    public List<SubmissionIdentity> listCandidateRoster(GradingTaskEntity task, Long teacherId) {
+        java.util.LinkedHashMap<Long, SubmissionIdentity> merged = new java.util.LinkedHashMap<>();
+        for (SubmissionIdentity item : listRoster(task)) {
+            if (item.studentProfileId() != null) {
+                merged.putIfAbsent(item.studentProfileId(), item);
+            }
+        }
+        Long resolvedTeacherId = teacherId;
+        if (resolvedTeacherId == null && task != null) {
+            resolvedTeacherId = task.getTeacherId();
+            if (resolvedTeacherId == null && task.getTeacher() != null) {
+                resolvedTeacherId = task.getTeacher().getId();
+            }
+        }
+        for (SubmissionIdentity item : listTeacherRoster(resolvedTeacherId)) {
+            if (item.studentProfileId() != null) {
+                merged.putIfAbsent(item.studentProfileId(), item);
+            }
+        }
+        return new ArrayList<>(merged.values());
+    }
+
+    /** 老师名下所有 ACTIVE 教学班的学生（统一模型），每条带上所在班级名。 */
+    public List<SubmissionIdentity> listTeacherRoster(Long teacherId) {
+        if (teacherId == null) {
+            return List.of();
+        }
+        return jdbcTemplate.query(
+                """
+                SELECT DISTINCT sp.id, sp.student_no, sp.real_name, tc.name AS class_name, tu.username
+                FROM teaching_class tc
+                JOIN class_member cm ON cm.class_id = tc.id AND cm.member_status = 'ACTIVE'
+                JOIN student_profile sp ON sp.id = cm.student_id
+                LEFT JOIN tap_user tu ON tu.id = sp.user_id
+                WHERE tc.teacher_id = ? AND tc.status = 'ACTIVE'
+                ORDER BY tc.name, sp.student_no, sp.id
+                """,
+                (rs, rowNum) -> new SubmissionIdentity(
+                        rs.getLong("id"),
+                        normalizeStudentNo(rs.getString("student_no")),
+                        normalizeText(rs.getString("real_name")),
+                        normalizeText(rs.getString("class_name")),
+                        normalizeText(rs.getString("username")),
+                        parseLegacyStudentId(normalizeStudentNo(rs.getString("student_no")))
+                ),
+                teacherId
+        );
+    }
+
+    /** 把老师名下所有班级的 class_student 幂等补齐到统一模型，供候选放宽前调用。 */
+    public void ensureRosterCoverageForTeacher(Long teacherId) {
+        if (teacherId == null) {
+            return;
+        }
+        try {
+            jdbcTemplate.update("""
+                    INSERT IGNORE INTO student_profile (student_no, real_name, user_id, status)
+                    SELECT cs.student_num, cs.student_name, cs.user_id, 'ACTIVE'
+                    FROM class_student cs
+                    JOIN teaching_class tc ON tc.id = cs.class_id
+                    WHERE tc.teacher_id = ? AND tc.status = 'ACTIVE'
+                      AND cs.student_num IS NOT NULL AND cs.student_num <> ''
+                    """, teacherId);
+            jdbcTemplate.update("""
+                    INSERT IGNORE INTO class_member (class_id, student_id, member_status)
+                    SELECT cs.class_id, sp.id, 'ACTIVE'
+                    FROM class_student cs
+                    JOIN teaching_class tc ON tc.id = cs.class_id
+                    JOIN student_profile sp ON cs.student_num = sp.student_no COLLATE utf8mb4_unicode_ci
+                    WHERE tc.teacher_id = ? AND tc.status = 'ACTIVE'
+                    """, teacherId);
+        } catch (Exception e) {
+            log.warn("ensureRosterCoverageForTeacher: failed for teacher {}: {}", teacherId, e.getMessage());
+        }
+    }
+
     private String normalizeFilenameBackedName(GradingSubmissionEntity submission) {
         String value = normalizeText(submission.getStudentName());
         if (value == null || Objects.equals(value, normalizeText(submission.getOriginalFilename()))) {
