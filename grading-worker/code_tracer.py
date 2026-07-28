@@ -27,6 +27,28 @@ from pathlib import Path
 from typing import Any
 
 
+# --- 轻量沙箱加固：对编译/运行子进程施加资源限制并截断输出（仅 POSIX 生效） ---
+def _rlimit_preexec():  # pragma: no cover - 仅 Linux 运行期生效
+    """在 fork 后、exec 前对子进程设置 CPU/内存/文件大小上限，挡住死循环/内存炸/写大文件。"""
+    import resource
+
+    resource.setrlimit(resource.RLIMIT_CPU, (5, 6))
+    resource.setrlimit(resource.RLIMIT_AS, (512 * 1024 * 1024, 512 * 1024 * 1024))
+    resource.setrlimit(resource.RLIMIT_FSIZE, (8 * 1024 * 1024, 8 * 1024 * 1024))
+
+
+_PREEXEC = _rlimit_preexec if hasattr(os, "fork") else None
+_OUTPUT_CAP = 256 * 1024
+
+
+def _cap(text):
+    """截断过长输出，防止内存/传输膨胀。"""
+    if text is None or len(text) <= _OUTPUT_CAP:
+        return text
+    return text[:_OUTPUT_CAP] + "\n...[truncated]"
+
+
+
 # ---------------------------------------------------------------------------
 # Common data structures
 # ---------------------------------------------------------------------------
@@ -110,7 +132,7 @@ class CTracer:
             # Compile
             compile_cmd = ["gcc", "-g", "-O0", "-o", str(exe_path), str(src_path)]
             compile_res = subprocess.run(
-                compile_cmd, capture_output=True, text=True, timeout=30
+                compile_cmd, capture_output=True, text=True, timeout=30, preexec_fn=_PREEXEC
             )
             if compile_res.returncode != 0:
                 return TraceResult(
@@ -118,9 +140,9 @@ class CTracer:
                     language="c",
                     source_code=self.source_code,
                     steps=[],
-                    stdout=compile_res.stdout,
-                    stderr=compile_res.stderr,
-                    error_message=f"Compilation failed:\n{compile_res.stderr}",
+                    stdout=_cap(compile_res.stdout),
+                    stderr=_cap(compile_res.stderr),
+                    error_message=f"Compilation failed:\n{_cap(compile_res.stderr)}",
                 )
 
             # Run
@@ -132,6 +154,7 @@ class CTracer:
                     capture_output=True,
                     text=True,
                     timeout=10,
+                    preexec_fn=_PREEXEC,
                 )
             except subprocess.TimeoutExpired:
                 return TraceResult(
@@ -142,8 +165,10 @@ class CTracer:
                     error_message="Execution timeout (possible infinite loop)",
                 )
 
-            # Parse trace from stderr
-            steps = self._parse_trace(run_res.stderr, self.source_code)
+            # Parse trace from stderr（先截断，防止超大输出撑爆内存/传输）
+            run_stdout = _cap(run_res.stdout)
+            run_stderr = _cap(run_res.stderr)
+            steps = self._parse_trace(run_stderr, self.source_code)
 
             # If program crashed, mark last step as error
             if run_res.returncode != 0 and steps:
@@ -155,8 +180,8 @@ class CTracer:
                 language="c",
                 source_code=self.source_code,
                 steps=steps,
-                stdout=run_res.stdout,
-                stderr=run_res.stderr,
+                stdout=run_stdout,
+                stderr=run_stderr,
             )
 
     def _instrument(self, code: str) -> str:
