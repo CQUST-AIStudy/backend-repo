@@ -26,7 +26,6 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import org.springframework.cache.annotation.Cacheable;
-import org.springframework.cache.annotation.CacheEvict;
 
 @Service
 public class ProfileService {
@@ -63,8 +62,8 @@ public class ProfileService {
 
     // ========== 学生画像 ==========
 
-    @Cacheable(value = "studentProfile", key = "#studentId")
     public Map<String, Object> getStudentProfile(String studentId) {
+        // 掌握度直接依赖最新提交记录；AI 文案另有基于 profile_json 的数据库缓存。
         Map<String, Object> studentInfo = profileDao.getStudentInfo(studentId);
         List<Map<String, Object>> expStats = profileDao.getStudentExperimentStats(studentId);
 
@@ -579,7 +578,6 @@ public class ProfileService {
     /**
      * 强制刷新：重新调用DeepSeek分析，更新DB缓存，返回新反馈
      */
-    @CacheEvict(value = "studentProfile", key = "#studentId")
     public Map<String, Object> refreshFeedback(String studentId) {
         // 重新计算完整画像
         Map<String, Object> studentInfo = profileDao.getStudentInfo(studentId);
