@@ -69,6 +69,23 @@ class ExperimentAnalyticsControllerTest {
     }
 
     @Test
+    void listExperimentsFiltersOfferingsFromAnotherRecognizableCourse() {
+        stubTeacher();
+        stubNamedParameters();
+        when(query.getResultList()).thenReturn(List.of(
+                new Object[] {101, "计科25数据结构期中考试重现", "计科25", 7L, "计科25", 9L, "数据结构", 35, 30, 6},
+                new Object[] {102, "2025级C语言实验4（计数器控制循环）", "计科25", 7L, "计科25", 9L, "数据结构", 35, 30, 6}
+        ));
+
+        List<Map<String, Object>> result = controller.listExperiments(
+                null, 7L, null, null, request).data();
+
+        assertEquals(1, result.size());
+        assertEquals(101, result.get(0).get("experimentId"));
+        assertEquals("计科25数据结构期中考试重现", result.get(0).get("name"));
+    }
+
+    @Test
     void classPrefixesReturnActiveClassesWithOfferings() {
         stubTeacher();
         when(query.setParameter(anyString(), org.mockito.ArgumentMatchers.any())).thenReturn(query);

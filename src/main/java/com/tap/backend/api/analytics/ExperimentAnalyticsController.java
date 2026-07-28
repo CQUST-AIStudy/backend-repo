@@ -33,6 +33,17 @@ public class ExperimentAnalyticsController {
 
     private static final String DATA_STRUCTURE_KEYWORD = "\u6570\u636e\u7ed3\u6784";
     private static final String C_LANGUAGE_KEYWORD = "C\u8bed\u8a00";
+    private static final List<List<String>> COURSE_SUBJECT_ALIASES = List.of(
+            List.of(DATA_STRUCTURE_KEYWORD),
+            List.of(C_LANGUAGE_KEYWORD, "C\u7a0b\u5e8f\u8bbe\u8ba1"),
+            List.of("Java"),
+            List.of("Python"),
+            List.of("\u8ba1\u7b97\u673a\u7f51\u7edc"),
+            List.of("\u64cd\u4f5c\u7cfb\u7edf"),
+            List.of("\u6570\u636e\u5e93"),
+            List.of("\u8f6f\u4ef6\u5de5\u7a0b"),
+            List.of("\u8ba1\u7b97\u673a\u7ec4\u6210")
+    );
 
     private static final String COLL = " COLLATE utf8mb4_0900_ai_ci";
     private static final String EMPTY_STR = "_utf8mb4'' COLLATE utf8mb4_0900_ai_ci";
@@ -44,12 +55,8 @@ public class ExperimentAnalyticsController {
             "COALESCE(NULLIF(TRIM(tc.pta_keyword), " + EMPTY_STR + "), " + EXPERIMENT_NAME_EXPR + ", tc.name)";
     private static final String DATA_STRUCTURE_SQL_LITERAL =
             "_utf8mb4'" + DATA_STRUCTURE_KEYWORD + "' COLLATE utf8mb4_0900_ai_ci";
-    private static final String C_LANGUAGE_SQL_LITERAL =
-            "_utf8mb4'" + C_LANGUAGE_KEYWORD + "' COLLATE utf8mb4_0900_ai_ci";
     private static final String DATA_STRUCTURE_LIKE_PATTERN =
             "CONCAT('%', " + DATA_STRUCTURE_SQL_LITERAL + ", '%')";
-    private static final String C_LANGUAGE_LIKE_PATTERN =
-            "CONCAT('%', " + C_LANGUAGE_SQL_LITERAL + ", '%')";
 
     private static final String EXPERIMENT_NAME_EXPR_COLL = EXPERIMENT_NAME_EXPR + COLL;
     private static final String PREFIX_SOURCE_EXPR_COLL = PREFIX_SOURCE_EXPR + COLL;
@@ -150,6 +157,9 @@ public class ExperimentAnalyticsController {
         List<Object[]> rows = query.getResultList();
         List<Map<String, Object>> result = new ArrayList<>(rows.size());
         for (Object[] row : rows) {
+            if (!belongsToCourse(row[6], row[1])) {
+                continue;
+            }
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("experimentId", toInt(row[0]));
             item.put("name", row[1]);
@@ -336,6 +346,9 @@ public class ExperimentAnalyticsController {
         }
 
         Object[] row = rows.get(0);
+        if (!belongsToCourse(row[6], row[1])) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "experiment analytics not found");
+        }
         Map<String, Object> meta = new LinkedHashMap<>();
         meta.put("experimentId", toInt(row[0]));
         meta.put("experimentName", row[1]);
@@ -797,6 +810,32 @@ public class ExperimentAnalyticsController {
 
     private static boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    /**
+     * Legacy imports may attach offerings from different courses to one teaching class.
+     * Reject an offering only when both sides expose conflicting, recognizable subjects;
+     * generic titles without a course marker remain available.
+     */
+    private static boolean belongsToCourse(Object courseValue, Object experimentValue) {
+        int courseSubject = detectCourseSubject(normalizeText(courseValue));
+        int experimentSubject = detectCourseSubject(normalizeText(experimentValue));
+        return courseSubject < 0 || experimentSubject < 0 || courseSubject == experimentSubject;
+    }
+
+    private static int detectCourseSubject(String value) {
+        if (!hasText(value)) {
+            return -1;
+        }
+        String normalized = value.toLowerCase(java.util.Locale.ROOT);
+        for (int i = 0; i < COURSE_SUBJECT_ALIASES.size(); i++) {
+            for (String alias : COURSE_SUBJECT_ALIASES.get(i)) {
+                if (normalized.contains(alias.toLowerCase(java.util.Locale.ROOT))) {
+                    return i;
+                }
+            }
+        }
+        return -1;
     }
 
     private static String normalizeText(Object value) {
