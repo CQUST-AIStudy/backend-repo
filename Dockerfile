@@ -13,11 +13,14 @@ FROM eclipse-temurin:17-jre-jammy
 
 ENV TZ=Asia/Shanghai \
     SPRING_PROFILES_ACTIVE=prod \
-    JAVA_OPTS=""
+    JAVA_OPTS="" \
+    TAP_GRADING_REPORT_FONT_PATH=/usr/share/fonts/truetype/arphic/ukai.ttc
 
 # 错误演示真实执行沙箱依赖：python3 跑 code_tracer.py，gcc 编译学生 C 代码
+# 批注 PDF 的手写体签字/分数依赖中文楷体：fonts-arphic-ukai(AR PL UKai, 手写楷体)；
+# fonts-wqy-zenhei 兜底覆盖 UKai 缺失的少数字形，避免中文回退成英文 Score:/Teacher。
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 gcc libc6-dev \
+    && apt-get install -y --no-install-recommends python3 gcc libc6-dev fonts-arphic-ukai fonts-wqy-zenhei \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd --system app \
