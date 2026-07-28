@@ -273,6 +273,22 @@ public class TeachingClassService {
         }
     }
 
+    /** 移除学生时同步将统一名册成员标记为 LEFT，保证匹配候选与学生管理一致。 */
+    private void removeStudentFromUnifiedRoster(Long classId, String studentNum) {
+        if (classId == null || studentNum == null || studentNum.isBlank()) {
+            return;
+        }
+        try {
+            jdbcTemplate.update(
+                    "UPDATE class_member cm JOIN student_profile sp ON sp.id = cm.student_id "
+                            + "SET cm.member_status = 'LEFT' "
+                            + "WHERE cm.class_id = ? AND sp.student_no = ?",
+                    classId, studentNum);
+        } catch (Exception e) {
+            log.warn("removeStudentFromUnifiedRoster: failed for class {} student {}: {}", classId, studentNum, e.getMessage());
+        }
+    }
+
     @Transactional
     public ClassStudentEntity addStudentForTeacher(
             Long classId,
@@ -459,7 +475,11 @@ public class TeachingClassService {
 
     @Transactional
     public void removeStudent(Long studentRecordId) {
+        ClassStudentEntity student = studentRepo.findById(studentRecordId).orElse(null);
         studentRepo.deleteById(studentRecordId);
+        if (student != null) {
+            removeStudentFromUnifiedRoster(student.getClassId(), student.getStudentNum());
+        }
     }
 
     @Transactional
@@ -471,6 +491,7 @@ public class TeachingClassService {
             throw new NoSuchElementException("student not found");
         }
         studentRepo.delete(student);
+        removeStudentFromUnifiedRoster(classId, student.getStudentNum());
     }
 
     @Transactional

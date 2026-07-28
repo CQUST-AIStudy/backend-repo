@@ -142,7 +142,7 @@ public class GradingUnifiedLinkService {
                     INSERT IGNORE INTO class_member (class_id, student_id, member_status)
                     SELECT cs.class_id, sp.id, 'ACTIVE'
                     FROM class_student cs
-                    JOIN student_profile sp ON sp.student_no = cs.student_num
+                    JOIN student_profile sp ON cs.student_num = sp.student_no COLLATE utf8mb4_unicode_ci
                     WHERE cs.class_id = ?
                     """, classId);
         } catch (Exception e) {
