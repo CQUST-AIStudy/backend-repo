@@ -167,49 +167,28 @@ public class ExperimentAnalyticsController {
     }
 
     @GetMapping("/class-prefixes")
-    public ApiResponse<List<String>> getClassPrefixes(
-            @RequestParam(required = false) Long classId,
-            @RequestParam(required = false) Long courseId,
-            @RequestParam(required = false) String courseName,
-            HttpServletRequest request) {
+    public ApiResponse<List<Map<String, Object>>> getClassPrefixes(HttpServletRequest request) {
         Integer teacherId = requireCurrentTeacherId(request);
-        StringBuilder sql = new StringBuilder("SELECT DISTINCT " + CLASS_PREFIX_EXPR + " AS prefix " +
-                "FROM assignment_offering ao " +
-                "JOIN assignment_template at ON at.id = ao.template_id " +
-                "JOIN teaching_class tc ON tc.id = ao.class_id " +
-                "LEFT JOIN course c ON c.id = tc.course_id " +
-                "WHERE ao.teacher_id = :teacherId " +
-                "  AND tc.teacher_id = :teacherId ");
-        if (classId != null) {
-            sql.append("AND ao.class_id = :classId ");
-        }
-        if (courseId != null) {
-            sql.append("AND tc.course_id = :courseId ");
-        } else if (hasText(courseName)) {
-            sql.append("AND ").append(COURSE_NAME_EXPR).append(COLL).append(" = :courseName ");
-        }
-        sql.append("ORDER BY prefix");
+        String sql = "SELECT tc.id AS classId, tc.name AS className " +
+                "FROM teaching_class tc " +
+                "WHERE tc.teacher_id = :teacherId " +
+                "  AND tc.status = 'ACTIVE' " +
+                "  AND EXISTS (SELECT 1 FROM assignment_offering ao WHERE ao.class_id = tc.id AND ao.teacher_id = :teacherId) " +
+                "ORDER BY tc.name";
 
         @SuppressWarnings("unchecked")
-        var query = em.createNativeQuery(sql.toString()).setParameter("teacherId", teacherId);
-        if (classId != null) {
-            query.setParameter("classId", classId);
-        }
-        if (courseId != null) {
-            query.setParameter("courseId", courseId);
-        } else if (hasText(courseName)) {
-            query.setParameter("courseName", courseName.trim());
-        }
-        List<Object> rows = query.getResultList();
+        List<Object[]> rows = em.createNativeQuery(sql)
+                .setParameter("teacherId", teacherId)
+                .getResultList();
 
-        List<String> prefixes = new ArrayList<>();
-        for (Object row : rows) {
-            String prefix = normalizeText(row);
-            if (hasText(prefix)) {
-                prefixes.add(prefix);
-            }
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Object[] row : rows) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("classId", toNullableLong(row[0]));
+            item.put("name", normalizeText(row[1]));
+            result.add(item);
         }
-        return ApiResponse.of(prefixes);
+        return ApiResponse.of(result);
     }
 
     @GetMapping("/experiments/{experimentId}")
