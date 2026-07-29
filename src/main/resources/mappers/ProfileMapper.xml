@@ -35,40 +35,6 @@
         ORDER BY cnt DESC
     </select>
 
-    <!-- 班级所有学生的实验聚合统计 -->
-    <select id="getClassExperimentStats" resultType="map">
-        SELECT
-            ss.student_id,
-            ss.student_name,
-            ss.experiment_id,
-            ss.experiment_name,
-            COUNT(*) AS total_submissions,
-            SUM(CASE WHEN UPPER(ss.situation) IN ('C', 'AC', 'ACCEPTED') THEN 1 ELSE 0 END) AS ac_count,
-            COUNT(DISTINCT ss.serial_number) AS question_count
-        FROM submit_situation ss
-        <if test="classId == null">
-            JOIN student s ON s.student_id = ss.student_id
-        </if>
-        <where>
-            <if test="classId != null">
-                AND EXISTS (
-                    SELECT 1
-                    FROM class_member cm
-                    JOIN student_profile sp ON sp.id = cm.student_id
-                    WHERE cm.class_id = #{classId}
-                      AND cm.member_status = 'ACTIVE'
-                      AND sp.status != 'DELETED'
-                      AND sp.student_no COLLATE utf8mb4_unicode_ci = ss.student_id COLLATE utf8mb4_unicode_ci
-                )
-            </if>
-            <if test="classId == null and className != null and className != ''">
-                AND (s.class_name = #{className} OR s.class_name LIKE CONCAT(#{className}, '%'))
-            </if>
-        </where>
-        GROUP BY ss.student_id, ss.student_name, ss.experiment_id, ss.experiment_name
-        ORDER BY ss.student_id, ss.experiment_id
-    </select>
-
     <!-- 所有学生列表 -->
     <select id="getAllStudents" resultType="map">
         <choose>
