@@ -5,6 +5,8 @@ import com.tap.backend.academic.leetcode.execution.LeetCodeSubmissionFacade;
 import com.tap.backend.academic.security.StudentSessionResolver;
 import com.tap.backend.academic.service.LeetCodeExecutionService;
 import com.tap.backend.academic.service.LeetCodeProblemService;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -26,6 +28,9 @@ public class LeetCodeController {
     private final LeetCodeExecutionService executionService;
     private final LeetCodeSubmissionFacade submissionFacade;
     private final StudentSessionResolver studentSessionResolver;
+
+    @PersistenceContext
+    private EntityManager em;
 
     public LeetCodeController(
             LeetCodeProblemService problemService,
@@ -110,10 +115,10 @@ public class LeetCodeController {
         Map<String, Object> response = new HashMap<>();
         try {
             String studentNo = resolveStudentNo(httpRequest);
-            Integer studentId = parseInteger(studentNo);
+            Integer studentId = resolveStudentProfileId(studentNo);
             if (studentId == null) {
                 response.put("success", false);
-                response.put("message", "authentication required");
+                response.put("message", "student profile not found");
                 return ResponseEntity.ok(response);
             }
 
@@ -180,6 +185,21 @@ public class LeetCodeController {
         try {
             return studentSessionResolver.requireStudentId(request);
         } catch (RuntimeException e) {
+            return null;
+        }
+    }
+
+    private Integer resolveStudentProfileId(String studentNo) {
+        if (studentNo == null || studentNo.isBlank()) {
+            return null;
+        }
+        try {
+            Object value = em.createNativeQuery(
+                            "SELECT id FROM student_profile WHERE student_no = ?1 LIMIT 1")
+                    .setParameter(1, studentNo)
+                    .getSingleResult();
+            return value instanceof Number ? ((Number) value).intValue() : null;
+        } catch (Exception e) {
             return null;
         }
     }
