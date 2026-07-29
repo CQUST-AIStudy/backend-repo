@@ -45,6 +45,16 @@ public interface TeacherExperimentQueryDao {
     String SUBMISSION_ACTIVITY_PREDICATE =
             "LOWER(COALESCE(sa.submission_status, '')) IN ('graded', 'submitted') " +
                     "OR COALESCE(sa.completion_evidence, 'NONE') IN ('TRANSCRIPT_SCORE', 'ANSWER_SHEET', 'SCORED_CODE')";
+    String ACTIVE_PROGRAMMING_PROBLEM_PREDICATE =
+            "EXISTS (" +
+                    "SELECT 1 FROM assignment_problem eligible_ap " +
+                    "JOIN pta_problem_detail eligible_pd " +
+                    "  ON eligible_pd.problem_set_id = ao.pta_problem_set_id " +
+                    " AND eligible_pd.problem_set_problem_id = eligible_ap.source_problem_id " +
+                    "WHERE eligible_ap.offering_id = ao.id " +
+                    "  AND eligible_ap.status = 'ACTIVE' " +
+                    "  AND UPPER(TRIM(COALESCE(eligible_pd.problem_type, ''))) = 'PROGRAMMING'" +
+                    ")";
 
     @Select({
             "<script>",
@@ -68,6 +78,7 @@ public interface TeacherExperimentQueryDao {
             "JOIN tap_user tu ON tu.id = #{teacherId}",
             "LEFT JOIN student_assignment sa ON sa.offering_id = ao.id",
             "WHERE ao.teacher_id = tu.id",
+            "  AND " + ACTIVE_PROGRAMMING_PROBLEM_PREDICATE,
             "  AND " + DATA_STRUCTURE_SCOPE_PREDICATE,
             "  <if test='classId != null'>",
             "    AND ao.class_id = #{classId}",
@@ -113,6 +124,7 @@ public interface TeacherExperimentQueryDao {
             "JOIN tap_user tu ON tu.id = #{teacherId}",
             "LEFT JOIN student_assignment sa ON sa.offering_id = ao.id",
             "WHERE ao.teacher_id = tu.id",
+            "  AND " + ACTIVE_PROGRAMMING_PROBLEM_PREDICATE,
             "  <if test='classId != null'>",
             "    AND ao.class_id = #{classId}",
             "  </if>",
@@ -650,6 +662,7 @@ public interface TeacherExperimentQueryDao {
             "JOIN assignment_template at ON at.id = ao.template_id",
             "JOIN teaching_class tc ON tc.id = ao.class_id",
             "WHERE 1=1",
+            "  AND " + ACTIVE_PROGRAMMING_PROBLEM_PREDICATE,
             "  <if test='scope == null or scope != \"all\"'>",
             "    AND " + DATA_STRUCTURE_SCOPE_PREDICATE,
             "  </if>",

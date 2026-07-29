@@ -829,6 +829,17 @@ public class ApiController {
                     ? "AND at.title NOT LIKE '%推荐题目集%' " +
                       "AND COALESCE(NULLIF(ao.title_override, ''), at.title) NOT LIKE '%推荐题目集%' "
                     : "";
+            String programmingDataClause = excludeRecommended
+                    ? "AND EXISTS (" +
+                      "SELECT 1 FROM assignment_problem eligible_ap " +
+                      "JOIN pta_problem_detail eligible_pd " +
+                      "  ON eligible_pd.problem_set_id = ao.pta_problem_set_id " +
+                      " AND eligible_pd.problem_set_problem_id = eligible_ap.source_problem_id " +
+                      "WHERE eligible_ap.offering_id = ao.id " +
+                      "  AND eligible_ap.status = 'ACTIVE' " +
+                      "  AND UPPER(TRIM(COALESCE(eligible_pd.problem_type, ''))) = 'PROGRAMMING'" +
+                      ") "
+                    : "";
 
             @SuppressWarnings("unchecked")
             List<Object[]> rows = em.createNativeQuery(
@@ -852,10 +863,11 @@ public class ApiController {
                             ") latest_attempt ON latest_attempt.offering_id = ao.id " +
                             "AND latest_attempt.student_id = sp.id " +
                             "WHERE sp.student_no = ?1 " +
-                            "AND (?2 IS NULL OR cm.class_id = ?2) " +
-                            "AND (tc.status IS NULL OR tc.status = 'ACTIVE') " +
-                            "AND ao.status <> 'ARCHIVED' " +
-                            excludeClause +
+                             "AND (?2 IS NULL OR cm.class_id = ?2) " +
+                             "AND (tc.status IS NULL OR tc.status = 'ACTIVE') " +
+                             "AND ao.status <> 'ARCHIVED' " +
+                             programmingDataClause +
+                             excludeClause +
                             "ORDER BY tc.id, COALESCE(ao.seq_no, 999999), ao.id"
             ).setParameter(1, studentNo)
                     .setParameter(2, classId)

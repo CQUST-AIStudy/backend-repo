@@ -62,6 +62,16 @@ public class ExperimentAnalyticsController {
                     "OR COALESCE(sa.completion_evidence, 'NONE') IN ('TRANSCRIPT_SCORE', 'ANSWER_SHEET', 'SCORED_CODE')";
     private static final String SCORED_ASSIGNMENT_PREDICATE =
             "LOWER(COALESCE(sa.submission_status, '')) = 'graded'";
+    private static final String ACTIVE_PROGRAMMING_PROBLEM_PREDICATE =
+            "EXISTS (" +
+                    "SELECT 1 FROM assignment_problem eligible_ap " +
+                    "JOIN pta_problem_detail eligible_pd " +
+                    "  ON eligible_pd.problem_set_id = ao.pta_problem_set_id " +
+                    " AND eligible_pd.problem_set_problem_id = eligible_ap.source_problem_id " +
+                    "WHERE eligible_ap.offering_id = ao.id " +
+                    "  AND eligible_ap.status = 'ACTIVE' " +
+                    "  AND UPPER(TRIM(COALESCE(eligible_pd.problem_type, ''))) = 'PROGRAMMING'" +
+                    ")";
 
     @PersistenceContext
     private EntityManager em;
@@ -100,7 +110,8 @@ public class ExperimentAnalyticsController {
                 .append("LEFT JOIN student_assignment sa ON sa.offering_id = ao.id ")
                 .append("LEFT JOIN assignment_problem ap ON ap.offering_id = ao.id AND ap.status = 'ACTIVE' ")
                 .append("WHERE ao.teacher_id = :teacherId ")
-                .append("  AND tc.teacher_id = :teacherId ");
+                .append("  AND tc.teacher_id = :teacherId ")
+                .append("  AND ").append(ACTIVE_PROGRAMMING_PROBLEM_PREDICATE).append(" ");
 
         boolean hasPrefix = hasText(classPrefix);
         if (hasPrefix) {
