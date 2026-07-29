@@ -851,16 +851,19 @@ public class ProfileService {
 
     // ========== 班级画像 ==========
 
-    @Cacheable(value = "classProfile", key = "#className == null ? 'ALL' : #className")
-    public Map<String, Object> getClassProfile(String className) {
-        List<Map<String, Object>> allStats = profileDao.getClassExperimentStats(className);
-        List<Map<String, Object>> students = profileDao.getAllStudents(className);
+    public Map<String, Object> getClassProfile(Long classId, String className, String courseName) {
+        List<Map<String, Object>> allStats = profileDao.getClassExperimentStats(classId, className);
+        List<Map<String, Object>> students = profileDao.getAllStudents(classId, className);
         if (allStats == null) {
             allStats = new ArrayList<>();
         }
+        allStats.removeIf(row -> !CourseScopeMatcher.belongsToCourse(courseName, row.get("experiment_name")));
         if (students == null) {
             students = new ArrayList<>();
         }
+        long totalSubmissions = allStats.stream()
+                .mapToLong(row -> asLong(row.get("total_submissions")))
+                .sum();
 
         // 按学生分组
         Map<String, List<Map<String, Object>>> byStudent = new LinkedHashMap<>();
@@ -930,41 +933,55 @@ public class ProfileService {
                 for (int eid : dim.getValue()) {
                     if (expMastery.containsKey(eid)) { sum += expMastery.get(eid); cnt++; }
                 }
-                double avg = cnt > 0 ? sum / cnt : 0;
-                dimScores.put(dim.getKey(), Math.round(avg * 10.0) / 10.0);
-                totalScore += avg;
-                dimCount++;
+                if (cnt > 0) {
+                    double avg = sum / cnt;
+                    dimScores.put(dim.getKey(), Math.round(avg * 10.0) / 10.0);
+                    totalScore += avg;
+                    dimCount++;
+                }
             }
-            studentDimScores.put(sid, dimScores);
-            studentOverallScores.put(sid, dimCount > 0 ? Math.round(totalScore / dimCount * 10.0) / 10.0 : 0);
+            if (dimCount > 0) {
+                studentDimScores.put(sid, dimScores);
+                studentOverallScores.put(sid, Math.round(totalScore / dimCount * 10.0) / 10.0);
+            }
         }
 
         // 1. 班级各维度平均分
         Map<String, Double> classDimAvg = new LinkedHashMap<>();
-        Map<String, Double> classDimMin = new LinkedHashMap<>();
         Map<String, Integer> classDimWeakCount = new LinkedHashMap<>();
+        Map<String, Integer> classDimEvidenceCount = new LinkedHashMap<>();
+        List<String> activeDimensions = new ArrayList<>();
         for (String dim : skillTreeConfig.getDimensions().keySet()) {
-            double sum = 0; int cnt = 0; double min = 100; int weakCnt = 0;
+            double sum = 0; int cnt = 0; int weakCnt = 0;
             for (var ds : studentDimScores.values()) {
-                double v = ds.getOrDefault(dim, 0.0);
+                if (!ds.containsKey(dim)) {
+                    continue;
+                }
+                double v = ds.get(dim);
                 sum += v; cnt++;
-                if (v < min) min = v;
                 if (v < 40) weakCnt++;
             }
-            classDimAvg.put(dim, cnt > 0 ? Math.round(sum / cnt * 10.0) / 10.0 : 0);
-            classDimMin.put(dim, min);
-            classDimWeakCount.put(dim, weakCnt);
+            if (cnt > 0) {
+                activeDimensions.add(dim);
+                classDimAvg.put(dim, Math.round(sum / cnt * 10.0) / 10.0);
+                classDimWeakCount.put(dim, weakCnt);
+                classDimEvidenceCount.put(dim, cnt);
+            }
         }
 
         // 2. 薄弱维度排行（按低分人数占比排序）
         List<Map<String, Object>> weakRanking = new ArrayList<>();
-        int totalStudents = studentDimScores.size();
-        for (String dim : skillTreeConfig.getDimensions().keySet()) {
+        int totalStudents = byStudent.size();
+        int analyzedStudents = studentOverallScores.size();
+        for (String dim : activeDimensions) {
             Map<String, Object> wr = new LinkedHashMap<>();
             wr.put("dimension", dim);
             wr.put("avgScore", classDimAvg.get(dim));
             wr.put("weakCount", classDimWeakCount.get(dim));
-            wr.put("weakRatio", totalStudents > 0 ? Math.round((double) classDimWeakCount.get(dim) / totalStudents * 1000.0) / 10.0 : 0);
+            int evidenceCount = classDimEvidenceCount.getOrDefault(dim, 0);
+            wr.put("weakRatio", evidenceCount > 0
+                    ? Math.round((double) classDimWeakCount.get(dim) / evidenceCount * 1000.0) / 10.0
+                    : 0);
             weakRanking.add(wr);
         }
         weakRanking.sort((a, b) -> Double.compare((double) b.get("weakRatio"), (double) a.get("weakRatio")));
@@ -994,12 +1011,16 @@ public class ProfileService {
         tiers.put("C", Map.of("label", "需关注 (<40)", "count", tierC.size(), "students", tierC));
 
         Map<String, Object> result = new LinkedHashMap<>();
+        result.put("classId", classId);
         result.put("className", className);
+        result.put("courseName", courseName);
         result.put("totalStudents", totalStudents);
+        result.put("analyzedStudents", analyzedStudents);
+        result.put("totalSubmissions", totalSubmissions);
         result.put("dimensionAvg", classDimAvg);
         result.put("weakRanking", weakRanking);
         result.put("tiers", tiers);
-        result.put("dimensions", new ArrayList<>(skillTreeConfig.getDimensions().keySet()));
+        result.put("dimensions", activeDimensions);
         return result;
     }
 

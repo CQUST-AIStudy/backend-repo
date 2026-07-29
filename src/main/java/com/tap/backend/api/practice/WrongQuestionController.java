@@ -10,6 +10,7 @@ import com.tap.backend.dto.practice.WrongQuestionNoteUpdateRequest;
 import com.tap.backend.dto.practice.WrongQuestionRetryRequest;
 import com.tap.backend.dto.practice.WrongQuestionStatsDto;
 import com.tap.backend.service.practice.WrongQuestionService;
+import com.tap.backend.service.practice.impl.PtaWrongQuestionQueryService;
 import com.tap.common.api.ApiResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.data.domain.Page;
@@ -31,11 +32,14 @@ public class WrongQuestionController {
 
   private final WrongQuestionService service;
   private final StudentSessionResolver studentSessionResolver;
+  private final PtaWrongQuestionQueryService ptaQueryService;
 
   public WrongQuestionController(WrongQuestionService service,
-                                  StudentSessionResolver studentSessionResolver) {
+                                  StudentSessionResolver studentSessionResolver,
+                                  PtaWrongQuestionQueryService ptaQueryService) {
     this.service = service;
     this.studentSessionResolver = studentSessionResolver;
+    this.ptaQueryService = ptaQueryService;
   }
 
   @GetMapping
@@ -57,6 +61,15 @@ public class WrongQuestionController {
   public ApiResponse<WrongQuestionStatsDto> stats(HttpServletRequest request) {
     String studentNo = studentSessionResolver.requireStudentId(request);
     return ApiResponse.of(service.getStats(studentNo));
+  }
+
+  @GetMapping("/pta-errors")
+  public ApiResponse<java.util.Map<String, Object>> ptaErrors(
+      @RequestParam(required = false) Long classId,
+      @RequestParam(defaultValue = "1") int minErrors,
+      HttpServletRequest request) {
+    String studentNo = studentSessionResolver.requireStudentId(request);
+    return ApiResponse.of(ptaQueryService.list(studentNo, classId, minErrors));
   }
 
   @GetMapping("/{id}")

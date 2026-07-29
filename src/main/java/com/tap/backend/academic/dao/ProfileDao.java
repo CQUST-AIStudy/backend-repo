@@ -15,10 +15,14 @@ public interface ProfileDao {
             @Param("experimentId") int experimentId);
 
     /** 获取班级所有学生的实验聚合统计 */
-    List<Map<String, Object>> getClassExperimentStats(@Param("className") String className);
+    List<Map<String, Object>> getClassExperimentStats(
+            @Param("classId") Long classId,
+            @Param("className") String className);
 
     /** 获取所有学生列表 */
-    List<Map<String, Object>> getAllStudents(@Param("className") String className);
+    List<Map<String, Object>> getAllStudents(
+            @Param("classId") Long classId,
+            @Param("className") String className);
 
     /** 获取学生基本信息 */
     Map<String, Object> getStudentInfo(@Param("studentId") String studentId);

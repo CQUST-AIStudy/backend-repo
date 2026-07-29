@@ -4,6 +4,8 @@ import com.tap.backend.academic.entity.UserEntity;
 import com.tap.backend.academic.security.LegacySessionAccessResolver;
 import com.tap.backend.academic.security.StudentSessionResolver;
 import com.tap.backend.academic.service.ProfileService;
+import com.tap.backend.domain.classroom.TeachingClassEntity;
+import com.tap.backend.service.TeachingClassService;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.List;
 import java.util.Map;
@@ -40,6 +42,9 @@ public class ProfileController {
 
     @Autowired
     private LegacySessionAccessResolver legacySessionAccessResolver;
+
+    @Autowired
+    private TeachingClassService teachingClassService;
 
     @Value("${tap.recommendation.base-url:http://127.0.0.1:8003}")
     private String recommendationBaseUrl;
@@ -94,15 +99,13 @@ public class ProfileController {
     @GetMapping("/class")
     public ResponseEntity<Map<String, Object>> getClassProfile(
             HttpServletRequest request,
-            @RequestParam(required = false) String className) {
-        String scopedClassName = normalizeClassName(className);
-        if (scopedClassName == null) {
-            try {
-                scopedClassName = normalizeClassName(studentSessionResolver.requireStudent(request).getClassname());
-            } catch (RuntimeException ignored) {
-            }
-        }
-        Map<String, Object> profile = profileService.getClassProfile(scopedClassName);
+            @RequestParam Long classId) {
+        UserEntity user = legacySessionAccessResolver.requireTeacherOrAdmin(request);
+        TeachingClassEntity teachingClass = teachingClassService.getClassForTeacher(classId, (long) user.getId());
+        Map<String, Object> profile = profileService.getClassProfile(
+                classId,
+                teachingClass.getName(),
+                teachingClass.getCourseName());
         return ResponseEntity.ok(profile);
     }
 
@@ -152,14 +155,6 @@ public class ProfileController {
         String studentId = studentSessionResolver.requireStudentId(request);
         Map<String, Object> result = profileService.refreshFeedback(studentId);
         return ResponseEntity.ok(result);
-    }
-
-    private String normalizeClassName(String className) {
-        if (className == null) {
-            return null;
-        }
-        String trimmed = className.trim();
-        return trimmed.isEmpty() ? null : trimmed;
     }
 
     private static String normalizeRole(String role) {

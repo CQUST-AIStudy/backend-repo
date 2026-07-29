@@ -97,6 +97,11 @@ public class TeachingClassService {
         return classRepo.findAll();
     }
 
+    @Transactional(readOnly = true)
+    public TeachingClassEntity getClassForTeacher(Long classId, Long teacherId) {
+        return requireOwnedClass(classId, teacherId);
+    }
+
     @Transactional
     public TeachingClassEntity createClass(
             UserEntity teacher,

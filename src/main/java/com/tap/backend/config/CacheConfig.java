@@ -21,7 +21,6 @@ public class CacheConfig {
     public CacheManager cacheManager() {
         SimpleCacheManager manager = new SimpleCacheManager();
         manager.setCaches(List.of(
-            buildCache("classProfile", Duration.ofMinutes(5), 10),
             buildCache("experimentList", Duration.ofMinutes(2), 20),
             buildCache("skillTree", Duration.ofMinutes(30), 5)
         ));

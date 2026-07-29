@@ -46,9 +46,22 @@
             SUM(CASE WHEN UPPER(ss.situation) IN ('C', 'AC', 'ACCEPTED') THEN 1 ELSE 0 END) AS ac_count,
             COUNT(DISTINCT ss.serial_number) AS question_count
         FROM submit_situation ss
-        JOIN student s ON s.student_id = ss.student_id
+        <if test="classId == null">
+            JOIN student s ON s.student_id = ss.student_id
+        </if>
         <where>
-            <if test="className != null and className != ''">
+            <if test="classId != null">
+                AND EXISTS (
+                    SELECT 1
+                    FROM class_member cm
+                    JOIN student_profile sp ON sp.id = cm.student_id
+                    WHERE cm.class_id = #{classId}
+                      AND cm.member_status = 'ACTIVE'
+                      AND sp.status != 'DELETED'
+                      AND sp.student_no COLLATE utf8mb4_unicode_ci = ss.student_id COLLATE utf8mb4_unicode_ci
+                )
+            </if>
+            <if test="classId == null and className != null and className != ''">
                 AND (s.class_name = #{className} OR s.class_name LIKE CONCAT(#{className}, '%'))
             </if>
         </where>
@@ -58,14 +71,28 @@
 
     <!-- 所有学生列表 -->
     <select id="getAllStudents" resultType="map">
-        SELECT student_id, name, class_name
-        FROM student
-        <where>
-            <if test="className != null and className != ''">
-                AND (class_name = #{className} OR class_name LIKE CONCAT(#{className}, '%'))
-            </if>
-        </where>
-        ORDER BY student_id
+        <choose>
+            <when test="classId != null">
+                SELECT sp.student_no AS student_id, sp.real_name AS name, tc.name AS class_name
+                FROM class_member cm
+                JOIN student_profile sp ON sp.id = cm.student_id
+                JOIN teaching_class tc ON tc.id = cm.class_id
+                WHERE cm.class_id = #{classId}
+                  AND cm.member_status = 'ACTIVE'
+                  AND sp.status != 'DELETED'
+                ORDER BY sp.student_no
+            </when>
+            <otherwise>
+                SELECT student_id, name, class_name
+                FROM student
+                <where>
+                    <if test="className != null and className != ''">
+                        AND (class_name = #{className} OR class_name LIKE CONCAT(#{className}, '%'))
+                    </if>
+                </where>
+                ORDER BY student_id
+            </otherwise>
+        </choose>
     </select>
 
     <!-- 学生基本信息 -->
