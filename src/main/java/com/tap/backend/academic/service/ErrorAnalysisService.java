@@ -918,10 +918,16 @@ public class ErrorAnalysisService {
             HttpEntity<Map<String, Object>> entity = new HttpEntity<>(payload, headers);
             @SuppressWarnings("unchecked")
             Map<String, Object> responseBody = restTemplate.postForEntity(url, entity, Map.class).getBody();
+            if (responseBody == null) {
+                throw new IllegalStateException(
+                        "Error analysis microservice returned an empty response: " + path);
+            }
             return responseBody;
         } catch (Exception e) {
             logger.error("Microservice call failed: path={}, error={}", path, e.getMessage());
-            return null;
+            throw new IllegalStateException(
+                    "Error analysis microservice call failed: " + path,
+                    e);
         }
     }
 

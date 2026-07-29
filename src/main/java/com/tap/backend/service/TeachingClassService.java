@@ -526,7 +526,10 @@ public class TeachingClassService {
                 if (studentName != null && !studentName.isBlank()) {
                     matched.setStudentName(studentName);
                 }
-                return studentRepo.save(matched);
+                ClassStudentEntity saved = studentRepo.save(matched);
+                syncStudentToUnifiedRoster(
+                        teachingClass.getId(), normalizedStudentNum, studentName, userId);
+                return saved;
             }
         }
         ClassStudentEntity student = new ClassStudentEntity();
@@ -534,7 +537,10 @@ public class TeachingClassService {
         student.setStudentName(studentName);
         student.setStudentNum(normalizedStudentNum);
         student.setUserId(userId);
-        return studentRepo.save(student);
+        ClassStudentEntity saved = studentRepo.save(student);
+        syncStudentToUnifiedRoster(
+                teachingClass.getId(), normalizedStudentNum, studentName, userId);
+        return saved;
     }
 
     @Transactional(readOnly = true)
