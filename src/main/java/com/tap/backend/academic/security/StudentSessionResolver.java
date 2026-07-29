@@ -26,7 +26,7 @@ public class StudentSessionResolver {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "student role required");
         }
 
-        String studentId = normalizeStudentId(user.getUsernum());
+        String studentId = resolveStudentNo(user);
         if (studentId == null) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "student id missing");
         }
@@ -34,12 +34,13 @@ public class StudentSessionResolver {
     }
 
     public String requireStudentId(HttpServletRequest request) {
-        return resolveCanonicalStudentNo(normalizeStudentId(requireStudent(request).getUsernum()));
+        return resolveStudentNo(requireStudent(request));
     }
 
     public String requireAuthorizedStudentId(String requestedStudentId, HttpServletRequest request) {
-        String sessionValue = normalizeStudentId(requireStudent(request).getUsernum());
-        String sessionStudentId = resolveCanonicalStudentNo(sessionValue);
+        UserEntity user = requireStudent(request);
+        String sessionValue = firstNonBlank(user.getUsernum(), user.getUsername());
+        String sessionStudentId = resolveStudentNo(user);
         String requestedValue = normalizeStudentId(requestedStudentId);
         if (!sessionStudentId.equals(requestedValue) && !sessionValue.equals(requestedValue)) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "forbidden");
@@ -47,14 +48,26 @@ public class StudentSessionResolver {
         return sessionStudentId;
     }
 
-    private String resolveCanonicalStudentNo(String studentId) {
+    private String resolveStudentNo(UserEntity user) {
+        String studentId = firstNonBlank(user.getUsernum(), user.getUsername());
+        if (studentId == null) {
+            return null;
+        }
         @SuppressWarnings("unchecked")
         List<String> matchedStudentNumbers = em.createNativeQuery(
-                "SELECT student_no FROM student_profile WHERE student_no = ?1 OR CAST(id AS CHAR) = ?1 " +
-                        "ORDER BY CASE WHEN student_no = ?1 THEN 0 ELSE 1 END LIMIT 1",
+                "SELECT student_no FROM student_profile " +
+                        "WHERE user_id = ?1 OR student_no = ?2 OR CAST(id AS CHAR) = ?2 " +
+                        "ORDER BY CASE WHEN user_id = ?1 THEN 0 WHEN student_no = ?2 THEN 1 ELSE 2 END LIMIT 1",
                 String.class
-        ).setParameter(1, studentId).getResultList();
+        ).setParameter(1, user.getId() > 0 ? user.getId() : null)
+                .setParameter(2, studentId)
+                .getResultList();
         return matchedStudentNumbers.isEmpty() ? studentId : matchedStudentNumbers.get(0);
+    }
+
+    private String firstNonBlank(String primary, String fallback) {
+        String normalized = normalizeStudentId(primary);
+        return normalized != null ? normalized : normalizeStudentId(fallback);
     }
 
     private String normalizeStudentId(String value) {
