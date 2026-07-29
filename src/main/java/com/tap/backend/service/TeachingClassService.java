@@ -564,12 +564,31 @@ public class TeachingClassService {
     @Transactional
     public List<TeachingClassEntity> listClassesByStudent(Long userId, String studentNum) {
         Set<Long> classIds = new LinkedHashSet<>();
+        String normalizedStudentNum = blankToNull(studentNum);
+        if (userId != null || normalizedStudentNum != null) {
+            jdbcTemplate.queryForList(
+                    """
+                    SELECT DISTINCT cm.class_id
+                    FROM class_member cm
+                    JOIN student_profile sp ON sp.id = cm.student_id
+                    JOIN teaching_class tc ON tc.id = cm.class_id
+                    WHERE cm.member_status = 'ACTIVE'
+                      AND (tc.status IS NULL OR tc.status = 'ACTIVE')
+                      AND ((? IS NOT NULL AND sp.user_id = ?)
+                           OR (? IS NOT NULL AND sp.student_no = ?))
+                    """,
+                    Long.class,
+                    userId, userId,
+                    normalizedStudentNum, normalizedStudentNum
+            ).forEach(classIds::add);
+        }
+
+        // Read the legacy relation as well during the compatibility period.
         if (userId != null) {
             studentRepo.findAllByUserId(userId).stream()
                     .map(ClassStudentEntity::getClassId)
                     .forEach(classIds::add);
         }
-        String normalizedStudentNum = blankToNull(studentNum);
         if (normalizedStudentNum != null) {
             studentRepo.findAllByStudentNum(normalizedStudentNum).stream()
                     .peek(student -> bindStudentAccountIfNeeded(student, userId))

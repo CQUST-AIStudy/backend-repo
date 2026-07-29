@@ -19,4 +19,16 @@ class StudentExperimentListContractTest {
         assertTrue(source.contains("latest_attempt.latest_submit_at"));
         assertTrue(source.contains("row[20] != null ? row[20] : (row[11] != null ? row[11] : row[10])"));
     }
+
+    @Test
+    void studentPtaReadsAreScopedThroughCanonicalClassMembership() throws Exception {
+        String source = Files.readString(
+                Path.of("src/main/java/com/tap/backend/academic/controller/ApiController.java"),
+                StandardCharsets.UTF_8);
+
+        assertTrue(source.contains(
+                "JOIN class_member cm ON cm.student_id = sp.id AND cm.member_status = 'ACTIVE'"));
+        assertTrue(source.contains("AND (?2 IS NULL OR cm.class_id = ?2)"));
+        assertTrue(source.contains("@RequestParam(required = false) Long classId"));
+    }
 }

@@ -561,9 +561,11 @@ public class ApiController {
     }
 
     @GetMapping("/api/experiments")
-    public ResponseEntity<Map<String, Object>> getExperimentList(HttpServletRequest request) {
+    public ResponseEntity<Map<String, Object>> getExperimentList(
+            HttpServletRequest request,
+            @RequestParam(required = false) Long classId) {
         if (useUnifiedStudentExperimentReadPath()) {
-            return getUnifiedStudentExperimentList(request, true);
+            return getUnifiedStudentExperimentList(request, true, classId);
         }
 
         Map<String, Object> response = new HashMap<>();
@@ -774,9 +776,13 @@ public class ApiController {
 
     // 新方法，根据experiment_id查找数据
     @GetMapping("/api/experiments/{experimentId}")
-    public ResponseEntity<Map<String, Object>> getExperimentById(@PathVariable int experimentId, HttpServletRequest request) {
+    public ResponseEntity<Map<String, Object>> getExperimentById(
+            @PathVariable int experimentId,
+            HttpServletRequest request,
+            @RequestParam(required = false) Long classId) {
         // 不从列表里过滤，直接用 excludeRecommended=false 查询，确保推荐题目集也能找到
-        ResponseEntity<Map<String, Object>> allExperimentsResponse = getUnifiedStudentExperimentList(request, false);
+        ResponseEntity<Map<String, Object>> allExperimentsResponse =
+                getUnifiedStudentExperimentList(request, false, classId);
         Map<String, Object> allExperimentsData = allExperimentsResponse.getBody();
 
         if (allExperimentsData != null && allExperimentsData.containsKey("data")) {
@@ -810,7 +816,10 @@ public class ApiController {
         return true;
     }
 
-    private ResponseEntity<Map<String, Object>> getUnifiedStudentExperimentList(HttpServletRequest request, boolean excludeRecommended) {
+    private ResponseEntity<Map<String, Object>> getUnifiedStudentExperimentList(
+            HttpServletRequest request,
+            boolean excludeRecommended,
+            Long classId) {
         Map<String, Object> response = new LinkedHashMap<>();
         try {
             UserEntity currentUser = studentSessionResolver.requireStudent(request);
@@ -831,9 +840,9 @@ public class ApiController {
                             "sa.best_total_score, sa.latest_total_score, sp.student_no, sp.real_name, sp.id, " +
                             "latest_attempt.latest_submit_at " +
                             "FROM student_profile sp " +
-                            "JOIN class_student cs ON cs.student_num = sp.student_no COLLATE utf8mb4_unicode_ci " +
-                            "JOIN teaching_class tc ON tc.id = cs.class_id " +
-                            "JOIN assignment_offering ao ON ao.class_id = cs.class_id " +
+                            "JOIN class_member cm ON cm.student_id = sp.id AND cm.member_status = 'ACTIVE' " +
+                            "JOIN teaching_class tc ON tc.id = cm.class_id " +
+                            "JOIN assignment_offering ao ON ao.class_id = cm.class_id " +
                             "JOIN assignment_template at ON at.id = ao.template_id " +
                             "LEFT JOIN student_assignment sa ON sa.offering_id = ao.id AND sa.student_id = sp.id " +
                             "LEFT JOIN (" +
@@ -843,11 +852,13 @@ public class ApiController {
                             ") latest_attempt ON latest_attempt.offering_id = ao.id " +
                             "AND latest_attempt.student_id = sp.id " +
                             "WHERE sp.student_no = ?1 " +
+                            "AND (?2 IS NULL OR cm.class_id = ?2) " +
                             "AND (tc.status IS NULL OR tc.status = 'ACTIVE') " +
                             "AND ao.status <> 'ARCHIVED' " +
                             excludeClause +
                             "ORDER BY tc.id, COALESCE(ao.seq_no, 999999), ao.id"
             ).setParameter(1, studentNo)
+                    .setParameter(2, classId)
                     .getResultList();
 
             List<Map<String, Object>> experiments = new ArrayList<>();
@@ -1527,9 +1538,10 @@ public class ApiController {
     @GetMapping("/api/student/{studentId}/recommendedPractices")
     public ResponseEntity<Map<String, Object>> getAllRecommendedPracticesByStudent(
             @PathVariable int studentId,
-            HttpServletRequest request) {
+            HttpServletRequest request,
+            @RequestParam(required = false) Long classId) {
         String authorizedStudentNo = studentSessionResolver.requireAuthorizedStudentId(String.valueOf(studentId), request);
-        return getAllRecommendedPracticesByStudent(authorizedStudentNo);
+        return getAllRecommendedPracticesByStudent(authorizedStudentNo, classId);
     }
 
     /**
@@ -1537,7 +1549,9 @@ public class ApiController {
      * @param studentNo 学号
      * @return 响应实体，包含推荐练习列表
      */
-    public ResponseEntity<Map<String, Object>> getAllRecommendedPracticesByStudent(String studentNo) {
+    public ResponseEntity<Map<String, Object>> getAllRecommendedPracticesByStudent(
+            String studentNo,
+            Long classId) {
         Map<String, Object> response = new LinkedHashMap<>();
 
         try {
@@ -1550,17 +1564,19 @@ public class ApiController {
                             "sa.accepted_problem_count, sa.submitted_problem_count, sa.problem_count, " +
                             "sa.best_total_score, sa.latest_total_score, sp.student_no, sp.real_name, sp.id " +
                             "FROM student_profile sp " +
-                            "JOIN class_student cs ON cs.student_num = sp.student_no COLLATE utf8mb4_unicode_ci " +
-                            "JOIN teaching_class tc ON tc.id = cs.class_id " +
-                            "JOIN assignment_offering ao ON ao.class_id = cs.class_id " +
+                            "JOIN class_member cm ON cm.student_id = sp.id AND cm.member_status = 'ACTIVE' " +
+                            "JOIN teaching_class tc ON tc.id = cm.class_id " +
+                            "JOIN assignment_offering ao ON ao.class_id = cm.class_id " +
                             "JOIN assignment_template at ON at.id = ao.template_id " +
                             "LEFT JOIN student_assignment sa ON sa.offering_id = ao.id AND sa.student_id = sp.id " +
                             "WHERE sp.student_no = ?1 " +
+                            "AND (?2 IS NULL OR cm.class_id = ?2) " +
                             "AND (tc.status IS NULL OR tc.status = 'ACTIVE') " +
                             "AND ao.status <> 'ARCHIVED' " +
                             "AND (at.title LIKE '%推荐练习%' OR ao.title_override LIKE '%推荐练习%') " +
                             "ORDER BY tc.id, COALESCE(ao.seq_no, 999999), ao.id"
             ).setParameter(1, studentNo)
+                    .setParameter(2, classId)
                     .getResultList();
 
             List<Map<String, Object>> practices = new ArrayList<>();
@@ -1612,9 +1628,11 @@ public class ApiController {
      * 获取当前登录学生的 PTA 推荐题目集（标题含"推荐题目集"）
      */
     @GetMapping("/api/student/current/pta-practice-sets")
-    public ResponseEntity<Map<String, Object>> getCurrentStudentPtaPracticeSets(HttpServletRequest request) {
+    public ResponseEntity<Map<String, Object>> getCurrentStudentPtaPracticeSets(
+            HttpServletRequest request,
+            @RequestParam(required = false) Long classId) {
         String studentNo = studentSessionResolver.requireStudentId(request);
-        return getPtaPracticeSetsByStudentNo(studentNo);
+        return getPtaPracticeSetsByStudentNo(studentNo, classId);
     }
 
     /**
@@ -1623,12 +1641,13 @@ public class ApiController {
     @GetMapping("/api/student/{studentId}/pta-practice-sets")
     public ResponseEntity<Map<String, Object>> getPtaPracticeSetsByStudent(
             @PathVariable String studentId,
-            HttpServletRequest request) {
+            HttpServletRequest request,
+            @RequestParam(required = false) Long classId) {
         String authorizedStudentNo = studentSessionResolver.requireAuthorizedStudentId(studentId, request);
-        return getPtaPracticeSetsByStudentNo(authorizedStudentNo);
+        return getPtaPracticeSetsByStudentNo(authorizedStudentNo, classId);
     }
 
-    private ResponseEntity<Map<String, Object>> getPtaPracticeSetsByStudentNo(String studentNo) {
+    private ResponseEntity<Map<String, Object>> getPtaPracticeSetsByStudentNo(String studentNo, Long classId) {
         Map<String, Object> response = new LinkedHashMap<>();
         try {
             @SuppressWarnings("unchecked")
@@ -1640,17 +1659,19 @@ public class ApiController {
                             "sa.accepted_problem_count, sa.submitted_problem_count, sa.problem_count, " +
                             "sa.best_total_score, sa.latest_total_score, sp.student_no, sp.real_name, sp.id " +
                             "FROM student_profile sp " +
-                            "JOIN class_student cs ON cs.student_num = sp.student_no COLLATE utf8mb4_unicode_ci " +
-                            "JOIN teaching_class tc ON tc.id = cs.class_id " +
-                            "JOIN assignment_offering ao ON ao.class_id = cs.class_id " +
+                            "JOIN class_member cm ON cm.student_id = sp.id AND cm.member_status = 'ACTIVE' " +
+                            "JOIN teaching_class tc ON tc.id = cm.class_id " +
+                            "JOIN assignment_offering ao ON ao.class_id = cm.class_id " +
                             "JOIN assignment_template at ON at.id = ao.template_id " +
                             "LEFT JOIN student_assignment sa ON sa.offering_id = ao.id AND sa.student_id = sp.id " +
                             "WHERE sp.student_no = ?1 " +
+                            "AND (?2 IS NULL OR cm.class_id = ?2) " +
                             "AND (tc.status IS NULL OR tc.status = 'ACTIVE') " +
                             "AND ao.status <> 'ARCHIVED' " +
                             "AND (at.title LIKE '%推荐题目集%' OR ao.title_override LIKE '%推荐题目集%') " +
                             "ORDER BY tc.id, COALESCE(ao.seq_no, 999999), ao.id"
             ).setParameter(1, studentNo)
+                    .setParameter(2, classId)
                     .getResultList();
 
             List<Map<String, Object>> practices = new ArrayList<>();
@@ -1723,14 +1744,16 @@ public class ApiController {
      * @return 响应实体，包含所有推荐练习列表
      */
     @GetMapping("/api/current/recommendedPractices")
-    public ResponseEntity<Map<String, Object>> getCurrentUserRecommendedPractices(HttpServletRequest request) {
+    public ResponseEntity<Map<String, Object>> getCurrentUserRecommendedPractices(
+            HttpServletRequest request,
+            @RequestParam(required = false) Long classId) {
         Map<String, Object> response = new HashMap<>();
 
         try {
             // 从Session中获取当前用户名
             if (request != null) {
                 String studentNo = studentSessionResolver.requireStudentId(request);
-                return getAllRecommendedPracticesByStudent(studentNo);
+                return getAllRecommendedPracticesByStudent(studentNo, classId);
             }
             HttpSession session = request.getSession(false);
             String currentUsername;
@@ -1762,7 +1785,7 @@ public class ApiController {
                     String sno = (String) em.createNativeQuery(
                             "SELECT student_no FROM student_profile WHERE id = ?1"
                     ).setParameter(1, numericId).getSingleResult();
-                    return getAllRecommendedPracticesByStudent(sno);
+                    return getAllRecommendedPracticesByStudent(sno, classId);
                 } catch (Exception ex) {
                     System.out.println("查询学号失败，尝试用ID直接查询: " + ex.getMessage());
                     response.put("success", true);

@@ -74,13 +74,11 @@ public class LoginController {
             legacyAuthTokenService.clearCookie(servletResponse);
 
             UserEntity user = userService.findByUsername(loginUser.getUsername());
-            log.info("login user: " + loginUser.getUsername()+"login password: " + loginUser.getPassword());
             if (user == null) {
                 response.put("success", false);
                 response.put("message", "user not found");
                 return ResponseEntity.ok(response);
             }
-            log.info("loginuserpass: " + loginUser.getPassword() + "login user: " + user.getPassword());
             if (!passwordMatches(loginUser.getPassword(), user.getPassword())) {
                 response.put("success", false);
                 response.put("message", "invalid password");
