@@ -14,14 +14,15 @@ public class CodeContextExtractor {
 
     private static final int CONTEXT_RADIUS = 5;
     private static final Pattern FUNCTION_START =
-            Pattern.compile("^\\s*(int|void|char|float|double|bool|struct\\s+\\w+|enum\\s+\\w+)\\s+\\w+\\s*\\(");
+            Pattern.compile("^\\s*(int|void|char|float|double|bool|struct\\s+\\w+|enum\\s+\\w+)\\s+\\w+\\s*\\(|^\\s*def\\s+\\w+\\s*\\(");
     private static final Pattern BLOCK_START = Pattern.compile("\\{");
     private static final Pattern BLOCK_END = Pattern.compile("\\}");
 
     private static final String[] CODE_KEYWORDS = {
             "for", "while", "if", "else", "switch", "int ", "char ", "float ",
             "double ", "void ", "struct ", "return", "break", "continue",
-            "malloc", "free", "printf", "scanf", "arr[", "->", "#include"
+            "malloc", "free", "printf", "scanf", "arr[", "->", "#include",
+            "import ", "def ", "class ", "print(", "torch", "nn.", "self.", "np."
     };
 
     public CodeContext extract(String content, String anchorText) {

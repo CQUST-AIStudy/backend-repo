@@ -143,11 +143,37 @@ public class GradingErrorDemonstrationService {
                     .filter(id -> id != null && !id.isBlank())
                     .forEach(referencedIds::add);
         }
-        List<EvidenceBlockEntity> relevantBlocks = evidenceBlocks.stream()
-                .filter(eb -> eb.getEvidenceId() != null && referencedIds.contains(eb.getEvidenceId()))
-                .toList();
+        // 不再只喂"被批注引用的碎片"：把所有像代码的证据块（含截图 OCR/VLM）一并交给 LLM 聚合，
+        // 以便重建更完整的原始代码（此类报告代码常在截图里、批注引用稀疏）。
+        java.util.LinkedHashMap<String, EvidenceBlockEntity> selected = new java.util.LinkedHashMap<>();
+        for (EvidenceBlockEntity eb : evidenceBlocks) {
+            if (eb.getEvidenceId() == null) {
+                continue;
+            }
+            if (referencedIds.contains(eb.getEvidenceId()) || isCodeBearing(eb)) {
+                selected.put(eb.getEvidenceId(), eb);
+            }
+            if (selected.size() >= 16) {
+                break;
+            }
+        }
         String title = problemContext == null ? null : problemContext.experimentTitle();
-        return llmCodeExtractor.extractFullCode(title, relevantBlocks);
+        return llmCodeExtractor.extractFullCode(title, new ArrayList<>(selected.values()));
+    }
+
+    private static final java.util.regex.Pattern CODE_HINT = java.util.regex.Pattern.compile(
+            "#include|\\bint\\s+main|\\bdef\\s+\\w+\\s*\\(|\\bimport\\s+\\w+|printf\\(|scanf\\(|torch|nn\\.|print\\(|reshape\\(|conv2d");
+
+    /** 证据块是否像代码（含截图 OCR/VLM 里的代码），用于把完整代码喂给 LLM 聚合。 */
+    private boolean isCodeBearing(EvidenceBlockEntity eb) {
+        if (eb == null) {
+            return false;
+        }
+        if (eb.getKind() == EvidenceKind.code) {
+            return true;
+        }
+        String content = eb.getContent();
+        return content != null && !content.isBlank() && CODE_HINT.matcher(content).find();
     }
 
 

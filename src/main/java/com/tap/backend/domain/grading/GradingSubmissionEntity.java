@@ -62,6 +62,9 @@ public class GradingSubmissionEntity {
     @Column(name = "error_demonstrations_json", columnDefinition = "longtext")
     private String errorDemonstrationsJson;
 
+    @Column(name = "extracted_code_json", columnDefinition = "longtext")
+    private String extractedCodeJson;
+
     @Column(name = "cover_objectives_json", columnDefinition = "longtext")
     private String coverObjectivesJson;
 
@@ -129,6 +132,9 @@ public class GradingSubmissionEntity {
     public Instant getUpdatedAt() { return updatedAt; }
     public String getErrorDemonstrationsJson() { return errorDemonstrationsJson; }
     public void setErrorDemonstrationsJson(String errorDemonstrationsJson) { this.errorDemonstrationsJson = errorDemonstrationsJson; }
+
+    public String getExtractedCodeJson() { return extractedCodeJson; }
+    public void setExtractedCodeJson(String extractedCodeJson) { this.extractedCodeJson = extractedCodeJson; }
     public String getCoverObjectivesJson() { return coverObjectivesJson; }
     public void setCoverObjectivesJson(String coverObjectivesJson) { this.coverObjectivesJson = coverObjectivesJson; }
     public String getCodeAnalysisJson() { return codeAnalysisJson; }

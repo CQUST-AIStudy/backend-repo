@@ -224,6 +224,7 @@ public class GradingSubmissionService {
                     errorDemonstrationService.buildDemonstrations(submission, scores, evidence);
 
             submission.setErrorDemonstrationsJson(objectMapper.writeValueAsString(demos));
+            submission.setExtractedCodeJson(buildExtractedCodeJson(demos));
             submission.setErrorDemonstrationsStatus(ErrorDemonstrationStatus.COMPLETED);
             submissionRepo.save(submission);
             return demos;
@@ -712,12 +713,50 @@ public class GradingSubmissionService {
             List<GradingErrorDemonstrationService.ErrorDemonstration> demos =
                     errorDemonstrationService.buildDemonstrations(submission, scores, evidence);
             submission.setErrorDemonstrationsJson(objectMapper.writeValueAsString(demos));
+            submission.setExtractedCodeJson(buildExtractedCodeJson(demos));
             submissionRepo.save(submission);
             log.info("Persisted {} error demonstrations for submission {}", demos.size(), submission.getId());
         } catch (Exception e) {
             log.warn("Failed to persist error demonstrations for submission {}: {}",
                     submission.getId(), e.getMessage());
         }
+    }
+
+    /** 从生成的错误演示中提取"每题完整代码"作为 artifact 落库（零额外 LLM 调用）。 */
+    private String buildExtractedCodeJson(List<GradingErrorDemonstrationService.ErrorDemonstration> demos) {
+        if (demos == null || demos.isEmpty()) {
+            return null;
+        }
+        try {
+            List<Map<String, Object>> segments = new ArrayList<>();
+            java.util.Set<String> seen = new java.util.HashSet<>();
+            for (GradingErrorDemonstrationService.ErrorDemonstration d : demos) {
+                String code = d.sourceCode();
+                if (code == null || code.isBlank() || !seen.add(code.trim())) {
+                    continue;
+                }
+                Map<String, Object> seg = new LinkedHashMap<>();
+                seg.put("title", d.title());
+                seg.put("language", detectCodeLanguage(code));
+                seg.put("code", code);
+                segments.add(seg);
+            }
+            return segments.isEmpty() ? null : objectMapper.writeValueAsString(segments);
+        } catch (Exception e) {
+            log.warn("构建 extracted_code_json 失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    private String detectCodeLanguage(String code) {
+        String c = code == null ? "" : code;
+        if (c.contains("#include") || c.contains("int main")) {
+            return "c";
+        }
+        if (c.contains("import ") || c.contains("def ") || c.contains("torch") || c.contains("print(")) {
+            return "python";
+        }
+        return "unknown";
     }
 
     /**
