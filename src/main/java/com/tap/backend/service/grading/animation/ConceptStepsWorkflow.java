@@ -80,7 +80,7 @@ public class ConceptStepsWorkflow {
               "title": "简短标题（<=16字）",
               "concept": "本动画讲解的核心概念，如：链表结构 / 指针与内存 / 递归执行过程",
               "dataStructure": "从下面选一个最贴切的（见末尾结构说明）：array | matrix | string | linked-list | doubly-linked-list | circular-linked-list | static-linked-list | stack | queue | circular-queue | tree | binary-tree | heap | graph | adjacency-matrix | adjacency-list | hash-table | pointer | loop | code",
-              "sourceCode": "一段<=25行的代码；若提供了【学生代码】则必须截取学生代码中与错误最相关的片段（保持原样，不要修复错误）；没有学生代码时可用 C/伪代码自行编写示意代码",
+              "sourceCode": "一段<=25行的代码；必须截取【学生代码】中与错误最相关的片段（保持原样，不要修复错误）；若未提供【学生代码】，sourceCode 必须为空字符串，严禁虚构或套用与学生无关的示例代码",
               "errorLine": 0,
               "correctedCode": "关键的正确写法或要点（可留空字符串）",
               "explanation": "一句话讲清这个概念/为什么会错（<=60字）",
@@ -136,6 +136,11 @@ public class ConceptStepsWorkflow {
 
     public AnimationResult generate(AnimationCandidate candidate, int index) {
         String topic = buildTopic(candidate);
+        // 防编造：没有学生真实代码时，绝不让 LLM 自由生成代码动画（会画出与学生无关的示例），
+        // 只依据教师批注给出纯文字概念说明。
+        if (extractStudentCode(candidate).isBlank()) {
+            return conceptTextResult(candidate, topic);
+        }
         JsonNode parsed = null;
         if (aiClient.isChatAvailable()) {
             try {
@@ -308,6 +313,22 @@ public class ConceptStepsWorkflow {
     }
 
     // ---- 兜底 -------------------------------------------------------------
+
+    /** 无学生真实代码时的安全结果：纯文字概念说明（来自教师批注），不含虚构代码/节点。 */
+    private AnimationResult conceptTextResult(AnimationCandidate candidate, String topic) {
+        Map<String, Object> metadata = new LinkedHashMap<>();
+        metadata.put("errorType", resolveErrorType(candidate));
+        metadata.put("concept", extractConcept(candidate));
+        metadata.put("dataStructure", "code");
+        String caption = firstNonBlank(candidate.note(), candidate.anchor(), "结合教师批注理解该知识点。");
+        return new AnimationResult(
+                AnimationWorkflow.CONCEPT_STEPS.name(),
+                topic,
+                caption,
+                List.of(staticFrame(caption)),
+                metadata
+        );
+    }
 
     private AnimationResult fallbackResult(AnimationCandidate candidate, String topic) {
         Map<String, Object> metadata = new LinkedHashMap<>();

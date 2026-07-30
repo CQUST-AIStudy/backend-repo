@@ -207,8 +207,8 @@ public class GradingErrorDemonstrationService {
             return null;
         }
         CodeContext codeContext = resolveCodeContext(block, ann, llmFullCode);
-        if (errorPatternDetector.isCodeError(errorType)
-                && (codeContext == null || codeContext.fullLines().isEmpty())) {
+        // 防编造：拿不到真实代码上下文就跳过该候选——宁可不演示，也不生成与学生无关的内容。
+        if (codeContext == null || codeContext.fullLines().isEmpty()) {
             return null;
         }
         return new AnimationCandidate(item, ann, block, codeContext, problemContext, errorType);
