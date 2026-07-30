@@ -526,7 +526,24 @@ private static final int LONG_DOCUMENT_PAGE_THRESHOLD = 15;
         styleDocxRun(sepRun, 11, false);
         sepRun.setText("\u002d\u002d\u002d\u002d\u002d\u002d\u002d\u002d \u6559\u5e08\u7b7e\u540d \u002d\u002d\u002d\u002d\u002d\u002d\u002d\u002d");
 
-        XWPFParagraph sigPara = insertDocxParagraphAfterAnchor(document, separator);
+        // 手写体教师总评正文（按段落插入，位于分隔线与签名之间）
+        XWPFParagraph afterAnchor = separator;
+        String docxReview = safeText(teacherComment).trim();
+        if (!docxReview.isBlank()) {
+            for (String paragraph : docxReview.split("\\r?\\n")) {
+                String trimmed = paragraph.trim();
+                if (trimmed.isBlank()) {
+                    continue;
+                }
+                XWPFParagraph commentPara = insertDocxParagraphAfterAnchor(document, afterAnchor);
+                commentPara.setAlignment(ParagraphAlignment.LEFT);
+                commentPara.setSpacingBefore(120);
+                appendDocxMixedText(commentPara, trimmed, 12, false);
+                afterAnchor = commentPara;
+            }
+        }
+
+        XWPFParagraph sigPara = insertDocxParagraphAfterAnchor(document, afterAnchor);
         sigPara.setAlignment(ParagraphAlignment.RIGHT);
         sigPara.setSpacingBefore(140);
         appendDocxMixedText(sigPara, resolveTeacherSignature(teacherSignature), 14, true);
@@ -691,6 +708,9 @@ private static final int LONG_DOCUMENT_PAGE_THRESHOLD = 15;
             if (!documentContainsGeneratedReview(document)) {
                 drawPdfTeacherSignature(document, pages, fontSelection, teacherSignature);
             }
+
+            // 4) 结尾追加一页手写体「教师评语」（教师总评），画在独立页避免压到学生原文
+            drawPdfTeacherReviewPage(document, pages, fontSelection, teacherComment);
 
             document.save(outputStream);
             return new RenderedReport(FILE_TYPE_ANNOTATED_PDF, ".pdf", "application/pdf", outputStream.toByteArray());
@@ -1982,6 +2002,62 @@ private static final int LONG_DOCUMENT_PAGE_THRESHOLD = 15;
             stream.setNonStrokingColor(RED_COLOR);
             float y = startPdfReviewSection(stream, templateBox, margin, fontSelection, false, initialStartY);
             drawPdfText(stream, fontSelection, sigFontSize, templateBox.getWidth() - margin - sigWidth, y - 8f, signatureLine);
+        } finally {
+            stream.close();
+        }
+    }
+
+    /**
+     * Append the handwritten teacher review (教师总评) as a dedicated red page at the
+     * very end of the document. Rendered on its own page(s) so the handwriting never
+     * overlaps the student's original content. Idempotent across re-renders because
+     * {@link #removeTrailingGeneratedReviewPages} strips the previous 教师评语 page first.
+     */
+    private void drawPdfTeacherReviewPage(PDDocument document,
+                                          List<PDPage> pages,
+                                          FontSelection fontSelection,
+                                          String teacherComment) throws IOException {
+        String comment = safeText(teacherComment).trim();
+        if (comment.isBlank() || pages.isEmpty()) {
+            return;
+        }
+        List<StyledLine> styledLines = new ArrayList<>();
+        styledLines.add(new StyledLine(normalizeForFont(fontSelection, "教师评语", "Teacher Review"), 16f));
+        for (String paragraph : comment.split("\\r?\\n")) {
+            String trimmed = paragraph.trim();
+            if (!trimmed.isBlank()) {
+                styledLines.add(new StyledLine(normalizeForFont(fontSelection, trimmed, trimmed), 12f));
+            }
+        }
+
+        PDRectangle templateBox = pages.get(pages.size() - 1).getMediaBox();
+        float margin = 44f;
+        float maxWidth = templateBox.getWidth() - margin * 2;
+        PDPage currentPage = new PDPage(templateBox);
+        document.addPage(currentPage);
+
+        PDPageContentStream stream = new PDPageContentStream(document, currentPage, AppendMode.APPEND, true, true);
+        try {
+            stream.setNonStrokingColor(RED_COLOR);
+            float y = startPdfReviewSection(stream, templateBox, margin, fontSelection, false,
+                    templateBox.getHeight() - 72f);
+            for (StyledLine styledLine : styledLines) {
+                for (String line : wrapPdfText(fontSelection, styledLine.text(), styledLine.fontSize(), maxWidth)) {
+                    float nextLineHeight = styledLine.fontSize() + 8f;
+                    if (y - nextLineHeight < 48f) {
+                        stream.close();
+                        currentPage = new PDPage(templateBox);
+                        document.addPage(currentPage);
+                        stream = new PDPageContentStream(document, currentPage, AppendMode.APPEND, true, true);
+                        stream.setNonStrokingColor(RED_COLOR);
+                        y = startPdfReviewSection(stream, templateBox, margin, fontSelection, true,
+                                templateBox.getHeight() - 72f);
+                    }
+                    drawPdfText(stream, fontSelection, styledLine.fontSize(), margin, y, line);
+                    y -= nextLineHeight;
+                }
+                y -= 6f;
+            }
         } finally {
             stream.close();
         }
