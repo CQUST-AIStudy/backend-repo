@@ -27,8 +27,12 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
+import jakarta.annotation.PreDestroy;
+import org.springframework.cache.CacheManager;
 import org.springframework.cache.annotation.Cacheable;
 
 @Service
@@ -50,6 +54,20 @@ public class ProfileService {
 
     @PersistenceContext
     private EntityManager em;
+
+    /** AI 反馈异步生成线程池：有界队列(64)，满则拒绝(由调用方捕获清理 pending)，避免无界积压 */
+    private final ExecutorService feedbackExecutor = new java.util.concurrent.ThreadPoolExecutor(
+            2, 4, 60L, TimeUnit.SECONDS,
+            new java.util.concurrent.ArrayBlockingQueue<>(64),
+            r -> {
+                Thread t = new Thread(r, "profile-feedback-async");
+                t.setDaemon(true);
+                return t;
+            });
+    /** 正在异步生成中的学号集合，防止重复提交 DeepSeek */
+    private final Set<String> pendingFeedback = ConcurrentHashMap.newKeySet();
+    @Autowired(required = false)
+    private CacheManager cacheManager;
 
     @Value("${tap.ai.openai.api-key:}")
     private String deepseekApiKey;
@@ -101,8 +119,9 @@ public class ProfileService {
     @org.springframework.cache.annotation.Cacheable(
             value = "studentProfile",
             key = "#studentNo",
-            // 错误响应(无 scope/无数据)不入缓存，避免后续拿到数据后仍命中旧错误
-            unless = "#result == null || #result.containsKey('error')")
+            // 错误响应 & 文案未就绪(STALE/TEMPLATE，异步生成中)不入缓存：
+            // 既避免后续拿到数据后仍命中旧错误，也消除"异步evict与Cacheable put"竞态
+            unless = "#result == null || #result.containsKey('error') || 'STALE'.equals(#result.get('feedbackStatus')) || 'TEMPLATE'.equals(#result.get('feedbackStatus'))")
     @org.springframework.transaction.annotation.Transactional
     public Map<String, Object> getStudentProfile(String studentNo) {
         return computeStudentProfile(studentNo, false);
@@ -166,7 +185,7 @@ public class ProfileService {
         List<Map<String, Object>> patterns = detectPatterns(statByOffering, mastery, halfSplit);
         Map<String, Object> overview = computeOverview(statByOffering, totalOfferings);
 
-        String feedback = generateFeedback(studentNo, name, radar, weaknesses, patterns, overview, trend, forceRefresh);
+        FeedbackResult feedback = generateFeedback(studentNo, name, radar, weaknesses, patterns, overview, trend, forceRefresh);
 
         // 未分类 offering 数（DimensionClassifier 无法归类或维度映射缺失），计入质量标记但不静默丢弃
         int unclassified = (int) stats.stream()
@@ -184,7 +203,8 @@ public class ProfileService {
         result.put("weaknesses", weaknesses);
         result.put("trend", trend);
         result.put("patterns", patterns);
-        result.put("feedback", feedback);
+        result.put("feedback", feedback.text());
+        result.put("feedbackStatus", feedback.status());
         Map<String, Object> quality = new LinkedHashMap<>();
         quality.put("source", "student_problem_attempt");
         quality.put("classId", scope.classId());
@@ -681,48 +701,123 @@ public class ProfileService {
     }
 
     /**
-     * 生成反馈：forceRefresh=false 时先查 DB 缓存(profile_json 一致则复用)；
-     * 否则调 DeepSeek 并写缓存。
+     * 生成反馈：
+     * - forceRefresh=true(刷新按钮)：同步调 DeepSeek，用户主动等待。
+     * - forceRefresh=false(普通打开)：DB 命中新鲜(profile_json 一致)直接返回(FRESH)；否则立即返回旧文案(STALE)/模板(TEMPLATE)，
+     *   并触发异步任务算 DeepSeek 写库 + 失效内存缓存，下次打开读到新文案。首次打开不阻塞。
+     * 返回 FeedbackResult(text, status)，status ∈ FRESH/STALE/TEMPLATE/GENERATED。
      */
-    private String generateFeedback(String studentNo, String name,
-                                    Map<String, Object> radar, List<Map<String, Object>> weaknesses,
-                                    List<Map<String, Object>> patterns, Map<String, Object> overview,
-                                    Map<String, Object> trend, boolean forceRefresh) {
+    private FeedbackResult generateFeedback(String studentNo, String name,
+                                            Map<String, Object> radar, List<Map<String, Object>> weaknesses,
+                                            List<Map<String, Object>> patterns, Map<String, Object> overview,
+                                            Map<String, Object> trend, boolean forceRefresh) {
         String profileJson = buildProfileJson(name, radar, weaknesses, patterns, overview, trend);
-        if (!forceRefresh && studentNo != null) {
+
+        String existingFeedback = null;
+        String existingProfileJson = "";
+        if (studentNo != null) {
             try {
                 Map<String, Object> cached = profileDao.getAiFeedback(studentNo);
                 if (cached != null && cached.get("feedback") != null) {
-                    String cachedFeedback = String.valueOf(cached.get("feedback"));
-                    String cachedProfileJson = cached.get("profile_json") != null
+                    existingFeedback = String.valueOf(cached.get("feedback"));
+                    existingProfileJson = cached.get("profile_json") != null
                             ? String.valueOf(cached.get("profile_json")) : "";
-                    if (!cachedFeedback.isBlank() && profileJson.equals(cachedProfileJson)) {
-                        return cachedFeedback;
-                    }
                 }
             } catch (Exception e) {
                 log.warn("\u67e5\u8be2\u7f13\u5b58\u5931\u8d25: {}", e.getMessage());
             }
         }
-        if (deepseekApiKey != null && !deepseekApiKey.isBlank()) {
-            try {
-                String llmFeedback = callDeepSeek(profileJson, name, overview);
-                if (llmFeedback != null && !llmFeedback.isBlank()) {
-                    if (studentNo != null) {
-                        try {
-                            profileDao.saveAiFeedback(studentNo, llmFeedback, profileJson);
-                        } catch (Exception e) {
-                            log.warn("\u4fdd\u5b58\u7f13\u5b58\u5931\u8d25: {}", e.getMessage());
-                        }
-                    }
-                    return llmFeedback;
-                }
-            } catch (Exception e) {
-                log.warn("DeepSeek\u8c03\u7528\u5931\u8d25\uff0c\u4f7f\u7528\u6a21\u677f: {}", e.getMessage());
-            }
+
+        boolean freshHit = existingFeedback != null && !existingFeedback.isBlank()
+                && profileJson.equals(existingProfileJson);
+        if (freshHit) {
+            return new FeedbackResult(existingFeedback, "FRESH");
         }
-        return buildTemplateFeedback(name, radar, weaknesses, patterns);
+
+        if (forceRefresh) {
+            String sync = callDeepSeekSafely(profileJson, name, overview);
+            if (sync != null && !sync.isBlank()) {
+                persistFeedback(studentNo, sync, profileJson);
+                return new FeedbackResult(sync, "GENERATED");
+            }
+            return new FeedbackResult(buildTemplateFeedback(name, radar, weaknesses, patterns), "TEMPLATE");
+        }
+
+        triggerAsyncFeedback(studentNo, profileJson, name, overview);
+        if (existingFeedback != null && !existingFeedback.isBlank()) {
+            return new FeedbackResult(existingFeedback, "STALE");
+        }
+        return new FeedbackResult(buildTemplateFeedback(name, radar, weaknesses, patterns), "TEMPLATE");
     }
+
+    private record FeedbackResult(String text, String status) {
+    }
+
+    /** 提交异步反馈生成任务(同一学号进行中则跳过，避免重复打 DeepSeek)。队列满则放弃并清理 pending。 */
+    private void triggerAsyncFeedback(String studentNo, String profileJson, String name, Map<String, Object> overview) {
+        if (studentNo == null || studentNo.isBlank()) return;
+        if (deepseekApiKey == null || deepseekApiKey.isBlank()) return;
+        if (!pendingFeedback.add(studentNo)) return;
+        try {
+            feedbackExecutor.submit(() -> {
+                try {
+                    String fb = callDeepSeekSafely(profileJson, name, overview);
+                    if (fb != null && !fb.isBlank() && persistFeedback(studentNo, fb, profileJson)) {
+                        // 仅成功落库后失效内存缓存，下次打开读到新文案
+                        evictStudentProfileCache(studentNo);
+                    }
+                } catch (Exception e) {
+                    log.warn("\u5f02\u6b65\u751f\u6210\u53cd\u9988\u5931\u8d25 studentNo={}: {}", studentNo, e.getMessage());
+                } finally {
+                    pendingFeedback.remove(studentNo);
+                }
+            });
+        } catch (java.util.concurrent.RejectedExecutionException e) {
+            // 有界队列已满：放弃本次异步生成，清理 pending(下次打开会重试)
+            pendingFeedback.remove(studentNo);
+            log.warn("\u53cd\u9988\u961f\u5217\u5df2\u6ee1\uff0c\u8df3\u8fc7\u5f02\u6b65\u751f\u6210 studentNo={}", studentNo);
+        }
+    }
+
+    private String callDeepSeekSafely(String profileJson, String name, Map<String, Object> overview) {
+        try {
+            return callDeepSeek(profileJson, name, overview);
+        } catch (Exception e) {
+            log.warn("DeepSeek\u8c03\u7528\u5931\u8d25: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    private boolean persistFeedback(String studentNo, String feedback, String profileJson) {
+        if (studentNo == null) return false;
+        try {
+            profileDao.saveAiFeedback(studentNo, feedback, profileJson);
+            return true;
+        } catch (Exception e) {
+            log.warn("\u4fdd\u5b58\u53cd\u9988\u7f13\u5b58\u5931\u8d25: {}", e.getMessage());
+            return false;
+        }
+    }
+
+    private void evictStudentProfileCache(String studentNo) {
+        if (cacheManager == null) return;
+        var cache = cacheManager.getCache("studentProfile");
+        if (cache != null) cache.evict(studentNo);
+    }
+
+    @PreDestroy
+    public void shutdownFeedbackExecutor() {
+        feedbackExecutor.shutdown();
+        try {
+            if (!feedbackExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                feedbackExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            feedbackExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
+
 
     private String buildProfileJson(String name, Map<String, Object> radar,
                                     List<Map<String, Object>> weaknesses, List<Map<String, Object>> patterns,
