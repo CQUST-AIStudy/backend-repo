@@ -116,6 +116,7 @@ public class ProfileService {
             Map<String, Object> err = new LinkedHashMap<>();
             err.put("error", "\u8be5\u5b66\u751f\u65e0\u63d0\u4ea4\u8bb0\u5f55");
             err.put("studentId", studentNo);
+            err.put("diagnostic", diagnoseStudentNo(studentNo));
             return err;
         }
         List<StudentOfferingStat> stats = loadUnifiedStudentStats(scope);
@@ -124,6 +125,7 @@ public class ProfileService {
             err.put("error", "\u8be5\u5b66\u751f\u65e0\u63d0\u4ea4\u8bb0\u5f55");
             err.put("studentId", studentNo);
             err.put("scope", Map.of("classId", scope.classId(), "className", scope.className()));
+            err.put("diagnostic", diagnoseStudentNo(studentNo));
             return err;
         }
         Map<Long, String> offeringDimension = loadScopedOfferingDimensions(scope.classId());
@@ -186,12 +188,35 @@ public class ProfileService {
         return result;
     }
 
-    /** 解析学生画像范围：选一个 ACTIVE 教学班（按可参与 offering 数最多的优先，并列时记 ambiguous）。 */
+    /**
+     * 解析学生画像范围：选一个教学班（优先 ACTIVE；若无 ACTIVE 班则回退任意状态，避免归档班学生彻底无数据）。
+     * 按 PUBLISHED/CLOSED 的 offering 数最多的优先，并列时记 ambiguous。
+     */
     @SuppressWarnings("unchecked")
     private StudentProfileScope resolveStudentScope(String studentNo) {
         if (studentNo == null || studentNo.isBlank()) {
             return null;
         }
+        // 优先 ACTIVE 教学班
+        List<Object[]> rows = queryScope(studentNo, true);
+        // 无 ACTIVE 班则回退任意状态（归档班学生也能出数据）
+        if (rows.isEmpty()) {
+            rows = queryScope(studentNo, false);
+        }
+        if (rows.isEmpty()) {
+            return null;
+        }
+        Object[] top = rows.get(0);
+        long topCount = asLong(top[5]);
+        boolean ambiguous = rows.size() > 1 && asLong(((Object[]) rows.get(1))[5]) == topCount;
+        return new StudentProfileScope(
+                asLong(top[0]), studentNo, asLong(top[1]),
+                textOr(top[2], ""), textOr(top[4], ""), ambiguous);
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Object[]> queryScope(String studentNo, boolean activeOnly) {
+        String statusFilter = activeOnly ? " AND tc.status = 'ACTIVE'" : "";
         String sql = """
                 SELECT sp.id AS spid, tc.id AS class_id, tc.name AS class_name,
                        tc.course_id, tc.course_name,
@@ -203,22 +228,60 @@ public class ProfileService {
                 JOIN class_member cm ON cm.student_id = sp.id AND cm.member_status = 'ACTIVE'
                 JOIN teaching_class tc ON tc.id = cm.class_id
                 WHERE sp.student_no = :studentNo AND sp.status <> 'DELETED'
-                  AND tc.status = 'ACTIVE'
+                """ + statusFilter + """
                 ORDER BY offering_count DESC, cm.joined_at DESC, tc.id DESC
                 """;
-        List<Object[]> rows = em.createNativeQuery(sql)
+        return em.createNativeQuery(sql)
                 .setParameter("studentNo", studentNo)
                 .getResultList();
-        if (rows.isEmpty()) {
-            return null;
-        }
-        Object[] top = rows.get(0);
-        long topCount = asLong(top[5]);
-        boolean ambiguous = rows.size() > 1 && asLong(((Object[]) rows.get(1))[5]) == topCount;
-        return new StudentProfileScope(
-                asLong(top[0]), studentNo, asLong(top[1]),
-                textOr(top[2], ""), textOr(top[4], ""), ambiguous);
     }
+
+    /** 诊断：当画像无数据时，暴露学生在统一核心各表的关联状态，便于定位链路断点。 */
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> diagnoseStudentNo(String studentNo) {
+        Map<String, Object> diag = new LinkedHashMap<>();
+        try {
+            Object spCount = em.createNativeQuery(
+                    "SELECT COUNT(*) FROM student_profile WHERE student_no = :s AND status <> 'DELETED'")
+                    .setParameter("s", studentNo).getSingleResult();
+            diag.put("studentProfileExists", asLong(spCount) > 0);
+        } catch (Exception ignored) { }
+        try {
+            Object cmCount = em.createNativeQuery(
+                    "SELECT COUNT(*) FROM class_member cm JOIN student_profile sp ON sp.id = cm.student_id " +
+                    "WHERE sp.student_no = :s")
+                    .setParameter("s", studentNo).getSingleResult();
+            diag.put("classMemberRows", asLong(cmCount));
+        } catch (Exception ignored) { }
+        try {
+            List<Object[]> classes = em.createNativeQuery(
+                    "SELECT tc.id, tc.name, tc.status, cm.member_status, " +
+                    "(SELECT COUNT(DISTINCT ao.id) FROM assignment_offering ao WHERE ao.class_id = tc.id) AS off_cnt " +
+                    "FROM student_profile sp JOIN class_member cm ON cm.student_id = sp.id " +
+                    "JOIN teaching_class tc ON tc.id = cm.class_id WHERE sp.student_no = :s")
+                    .setParameter("s", studentNo).getResultList();
+            List<Map<String, Object>> classList = new ArrayList<>();
+            for (Object[] r : classes) {
+                Map<String, Object> c = new LinkedHashMap<>();
+                c.put("classId", asLong(r[0]));
+                c.put("className", r[1]);
+                c.put("classStatus", r[2]);
+                c.put("memberStatus", r[3]);
+                c.put("offeringCount", asLong(r[4]));
+                classList.add(c);
+            }
+            diag.put("classes", classList);
+        } catch (Exception ignored) { }
+        try {
+            Object attCount = em.createNativeQuery(
+                    "SELECT COUNT(*) FROM student_problem_attempt spa " +
+                    "JOIN student_profile sp ON sp.id = spa.student_id WHERE sp.student_no = :s")
+                    .setParameter("s", studentNo).getSingleResult();
+            diag.put("attemptRows", asLong(attCount));
+        } catch (Exception ignored) { }
+        return diag;
+    }
+
 
     /** 统一数据源：按 offering 聚合该学生在选定班级的提交（含中英文状态归一化）。 */
     @SuppressWarnings("unchecked")
