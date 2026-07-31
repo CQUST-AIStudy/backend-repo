@@ -135,6 +135,14 @@ public class ConceptStepsWorkflow {
     }
 
     public AnimationResult generate(AnimationCandidate candidate, int index) {
+        return generate(candidate, index, false);
+    }
+
+    /**
+     * @param preserveFullCode true 时展示学生完整代码（手动粘贴/按题演示场景），
+     *        要求 LLM 原样保留完整代码并按其真实行号编排，不做「截取错误片段」。
+     */
+    public AnimationResult generate(AnimationCandidate candidate, int index, boolean preserveFullCode) {
         String topic = buildTopic(candidate);
         // 防编造：没有学生真实代码时，绝不让 LLM 自由生成代码动画（会画出与学生无关的示例），
         // 只依据教师批注给出纯文字概念说明。
@@ -144,7 +152,12 @@ public class ConceptStepsWorkflow {
         JsonNode parsed = null;
         if (aiClient.isChatAvailable()) {
             try {
-                String raw = aiClient.chat(SYSTEM_PROMPT, buildUserPrompt(candidate, topic), 0.4);
+                String userPrompt = buildUserPrompt(candidate, topic);
+                if (preserveFullCode) {
+                    userPrompt += "\n\n【重要·完整代码演示】sourceCode 必须原样返回上面【学生代码】的完整内容，"
+                            + "不要截取、不要省略任何行；每个 step 的 line 必须指向完整【学生代码】中的真实行号。";
+                }
+                String raw = aiClient.chat(SYSTEM_PROMPT, userPrompt, 0.4);
                 parsed = extractJson(raw);
             } catch (Exception e) {
                 log.warn("概念分步动画 AI 生成失败，回退静态单步: {}", e.getMessage());
@@ -154,7 +167,7 @@ public class ConceptStepsWorkflow {
             return fallbackResult(candidate, topic);
         }
         try {
-            return buildResult(parsed, candidate, topic);
+            return buildResult(parsed, candidate, topic, preserveFullCode);
         } catch (Exception e) {
             log.warn("概念分步动画解析失败，回退静态单步: {}", e.getMessage());
             return fallbackResult(candidate, topic);
@@ -163,11 +176,19 @@ public class ConceptStepsWorkflow {
 
     // ---- 解析与组装 -------------------------------------------------------
 
-    private AnimationResult buildResult(JsonNode root, AnimationCandidate candidate, String topic) {
+    private AnimationResult buildResult(JsonNode root, AnimationCandidate candidate, String topic, boolean preserveFullCode) {
         String title = firstNonBlank(text(root, "title"), topic);
         String concept = firstNonBlank(text(root, "concept"), extractConcept(candidate));
         String structure = normalizeStructure(text(root, "dataStructure"));
         String sourceCode = clampLines(text(root, "sourceCode"), MAX_SOURCE_LINES);
+        if (preserveFullCode) {
+            // 展示学生完整代码（而非 LLM 截取的片段）；上限放宽，避免整段被裁。
+            String fullStudentCode = candidate.codeContext() == null ? "" : candidate.codeContext().fullCode();
+            String full = clampLines(fullStudentCode, 200);
+            if (!full.isBlank()) {
+                sourceCode = full;
+            }
+        }
         String correctedCode = text(root, "correctedCode");
         String explanation = firstNonBlank(text(root, "explanation"), candidate.note());
         int errorLine = root.path("errorLine").asInt(0);

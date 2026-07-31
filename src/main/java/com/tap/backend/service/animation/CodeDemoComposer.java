@@ -76,14 +76,12 @@ public class CodeDemoComposer {
             log.warn("代码演示真实执行异常，回退 LLM：{}", e.getMessage());
         }
 
-        // 2. LLM 概念分步兜底
-        AnimationResult result = conceptStepsWorkflow.generate(buildCandidate(code, title, experimentId), 0);
-        Object metaSource = result.metadata().get("sourceCode");
-        String sourceCode = metaSource != null && !metaSource.toString().isBlank() ? metaSource.toString() : code;
+        // 2. LLM 概念分步兜底（手动/按题演示：始终展示学生完整代码，不用 LLM 截取的片段）
+        AnimationResult result = conceptStepsWorkflow.generate(buildCandidate(code, title, experimentId), 0, true);
         return demonstration(
                 firstNonBlank(result.title(), title),
                 result.explanation(),
-                sourceCode,
+                code,
                 String.valueOf(result.metadata().getOrDefault("correctedCode", "")),
                 toInt(result.metadata().get("errorLine")),
                 result.frames(),
