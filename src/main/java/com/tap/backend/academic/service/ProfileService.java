@@ -98,14 +98,23 @@ public class ProfileService {
                                        long questionCount, int orderRank) {
     }
 
-    @org.springframework.transaction.annotation.Transactional(readOnly = true)
+    @org.springframework.cache.annotation.Cacheable(
+            value = "studentProfile",
+            key = "#studentNo",
+            // 错误响应(无 scope/无数据)不入缓存，避免后续拿到数据后仍命中旧错误
+            unless = "#result == null || #result.containsKey('error')")
+    @org.springframework.transaction.annotation.Transactional
     public Map<String, Object> getStudentProfile(String studentNo) {
         return computeStudentProfile(studentNo, false);
     }
 
-    @org.springframework.transaction.annotation.Transactional(readOnly = true)
+    @org.springframework.cache.annotation.CachePut(
+            value = "studentProfile",
+            key = "#studentNo",
+            unless = "#result == null || #result.containsKey('error')")
+    @org.springframework.transaction.annotation.Transactional
     public Map<String, Object> refreshFeedback(String studentNo) {
-        // refresh 复用同一画像计算，仅绕过 AI 反馈缓存
+        // refresh 复用同一画像计算，仅绕过 AI 反馈缓存；@CachePut 用最新结果替换缓存
         return computeStudentProfile(studentNo, true);
     }
 

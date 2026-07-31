@@ -7,6 +7,7 @@ import com.tap.backend.academic.service.ProfileService;
 import com.tap.backend.domain.classroom.TeachingClassEntity;
 import com.tap.backend.service.TeachingClassService;
 import jakarta.servlet.http.HttpServletRequest;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
@@ -69,7 +70,8 @@ public class ProfileController {
         if ("student".equals(role)) {
             try {
                 String studentId = studentSessionResolver.requireStudentId(request);
-                Map<String, Object> profile = profileService.getStudentProfile(studentId);
+                // 防御性拷贝：getStudentProfile 可能返回 @Cacheable 缓存的共享对象，putIfAbsent 不能改写它
+                Map<String, Object> profile = new LinkedHashMap<>(profileService.getStudentProfile(studentId));
                 // 补充基础用户信息
                 profile.putIfAbsent("username", user.getUsername());
                 profile.putIfAbsent("email", emptyIfNull(user.getEmail()));
@@ -146,15 +148,25 @@ public class ProfileController {
             HttpServletRequest request
     ) {
         String authorizedStudentId = legacySessionAccessResolver.requireStudentReadAccess(studentId, request);
-        Map<String, Object> result = profileService.refreshFeedback(authorizedStudentId);
-        return ResponseEntity.ok(result);
+        return ResponseEntity.ok(buildRefreshResponse(profileService.refreshFeedback(authorizedStudentId)));
     }
 
     @PostMapping("/feedback/refresh/me")
     public ResponseEntity<Map<String, Object>> refreshMyFeedback(HttpServletRequest request) {
         String studentId = studentSessionResolver.requireStudentId(request);
-        Map<String, Object> result = profileService.refreshFeedback(studentId);
-        return ResponseEntity.ok(result);
+        return ResponseEntity.ok(buildRefreshResponse(profileService.refreshFeedback(studentId)));
+    }
+
+    /**
+     * Service 的 refreshFeedback 已 @CachePut 缓存完整画像；这里对外投影成历史契约
+     * {studentId, feedback, refreshedAt}，保持 AbilityProfile 等前端兼容。
+     */
+    private static Map<String, Object> buildRefreshResponse(Map<String, Object> fullProfile) {
+        Map<String, Object> slim = new LinkedHashMap<>();
+        slim.put("studentId", fullProfile.get("studentId"));
+        slim.put("feedback", fullProfile.get("feedback"));
+        slim.put("refreshedAt", new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new java.util.Date()));
+        return slim;
     }
 
     private static String normalizeRole(String role) {

@@ -22,7 +22,9 @@ public class CacheConfig {
         SimpleCacheManager manager = new SimpleCacheManager();
         manager.setCaches(List.of(
             buildCache("experimentList", Duration.ofMinutes(2), 20),
-            buildCache("skillTree", Duration.ofMinutes(30), 5)
+            buildCache("skillTree", Duration.ofMinutes(30), 5),
+            // 学生个性画像整体响应缓存：重复打开秒开，AI 文案不阻塞；5 分钟过期或刷新按钮主动更新
+            buildCache("studentProfile", Duration.ofMinutes(5), 1000)
         ));
         return manager;
     }
