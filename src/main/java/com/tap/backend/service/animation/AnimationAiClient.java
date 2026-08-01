@@ -9,6 +9,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,9 +32,8 @@ public class AnimationAiClient {
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient;
 
-    private final String chatBaseUrl;
-    private final String chatApiKey;
-    private final String chatModel;
+    /** 聊天提供方按优先级排列（openai/DeepSeek 在前，dashscope/Qwen 兜底）；运行时主方失败自动回落下一级。 */
+    private final List<ChatProvider> chatProviders;
 
     private final String ttsBaseUrl;
     private final String ttsApiKey;
@@ -55,21 +55,25 @@ public class AnimationAiClient {
         String openaiKey = firstNonBlank(oa == null ? null : oa.apiKey(), System.getenv("OPENAI_API_KEY"));
         String dashscopeKey = firstNonBlank(ds == null ? null : ds.apiKey(), System.getenv("DASHSCOPE_API_KEY"));
 
-        // 文本模型：openai(DeepSeek) 优先，缺省回落 dashscope
+        // 文本模型：openai(DeepSeek) 优先，dashscope/Qwen 兜底。
+        // 运行时若主提供方失败（如 402 余额不足、网关超时），自动回落到下一级，避免动画降级为静态单步。
+        List<ChatProvider> providers = new ArrayList<>();
         if (!isBlank(openaiKey)) {
-            this.chatBaseUrl = trimUrl(firstNonBlank(oa == null ? null : oa.baseUrl(), "https://api.deepseek.com/v1"));
-            this.chatApiKey = openaiKey.trim();
-            this.chatModel = firstNonBlank(configuredChatModel, oa == null ? null : oa.model(), "deepseek-chat");
-        } else if (!isBlank(dashscopeKey)) {
-            this.chatBaseUrl = trimUrl(firstNonBlank(ds == null ? null : ds.baseUrl(),
-                    "https://dashscope.aliyuncs.com/compatible-mode/v1"));
-            this.chatApiKey = dashscopeKey.trim();
-            this.chatModel = firstNonBlank(configuredChatModel, "qwen-plus");
-        } else {
-            this.chatBaseUrl = null;
-            this.chatApiKey = null;
-            this.chatModel = null;
+            providers.add(new ChatProvider("openai",
+                    trimUrl(firstNonBlank(oa == null ? null : oa.baseUrl(), "https://api.deepseek.com/v1")),
+                    openaiKey.trim(),
+                    firstNonBlank(configuredChatModel, oa == null ? null : oa.model(), "deepseek-chat")));
         }
+        if (!isBlank(dashscopeKey)) {
+            // 作为兜底提供方时不复用主提供方的自定义模型号（可能在该网关无效），默认 qwen-plus。
+            String dashscopeModel = providers.isEmpty() ? firstNonBlank(configuredChatModel, "qwen-plus") : "qwen-plus";
+            providers.add(new ChatProvider("dashscope",
+                    trimUrl(firstNonBlank(ds == null ? null : ds.baseUrl(),
+                            "https://dashscope.aliyuncs.com/compatible-mode/v1")),
+                    dashscopeKey.trim(),
+                    dashscopeModel));
+        }
+        this.chatProviders = List.copyOf(providers);
 
         // TTS 固定走 dashscope 兼容接口（qwen-tts），openai 网关支持时也可用
         if (!isBlank(dashscopeKey)) {
@@ -88,21 +92,40 @@ public class AnimationAiClient {
     }
 
     public boolean isChatAvailable() {
-        return chatBaseUrl != null && !isBlank(chatApiKey);
+        return !chatProviders.isEmpty();
     }
 
     public boolean isTtsAvailable() {
         return ttsBaseUrl != null && !isBlank(ttsApiKey);
     }
 
-    /** 调用 chat/completions，返回助手文本内容。 */
+    /**
+     * 调用 chat/completions，返回助手文本内容。
+     * 主提供方失败（如 402 余额不足、网关超时）时自动回落到备用提供方；全部失败才抛出最后一个错误。
+     */
     public String chat(String systemPrompt, String userPrompt, double temperature) {
         if (!isChatAvailable()) {
             throw new IllegalStateException("未配置 AI 接口（OPENAI_API_KEY / DASHSCOPE_API_KEY 均为空）");
         }
+        RuntimeException lastError = null;
+        for (int i = 0; i < chatProviders.size(); i++) {
+            ChatProvider provider = chatProviders.get(i);
+            try {
+                return doChat(provider, systemPrompt, userPrompt, temperature);
+            } catch (RuntimeException e) {
+                lastError = e;
+                if (i < chatProviders.size() - 1) {
+                    log.warn("AI 提供方 {} 调用失败（{}），回落到下一级提供方", provider.name(), e.getMessage());
+                }
+            }
+        }
+        throw lastError;
+    }
+
+    private String doChat(ChatProvider provider, String systemPrompt, String userPrompt, double temperature) {
         try {
             ObjectNode body = objectMapper.createObjectNode();
-            body.put("model", chatModel);
+            body.put("model", provider.model());
             body.set("messages", objectMapper.valueToTree(List.of(
                     message("system", systemPrompt),
                     message("user", userPrompt)
@@ -110,9 +133,9 @@ public class AnimationAiClient {
             body.put("temperature", temperature);
 
             HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(chatBaseUrl + "/chat/completions"))
+                    .uri(URI.create(provider.baseUrl() + "/chat/completions"))
                     .header("Content-Type", "application/json")
-                    .header("Authorization", "Bearer " + chatApiKey)
+                    .header("Authorization", "Bearer " + provider.apiKey())
                     .timeout(Duration.ofSeconds(180))
                     .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
                     .build();
@@ -132,6 +155,9 @@ public class AnimationAiClient {
             throw new IllegalStateException("AI 调用失败: " + e.getMessage(), e);
         }
     }
+
+    /** 聊天提供方配置；多个提供方组成运行时兜底链。 */
+    private record ChatProvider(String name, String baseUrl, String apiKey, String model) {}
 
     /** 调用 /audio/speech 生成旁白音频，返回音频字节（mp3/wav，由网关决定）。 */
     public byte[] tts(String text) {
