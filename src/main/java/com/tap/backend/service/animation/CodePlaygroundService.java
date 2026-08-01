@@ -11,9 +11,14 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Executor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 
 /**
@@ -27,21 +32,37 @@ public class CodePlaygroundService {
 
     private static final int MAX_CODE_LENGTH = 64 * 1024;
 
+    private static final Logger log = LoggerFactory.getLogger(CodePlaygroundService.class);
+
     private final StudentPrincipalResolver resolver;
     private final StudentCodePlaygroundRepository repository;
     private final CodeDemoComposer composer;
     private final ObjectMapper objectMapper;
+    private final Executor aiExecutor;
+    private final TransactionTemplate transactionTemplate;
 
     public CodePlaygroundService(StudentPrincipalResolver resolver,
                                  StudentCodePlaygroundRepository repository,
                                  CodeDemoComposer composer,
-                                 ObjectMapper objectMapper) {
+                                 ObjectMapper objectMapper,
+                                 @Qualifier("aiExecutor") Executor aiExecutor,
+                                 TransactionTemplate transactionTemplate) {
         this.resolver = resolver;
         this.repository = repository;
         this.composer = composer;
         this.objectMapper = objectMapper;
+        this.aiExecutor = aiExecutor;
+        this.transactionTemplate = transactionTemplate;
     }
 
+    /**
+     * 生成演示（异步）。
+     * <p>
+     * 真实执行 / LLM 兜底可能耗时数十秒，过去同步执行会长时间占用 Tomcat 线程与数据库连接
+     * （HikariCP 连接泄漏告警），并超过网关 proxy_read_timeout 触发 504。现改为：
+     * 快速校验并落库一条 {@code PROCESSING} 记录后立即返回，耗时的合成过程交由
+     * {@code aiExecutor} 线程池异步完成，前端轮询 {@link #detail} 获取最终结果。
+     */
     @Transactional
     public Map<String, Object> generate(String title, String problemMd, String code, String stdin,
                                         UserPrincipal principal) {
@@ -52,25 +73,52 @@ public class CodePlaygroundService {
         if (code.length() > MAX_CODE_LENGTH) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "代码过长");
         }
-        String resolvedStdin = stdin != null ? stdin : composer.autoStdin(problemMd, code);
         String finalTitle = deriveTitle(title, problemMd);
-
-        Map<String, Object> demonstration = composer.buildDemonstration(code, resolvedStdin, finalTitle, null);
 
         StudentCodePlaygroundEntity entity = new StudentCodePlaygroundEntity();
         entity.setStudentNo(student.studentNum());
         entity.setTitle(finalTitle);
         entity.setProblemMd(problemMd);
-        entity.setSourceCode(String.valueOf(demonstration.getOrDefault("sourceCode", code)));
-        entity.setStdinText(resolvedStdin);
-        entity.setWorkflow(String.valueOf(demonstration.getOrDefault("workflow", "")));
-        entity.setExplanation(String.valueOf(demonstration.getOrDefault("explanation", "")));
-        entity.setErrorLine(toInt(demonstration.get("errorLine")));
-        entity.setStatus("COMPLETED");
-        entity.setFramesJson(writeJson(demonstration));
+        entity.setSourceCode(code);
+        entity.setStdinText(stdin);
+        entity.setStatus("PROCESSING");
         repository.save(entity);
 
+        Long entityId = entity.getId();
+        aiExecutor.execute(() -> runGeneration(entityId, code, problemMd, stdin, finalTitle));
+
         return toView(entity);
+    }
+
+    /** 异步执行耗时的演示合成：真实执行优先、LLM 概念分步兜底；完成后回填帧数据并置 COMPLETED。 */
+    private void runGeneration(Long entityId, String code, String problemMd, String stdin, String finalTitle) {
+        try {
+            // 耗时的真实执行 / LLM 调用在事务之外，不占用数据库连接
+            String resolvedStdin = stdin != null ? stdin : composer.autoStdin(problemMd, code);
+            Map<String, Object> demonstration = composer.buildDemonstration(code, resolvedStdin, finalTitle, null);
+            transactionTemplate.executeWithoutResult(status ->
+                    repository.findById(entityId).ifPresent(entity -> {
+                        entity.setSourceCode(String.valueOf(demonstration.getOrDefault("sourceCode", entity.getSourceCode())));
+                        entity.setStdinText(resolvedStdin);
+                        entity.setWorkflow(String.valueOf(demonstration.getOrDefault("workflow", "")));
+                        entity.setExplanation(String.valueOf(demonstration.getOrDefault("explanation", "")));
+                        entity.setErrorLine(toInt(demonstration.get("errorLine")));
+                        entity.setFramesJson(writeJson(demonstration));
+                        entity.setStatus("COMPLETED");
+                        repository.save(entity);
+                    }));
+        } catch (RuntimeException e) {
+            log.error("代码演示异步生成失败 id={}: {}", entityId, e.getMessage(), e);
+            try {
+                transactionTemplate.executeWithoutResult(status ->
+                        repository.findById(entityId).ifPresent(entity -> {
+                            entity.setStatus("FAILED");
+                            repository.save(entity);
+                        }));
+            } catch (RuntimeException ex) {
+                log.error("代码演示标记失败状态异常 id={}: {}", entityId, ex.getMessage(), ex);
+            }
+        }
     }
 
     @Transactional(readOnly = true)
