@@ -1054,24 +1054,20 @@ public class ProfileService {
 
     @org.springframework.transaction.annotation.Transactional(readOnly = true)
     public Map<String, Object> getClassProfile(Long classId, String className, String courseName) {
-        // 统一数据源：从 student_problem_attempt 按 (学生, offering) 聚合，
+        // 统一数据源：从 student_problem_attempt 按 (学生, offering, problem) 聚合，
         // 取代遗留的 submit_situation，确保 PTA 同步数据进入画像。
-        List<AttemptStat> allStats = loadUnifiedAttemptStats(classId);
+        List<ProblemAttemptStat> allStats = loadUnifiedProblemAttemptStats(classId);
         List<Map<String, Object>> students = profileDao.getAllStudents(classId, className);
         if (students == null) {
             students = new ArrayList<>();
         }
 
-        // 动态维度：按本班实际 offering 的实验名 + 题目知识点归类，
-        // 取代硬编码的 SkillTreeConfig 维度→experiment_id 映射。
-        Map<Long, String> offeringDimension = loadOfferingDimensions(classId);
-
         long totalSubmissions = allStats.stream()
-                .mapToLong(AttemptStat::totalSubmissions)
+                .mapToLong(ProblemAttemptStat::totalSubmissions)
                 .sum();
 
         // 按学生分组
-        Map<String, List<AttemptStat>> byStudent = new LinkedHashMap<>();
+        Map<String, List<ProblemAttemptStat>> byStudent = new LinkedHashMap<>();
         Map<String, String> studentNames = new LinkedHashMap<>();
         for (Map<String, Object> student : students) {
             String sid = String.valueOf(student.get("student_id"));
@@ -1079,7 +1075,7 @@ public class ProfileService {
             studentNames.put(sid, sname);
             byStudent.putIfAbsent(sid, new ArrayList<>());
         }
-        for (AttemptStat row : allStats) {
+        for (ProblemAttemptStat row : allStats) {
             String sid = row.studentNo();
             byStudent.computeIfAbsent(sid, k -> new ArrayList<>()).add(row);
             if (!studentNames.containsKey(sid) || studentNames.get(sid) == null || studentNames.get(sid).isBlank()) {
@@ -1087,13 +1083,13 @@ public class ProfileService {
             }
         }
 
-        // 计算每个学生每个维度的分数（维度来自动态 offeringDimension）
+        // 计算每个学生每个维度的分数（维度来自每道题的 knowledge_path）
         Map<String, Map<String, Double>> studentDimScores = new LinkedHashMap<>();
         Map<String, Double> studentOverallScores = new LinkedHashMap<>();
 
         for (var entry : byStudent.entrySet()) {
             String sid = entry.getKey();
-            List<AttemptStat> rows = entry.getValue();
+            List<ProblemAttemptStat> rows = entry.getValue();
 
             if (!studentNames.containsKey(sid) || studentNames.get(sid) == null || studentNames.get(sid).isBlank()) {
                 String sname = rows.isEmpty() || rows.get(0).studentName() == null || rows.get(0).studentName().isBlank()
@@ -1102,28 +1098,20 @@ public class ProfileService {
                 studentNames.put(sid, sname);
             }
 
-            // 按 offering 聚合 mastery（公式与学生画像 computeMastery 对齐）
-            Map<Long, Double> offeringMastery = new LinkedHashMap<>();
-            for (AttemptStat s : rows) {
+            // 题目级 mastery：同一 offering 内的不同知识维度分别统计，不再压成单一维度。
+            Map<String, double[]> dimAccum = new LinkedHashMap<>();
+            for (ProblemAttemptStat s : rows) {
                 long total = s.totalSubmissions();
                 long ac = s.acCount();
                 long compileErr = s.compileErrorCount();
-                long questions = s.questionCount();
-                if (total == 0) { offeringMastery.put(s.offeringId(), 0.0); continue; }
+                if (total == 0 || DimensionClassifier.UNCLASSIFIED.equals(s.dimension())) continue;
                 double correctRate = (double) ac / total;
                 double compileErrRate = (double) compileErr / total;
-                double avgAtt = questions > 0 ? (double) total / questions : total;
+                double avgAtt = total; // 当前记录已经按单题聚合，题数恒为 1
                 double eff = Math.max(0, 1.0 - (avgAtt - 1) / 20.0);
                 double m = 0.6 * correctRate + 0.2 * (1.0 - compileErrRate) + 0.2 * eff;
-                offeringMastery.put(s.offeringId(), Math.round(m * 1000.0) / 10.0);
-            }
-
-            // 按动态维度归集 offering 分数
-            Map<String, double[]> dimAccum = new LinkedHashMap<>();
-            for (var oe : offeringMastery.entrySet()) {
-                String dim = offeringDimension.getOrDefault(oe.getKey(), DimensionClassifier.FALLBACK_DIMENSION);
-                double[] acc = dimAccum.computeIfAbsent(dim, k -> new double[2]);
-                acc[0] += oe.getValue();
+                double[] acc = dimAccum.computeIfAbsent(s.dimension(), k -> new double[2]);
+                acc[0] += Math.round(m * 1000.0) / 10.0;
                 acc[1] += 1;
             }
 
@@ -1148,13 +1136,17 @@ public class ProfileService {
         Map<String, Integer> classDimEvidenceCount = new LinkedHashMap<>();
         List<String> activeDimensions = new ArrayList<>();
         Set<String> seenDimensions = new LinkedHashSet<>();
-        int unmappedOfferingCount = 0;
-        for (String d : offeringDimension.values()) {
-            if (DimensionClassifier.UNCLASSIFIED.equals(d)) {
-                unmappedOfferingCount++;
+        Set<Long> seenProblems = new LinkedHashSet<>();
+        Set<Long> unmappedProblems = new LinkedHashSet<>();
+        Set<Long> seenOfferings = new LinkedHashSet<>();
+        for (ProblemAttemptStat s : allStats) {
+            seenProblems.add(s.problemId());
+            seenOfferings.add(s.offeringId());
+            if (DimensionClassifier.UNCLASSIFIED.equals(s.dimension())) {
+                unmappedProblems.add(s.problemId());
                 continue;
             }
-            seenDimensions.add(d);
+            seenDimensions.add(s.dimension());
         }
         for (String dim : seenDimensions) {
             double sum = 0; int cnt = 0; int weakCnt = 0;
@@ -1231,16 +1223,17 @@ public class ProfileService {
         quality.put("status", "UNIFIED_ATTEMPT_PROFILE");
         quality.put("scoreSource", "student_problem_attempt");
         quality.put("rosterSource", "class_member");
-        quality.put("dimensionMapping", "DYNAMIC_BY_KNOWLEDGE_LEAF_OR_EXPERIMENT_NAME");
-        quality.put("offeringCount", offeringDimension.size());
-        quality.put("unmappedOfferingCount", unmappedOfferingCount);
+        quality.put("dimensionMapping", "PROBLEM_LEVEL_BY_KNOWLEDGE_PATH");
+        quality.put("offeringCount", seenOfferings.size());
+        quality.put("problemCount", seenProblems.size());
+        quality.put("unmappedProblemCount", unmappedProblems.size());
         result.put("quality", quality);
         return result;
     }
 
-    /** 统一数据源：按 (student_profile.id, offering_id) 聚合学生题目级提交。 */
+    /** 班级画像统一数据源：按 (学生, offering, problem) 聚合，每道题独立提取真实知识维度。 */
     @SuppressWarnings("unchecked")
-    private List<AttemptStat> loadUnifiedAttemptStats(Long classId) {
+    private List<ProblemAttemptStat> loadUnifiedProblemAttemptStats(Long classId) {
         if (classId == null) {
             return List.of();
         }
@@ -1249,6 +1242,8 @@ public class ProfileService {
                   sp.student_no        AS student_no,
                   COALESCE(NULLIF(TRIM(sp.real_name), ''), sp.student_no) AS student_name,
                   spa.offering_id      AS offering_id,
+                  spa.problem_id       AS problem_id,
+                  COALESCE(NULLIF(TRIM(ao.title_override), ''), at.title) AS experiment_name,
                   COUNT(*)             AS total_submissions,
                   SUM(CASE WHEN (
                         UPPER(TRIM(COALESCE(spa.judge_status, ''))) IN
@@ -1259,32 +1254,60 @@ public class ProfileService {
                   SUM(CASE WHEN UPPER(TRIM(COALESCE(spa.judge_status, ''))) IN
                         ('CE','COMPILE_ERROR','COMPILATION_ERROR','E1')
                         OR TRIM(COALESCE(spa.judge_status, '')) = '\u7f16\u8bd1\u9519\u8bef' THEN 1 ELSE 0 END) AS compile_error_count,
-                  COUNT(DISTINCT spa.problem_id) AS question_count
+                  COALESCE(NULLIF(TRIM(apd.knowledge_leaf), ''), '') AS knowledge_leaf,
+                  COALESCE(NULLIF(TRIM(apd.knowledge_path), ''), '') AS knowledge_path
                 FROM student_problem_attempt spa
                 JOIN student_profile sp ON sp.id = spa.student_id
                 JOIN assignment_offering ao ON ao.id = spa.offering_id
+                JOIN assignment_template at ON at.id = ao.template_id
+                JOIN assignment_problem ap
+                  ON ap.id = spa.problem_id
+                 AND ap.offering_id = spa.offering_id
+                LEFT JOIN pta_problem_detail apd ON apd.id = (
+                  SELECT pd.id FROM pta_problem_detail pd
+                  WHERE (
+                        (ao.pta_problem_set_id IS NOT NULL
+                         AND pd.problem_set_id COLLATE utf8mb4_unicode_ci = ao.pta_problem_set_id COLLATE utf8mb4_unicode_ci
+                         AND (pd.problem_set_problem_id COLLATE utf8mb4_unicode_ci = ap.source_problem_id COLLATE utf8mb4_unicode_ci
+                              OR pd.problem_set_problem_id COLLATE utf8mb4_unicode_ci = ap.problem_no COLLATE utf8mb4_unicode_ci))
+                     OR (ap.source_problem_id IS NOT NULL
+                         AND pd.pta_global_problem_id COLLATE utf8mb4_unicode_ci = ap.source_problem_id COLLATE utf8mb4_unicode_ci)
+                  )
+                  ORDER BY CASE
+                      WHEN ao.pta_problem_set_id IS NOT NULL
+                       AND pd.problem_set_id COLLATE utf8mb4_unicode_ci = ao.pta_problem_set_id COLLATE utf8mb4_unicode_ci THEN 0
+                      ELSE 1
+                  END, pd.updated_at DESC, pd.id DESC
+                  LIMIT 1
+                )
                 JOIN class_member cm
                   ON cm.student_id = spa.student_id
                  AND cm.class_id = ao.class_id
                  AND cm.member_status = 'ACTIVE'
                 WHERE ao.class_id = :classId
                   AND sp.status <> 'DELETED'
-                GROUP BY sp.student_no, sp.real_name, spa.offering_id
-                ORDER BY sp.student_no, spa.offering_id
+                  AND ao.status IN ('PUBLISHED','CLOSED')
+                GROUP BY sp.student_no, sp.real_name, spa.offering_id, spa.problem_id,
+                         ao.title_override, at.title, apd.knowledge_leaf, apd.knowledge_path
+                ORDER BY sp.student_no, spa.offering_id, spa.problem_id
                 """;
         List<Object[]> rows = em.createNativeQuery(sql)
                 .setParameter("classId", classId)
                 .getResultList();
-        List<AttemptStat> stats = new ArrayList<>(rows.size());
+        List<ProblemAttemptStat> stats = new ArrayList<>(rows.size());
         for (Object[] row : rows) {
-            stats.add(new AttemptStat(
+            String experimentName = textOr(row[4], "");
+            String dimension = DimensionClassifier.classifyByPath(
+                    textOr(row[9], ""), textOr(row[8], ""), experimentName);
+            stats.add(new ProblemAttemptStat(
                     textOr(row[0], ""),
                     textOr(row[1], ""),
                     asLong(row[2]),
                     asLong(row[3]),
-                    asLong(row[4]),
                     asLong(row[5]),
-                    asLong(row[6])));
+                    asLong(row[6]),
+                    asLong(row[7]),
+                    dimension));
         }
         return stats;
     }
@@ -1346,15 +1369,16 @@ public class ProfileService {
         return result;
     }
 
-    /** 班级画像统一数据源行：按 (学生学号, offering) 聚合后的提交统计。 */
-    private record AttemptStat(
+    /** 班级画像统一数据源行：按 (学生学号, offering, problem) 聚合后的提交统计。 */
+    private record ProblemAttemptStat(
             String studentNo,
             String studentName,
             long offeringId,
+            long problemId,
             long totalSubmissions,
             long acCount,
             long compileErrorCount,
-            long questionCount) {
+            String dimension) {
     }
 
 

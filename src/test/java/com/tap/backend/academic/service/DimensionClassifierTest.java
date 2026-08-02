@@ -57,6 +57,31 @@ class DimensionClassifierTest {
     }
 
     @Test
+    void classifyByPathExtractsRealChapterAcrossCourses() {
+        assertEquals("线性表", DimensionClassifier.classifyByPath(
+                "数据结构/线性表/单链表", "单链表", "实验"));
+        assertEquals("指针", DimensionClassifier.classifyByPath(
+                "C语言/指针/指针运算", "指针运算", "实验"));
+        assertEquals("函数", DimensionClassifier.classifyByPath(
+                "计算机/C语言/函数/递归", "递归", "实验"));
+        assertEquals("数组", DimensionClassifier.classifyByPath(
+                "C语言/数组", "数组", "实验"));
+    }
+
+    @Test
+    void classifyByPathUsesMajorityForMultipleKnowledgePaths() {
+        assertEquals("线性表", DimensionClassifier.classifyByPath(
+                "数据结构/线性表/单链表;数据结构/树/二叉树;数据结构/线性表/顺序表",
+                "单链表;二叉树;顺序表", "综合实验"));
+    }
+
+    @Test
+    void classifyByPathFallsBackWhenPathMissing() {
+        assertEquals("栈与队列", DimensionClassifier.classifyByPath(
+                "", "栈;队列", "实验"));
+    }
+
+    @Test
     void classifyFallsBackToGeneralWhenNoKeyword() {
         assertEquals(DimensionClassifier.FALLBACK_DIMENSION, DimensionClassifier.classify("开学第一课"));
         assertEquals(DimensionClassifier.FALLBACK_DIMENSION, DimensionClassifier.classify(""));
