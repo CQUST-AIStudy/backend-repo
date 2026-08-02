@@ -27,11 +27,13 @@ public class LeetCodeAiEvaluationService {
     private static final int DEFAULT_CONNECT_TIMEOUT_MS = 8000;
     private static final int DEFAULT_READ_TIMEOUT_MS = 60000;
     private static final int DEFAULT_EVAL_TIMEOUT_SECONDS = 55;
+    private static final int DEFAULT_MAX_TOKENS = 800;
     private static final ExecutorService AI_EVAL_EXECUTOR = Executors.newFixedThreadPool(2);
 
     private final ObjectMapper objectMapper;
     private final RestClient aiRestClient;
     private final String aiModel;
+    private final int maxTokens;
     private final int evalTimeoutSeconds;
 
     public LeetCodeAiEvaluationService(
@@ -39,11 +41,13 @@ public class LeetCodeAiEvaluationService {
             @Value("${tap.ai.openai.base-url:https://api.deepseek.com/v1}") String aiBaseUrl,
             @Value("${tap.ai.openai.api-key:}") String aiApiKey,
             @Value("${tap.ai.openai.model:deepseek-chat}") String aiModel,
+            @Value("${leetcode.ai.max-tokens:" + DEFAULT_MAX_TOKENS + "}") int maxTokens,
             @Value("${leetcode.ai.connect-timeout-ms:" + DEFAULT_CONNECT_TIMEOUT_MS + "}") int connectTimeoutMs,
             @Value("${leetcode.ai.read-timeout-ms:" + DEFAULT_READ_TIMEOUT_MS + "}") int readTimeoutMs,
             @Value("${leetcode.ai.eval-timeout-seconds:" + DEFAULT_EVAL_TIMEOUT_SECONDS + "}") int evalTimeoutSeconds) {
         this.objectMapper = objectMapper;
         this.aiModel = (aiModel == null || aiModel.isBlank()) ? "deepseek-chat" : aiModel.trim();
+        this.maxTokens = maxTokens > 0 ? maxTokens : DEFAULT_MAX_TOKENS;
         this.evalTimeoutSeconds = evalTimeoutSeconds > 0 ? evalTimeoutSeconds : DEFAULT_EVAL_TIMEOUT_SECONDS;
 
         String effectiveApiKey = (aiApiKey == null || aiApiKey.isBlank()) ? System.getenv("OPENAI_API_KEY") : aiApiKey.trim();
@@ -120,7 +124,7 @@ public class LeetCodeAiEvaluationService {
         ObjectNode body = objectMapper.createObjectNode();
         body.put("model", aiModel);
         body.put("temperature", 0.2);
-        body.put("max_tokens", 800);
+        body.put("max_tokens", maxTokens);
         body.set("messages", objectMapper.valueToTree(List.of(
                 messageNode("system", "You are a senior programming reviewer. Output valid JSON only."),
                 messageNode("user", prompt)

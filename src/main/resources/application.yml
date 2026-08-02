@@ -188,6 +188,10 @@ leetcode:
     cache:
       recommendation-ttl-minutes: 30
       skill-profile-ttl-minutes: 60
+  # 力扣 AI 测评（LeetCodeAiEvaluationService）
+  ai:
+    # 最大输出 token 数；环境变量 LEETCODE_AI_MAX_TOKENS 覆盖（deepseek-v4-flash 项目内参考值 384000，超出 API 上限会返回 400）
+    max-tokens: ${LEETCODE_AI_MAX_TOKENS:800}
 
 # 项目自定义业务配置根节点
 tap:
