@@ -63,3 +63,11 @@ services:
       TAP_ERROR_ANALYSIS_BASE_URL: ${TAP_ERROR_ANALYSIS_BASE_URL:-http://host.docker.internal:8002}
 
       CORS_ALLOWED_ORIGIN_PATTERNS: ${CORS_ALLOWED_ORIGIN_PATTERNS:-http://localhost:*,http://127.0.0.1:*,http://host.docker.internal:*}
+    networks:
+      - default
+      - cqust-ai-net
+
+networks:
+  default: {}
+  cqust-ai-net:
+    external: true
