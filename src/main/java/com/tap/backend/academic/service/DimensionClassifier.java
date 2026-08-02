@@ -32,7 +32,7 @@ public final class DimensionClassifier {
             rule("(?i).*(\\bdfs\\b|\\bbfs\\b|深度优先|广度优先|graph|图论|连通图).*", "图"),
             rule("(?i).*(图|graph).*", "图"),
 
-            rule("(?i).*(链表|线性表|顺序表|数组|arraylist|linkedlist|linked\\s+list|向量|vector).*", "线性表"),
+            rule("(?i).*(链表|线性表|线性结构|线性存储|顺序存储|链式存储|顺序表|数组|arraylist|linkedlist|linked\\s+list|列表|向量|vector).*", "线性表"),
             rule("(?i).*(栈|队列|stack|queue|单调栈|单调队列|双端队列|deque).*", "栈与队列"),
             rule("(?i).*(二叉|哈夫曼|huffman|\\bbst\\b|\\bavl\\b|平衡树|trie|字典树|tree|树).*", "树"),
             rule("(?i).*(哈希|hash|散列).*", "哈希")
