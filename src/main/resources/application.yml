@@ -281,6 +281,9 @@ tap:
   # RAG 检索增强知识库全套配置
   rag:
     maintenance-mode: ${RAG_MAINTENANCE_MODE:false}
+    proxy:
+      # RAG 服务地址（RagProxyService 转发用，容器部署时通过 RAG_SERVICE_BASE_URL 覆盖）
+      base-url: ${RAG_SERVICE_BASE_URL:http://127.0.0.1:8001}
     langchain4j:
       enabled: ${RAG_LANGCHAIN4J_ENABLED:false}
       use-streaming: ${RAG_LANGCHAIN4J_USE_STREAMING:true}
