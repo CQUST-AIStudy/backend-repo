@@ -71,6 +71,9 @@ public class ErrorAnalysisService {
     private final RestTemplate restTemplate = new RestTemplate();
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    /** 学生级学习建议生成中防重集合：同一学号同时只允许一个生成任务，避免并发重复调微服务与重复落库 */
+    private final java.util.Set<String> pendingLearningProfile = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
     // ==================== 异步管线（核心） ====================
 
     /**
@@ -245,6 +248,87 @@ public class ErrorAnalysisService {
             return null;
         }
         return callMicroservice("/analyze/learning", payload);
+    }
+
+    /**
+     * 学生级学习建议（跨实验汇总）：数据库优先 + 落库，避免每次打开页面都实时调微服务。
+     * <p>
+     * 复用 AiErrorAnalysisReport 表，以 experimentId=0 表示"学生级"，reportType=LEARNING 区分。
+     * <ul>
+     *   <li>forceRefresh=false（页面默认打开）：先查库，命中即返回（毫秒级）；未命中才用 payload 调微服务生成并落库。</li>
+     *   <li>forceRefresh=true（"重新生成"按钮）：跳过缓存，强制重新生成并覆盖落库。</li>
+     *   <li>single-flight：同一学生若已有生成在进行中，后到的请求直接返回库中旧结果（若有），避免并发重复调微服务与重复落库。</li>
+     * </ul>
+     */
+    public Map<String, Object> learningSuggestCached(String studentNo, Map<String, Object> payload, boolean forceRefresh) {
+        // 1. 非强制：先查库，命中即返回（不依赖 payload，解决"画像无弱点但库里有旧建议"读不到的问题）
+        if (!forceRefresh && studentNo != null) {
+            Map<String, Object> cached = findStoredLearning(studentNo);
+            if (cached != null) {
+                logger.info("learningSuggestCached: DB cache hit for student={}", studentNo);
+                return cached;
+            }
+        }
+        // 2. 需要生成：校验 payload 含有效 errorHistory，否则不徒劳调微服务
+        if (!hasValidLearningPayload(payload)) {
+            logger.info("learningSuggestCached: no valid errorHistory, skip generation for student={}", studentNo);
+            return null;
+        }
+        // 3. single-flight：同一学生正在生成中，后到请求返回库中旧结果（可能为 null）
+        if (studentNo != null && !pendingLearningProfile.add(studentNo)) {
+            logger.info("learningSuggestCached: in-flight, return stale for student={}", studentNo);
+            return findStoredLearning(studentNo);
+        }
+        try {
+            Map<String, Object> result = callMicroservice("/analyze/learning", payload);
+            if (result != null && studentNo != null) {
+                cleanOldReports(studentNo, 0, "LEARNING");
+                saveReport(studentNo, 0, "学生学习画像建议", "LEARNING", result);
+            }
+            return result;
+        } finally {
+            if (studentNo != null) pendingLearningProfile.remove(studentNo);
+        }
+    }
+
+    /** 查询学生级学习建议缓存，命中返回 {data: {...}}，未命中返回 null。 */
+    private Map<String, Object> findStoredLearning(String studentNo) {
+        if (studentNo == null) return null;
+        try {
+            List<AiErrorAnalysisReport> reports = reportDao.findByStudentAndExperiment(studentNo, 0);
+            if (reports != null) {
+                for (AiErrorAnalysisReport r : reports) {
+                    if ("LEARNING".equals(r.getReportType())) {
+                        Map<String, Object> wrapped = new LinkedHashMap<>();
+                        wrapped.put("data", storedLearningReportToMap(r));
+                        return wrapped;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            logger.warn("findStoredLearning failed: {}", e.getMessage());
+        }
+        return null;
+    }
+
+    /** 校验 payload 是否含可用于生成的 errorHistory（非空 List）。 */
+    private boolean hasValidLearningPayload(Map<String, Object> payload) {
+        if (payload == null) return false;
+        Object eh = payload.get("errorHistory");
+        return eh instanceof List && !((List<?>) eh).isEmpty();
+    }
+
+    /** 将已存储的学生级学习建议报告转为前端期望的结构（与微服务 /analyze/learning 的 data 字段对齐）。 */
+    private Map<String, Object> storedLearningReportToMap(AiErrorAnalysisReport r) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("aiGenerated", Boolean.TRUE.equals(r.getAiGenerated()));
+        if (r.getSummaryMessage() != null) data.put("summaryMessage", r.getSummaryMessage());
+        data.put("weakPoints", parseJsonArray(r.getWeakPointsJson()));
+        data.put("studyPlan", parseJsonArray(r.getStudyPlanJson()));
+        data.put("recommendedProblems", parseJsonArray(r.getRecommendedProblemsJson()));
+        data.put("learningSuggestions", parseJsonArray(r.getLearningSuggestionsJson()));
+        if (r.getCreatedAt() != null) data.put("generatedAt", ISO_FORMAT.format(r.getCreatedAt()));
+        return data;
     }
 
     public Map<String, Object> warningAnalyzeFromDb(String studentNo, String studentName,

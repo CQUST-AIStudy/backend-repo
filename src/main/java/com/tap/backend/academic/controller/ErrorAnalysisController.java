@@ -157,6 +157,37 @@ public class ErrorAnalysisController {
         return proxyOrBuild(payload, request, "learning");
     }
 
+    /**
+     * 画像页专用学习建议：数据库优先读取，未命中或 forceRefresh 才生成并落库。
+     * 与通用 /learning（实验级透传）隔离，避免互相污染缓存。
+     */
+    @PostMapping("/learning/profile")
+    public ResponseEntity<Map<String, Object>> learningSuggestProfile(
+            @RequestBody Map<String, Object> payload,
+            HttpServletRequest request) {
+        try {
+            String studentId = studentSessionResolver.requireStudentId(request);
+            boolean forceRefresh = Boolean.TRUE.equals(payload.get("forceRefresh"));
+            Map<String, Object> responseBody = errorAnalysisService.learningSuggestCached(studentId, payload, forceRefresh);
+            Map<String, Object> result = new HashMap<>();
+            result.put("success", true);
+            if (responseBody != null && responseBody.get("data") != null) {
+                result.put("data", responseBody.get("data"));
+            } else if (responseBody != null) {
+                result.put("data", responseBody);
+            } else {
+                result.put("data", null);
+            }
+            return ResponseEntity.ok(result);
+        } catch (Exception e) {
+            logger.error("learningSuggestProfile failed: {}", e.getMessage(), e);
+            Map<String, Object> err = new HashMap<>();
+            err.put("success", false);
+            err.put("message", "学习建议生成失败，请稍后重试");
+            return ResponseEntity.internalServerError().body(err);
+        }
+    }
+
     @PostMapping("/warning")
     public ResponseEntity<Map<String, Object>> warningAnalyze(
             @RequestBody Map<String, Object> payload,
