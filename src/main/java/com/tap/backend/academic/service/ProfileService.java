@@ -415,24 +415,26 @@ public class ProfileService {
 
     private Map<String, Object> computeRadar(Map<Long, Double> mastery, Map<Long, Double> confidence,
                                              Map<Long, String> offeringDimension) {
-        // 维度顺序：SkillTreeConfig 的标准六维，未命中的维度得 0 分
+        // 维度从题目实际归类结果动态收集（不预设固定六维），只显示有数据的维度
         Map<String, double[]> accum = new LinkedHashMap<>();
-        for (String dim : skillTreeConfig.getDimensions().keySet()) {
-            accum.put(dim, new double[3]); // [sumScore, sumConf, count]
-        }
         for (var e : mastery.entrySet()) {
             String dim = displayDimension(offeringDimension.get(e.getKey()));
-            double[] acc = accum.computeIfAbsent(dim, k -> new double[3]);
+            double[] acc = accum.computeIfAbsent(dim, k -> new double[3]); // [sumScore, sumConf, count]
             acc[0] += e.getValue();
             acc[1] += confidence.getOrDefault(e.getKey(), 0.0);
             acc[2] += 1;
         }
+        // 按平均掌握度降序稳定排序（强项在前，便于阅读）；课程/题目不同，维度自适应变化
+        List<String> orderedDims = new ArrayList<>(accum.keySet());
+        orderedDims.sort(Comparator.comparingDouble(
+                (String d) -> { double[] a = accum.get(d); return a[2] > 0 ? a[0] / a[2] : 0; }
+        ).reversed());
         List<String> dimensions = new ArrayList<>();
         List<Double> scores = new ArrayList<>();
         List<Double> confidences = new ArrayList<>();
-        for (var e : accum.entrySet()) {
-            dimensions.add(e.getKey());
-            double[] acc = e.getValue();
+        for (String dim : orderedDims) {
+            double[] acc = accum.get(dim);
+            dimensions.add(dim);
             scores.add(acc[2] > 0 ? Math.round(acc[0] / acc[2] * 10.0) / 10.0 : 0);
             confidences.add(acc[2] > 0 ? Math.round(acc[1] / acc[2] * 100.0) / 100.0 : 0);
         }
@@ -451,8 +453,8 @@ public class ProfileService {
             byDim.computeIfAbsent(displayDimension(offeringDimension.get(offId)), k -> new ArrayList<>()).add(offId);
         }
         List<Map<String, Object>> tree = new ArrayList<>();
-        for (String dim : skillTreeConfig.getDimensions().keySet()) {
-            List<Long> offIds = byDim.getOrDefault(dim, List.of());
+        for (String dim : byDim.keySet()) {
+            List<Long> offIds = byDim.get(dim);
             List<Map<String, Object>> children = new ArrayList<>();
             double sumScore = 0;
             int count = 0;
@@ -477,7 +479,7 @@ public class ProfileService {
             }
             Map<String, Object> node = new LinkedHashMap<>();
             node.put("dimension", dim);
-            node.put("description", skillTreeConfig.getDescriptions().get(dim));
+            node.put("description", skillTreeConfig.getDescriptions().getOrDefault(dim, dim));
             node.put("avgMastery", count > 0 ? Math.round(sumScore / count * 10.0) / 10.0 : 0);
             double avg = count > 0 ? sumScore / count : 0;
             node.put("level", avg >= 70 ? "good" : avg >= 40 ? "medium" : "weak");
