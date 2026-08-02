@@ -192,6 +192,10 @@ leetcode:
   ai:
     # 最大输出 token 数；环境变量 LEETCODE_AI_MAX_TOKENS 覆盖（deepseek-v4-flash 项目内参考值 384000，超出 API 上限会返回 400）
     max-tokens: ${LEETCODE_AI_MAX_TOKENS:800}
+    connect-timeout-ms: ${LEETCODE_AI_CONNECT_TIMEOUT_MS:8000}
+    # 读超时必须 >= eval-timeout-seconds，否则先触发 HTTP 超时
+    read-timeout-ms: ${LEETCODE_AI_READ_TIMEOUT_MS:60000}
+    eval-timeout-seconds: ${LEETCODE_AI_EVAL_TIMEOUT_SECONDS:55}
 
 # 项目自定义业务配置根节点
 tap:
