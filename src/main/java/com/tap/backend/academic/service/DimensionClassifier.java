@@ -1,8 +1,11 @@
 package com.tap.backend.academic.service;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -86,6 +89,59 @@ public final class DimensionClassifier {
         // 知识点缺失：用实验名兜底
         String byName = classify(experimentName);
         return byName.equals(FALLBACK_DIMENSION) ? UNCLASSIFIED : byName;
+    }
+
+    /**
+     * 按 knowledge_path 真实层级提取维度（多课程自适应，替代固定词表作为主归类方式）。
+     * <p>优先用知识点路径的章节级作为维度：数据结构课出"线性表/树/图"，C 语言课出"指针/函数"，
+     * 不再受限于固定词表。同一 offering 多个知识点时取出现频次最高的章节（众数），避免多维被
+     * 强制并成"综合"。path 缺失或全部解析失败时回退到 {@link #classifyOffering} 固定词表。
+     *
+     * @param knowledgePathCsv 知识点完整路径，多个以 ; 分隔（pta_problem_detail.knowledge_path）
+     * @param knowledgeLeafCsv 叶子知识点，多个以 ; 分隔（回退用）
+     * @param experimentName   实验/作业名（最终兜底）
+     */
+    public static String classifyByPath(String knowledgePathCsv, String knowledgeLeafCsv, String experimentName) {
+        if (knowledgePathCsv != null && !knowledgePathCsv.isBlank()) {
+            Map<String, Integer> dimCounts = new LinkedHashMap<>();
+            for (String path : knowledgePathCsv.split("[;,，；|、]+")) {
+                String dim = chapterOfPath(path);
+                if (dim != null && !dim.isBlank()) {
+                    dimCounts.merge(dim, 1, Integer::sum);
+                }
+            }
+            if (!dimCounts.isEmpty()) {
+                String best = null;
+                int bestCnt = 0;
+                for (var e : dimCounts.entrySet()) {
+                    if (e.getValue() > bestCnt) {
+                        best = e.getKey();
+                        bestCnt = e.getValue();
+                    }
+                }
+                return best;
+            }
+        }
+        return classifyOffering(experimentName, knowledgeLeafCsv);
+    }
+
+    /**
+     * 从知识点路径提取章节级维度：路径 ≥3 级取倒数第二级（叶子的父 = 章节），
+     * ≤2 级取最后一级。层级分隔符兼容 / » > 》 等。
+     */
+    private static String chapterOfPath(String path) {
+        if (path == null) return null;
+        String trimmed = path.trim();
+        if (trimmed.isEmpty()) return null;
+        String[] raw = trimmed.split("[/»>》]+");
+        List<String> levels = new ArrayList<>();
+        for (String p : raw) {
+            String s = p.trim();
+            if (!s.isEmpty()) levels.add(s);
+        }
+        if (levels.isEmpty()) return null;
+        int idx = levels.size() >= 3 ? levels.size() - 2 : levels.size() - 1;
+        return levels.get(idx);
     }
 
     private static String join(CharSequence[] texts) {

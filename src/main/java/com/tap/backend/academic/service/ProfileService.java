@@ -185,7 +185,7 @@ public class ProfileService {
         List<Map<String, Object>> patterns = detectPatterns(statByOffering, mastery, halfSplit);
         Map<String, Object> overview = computeOverview(statByOffering, totalOfferings);
 
-        FeedbackResult feedback = generateFeedback(studentNo, name, radar, weaknesses, patterns, overview, trend, forceRefresh);
+        FeedbackResult feedback = generateFeedback(studentNo, name, scope.courseName(), radar, weaknesses, patterns, overview, trend, forceRefresh);
 
         // 未分类 offering 数（DimensionClassifier 无法归类或维度映射缺失），计入质量标记但不静默丢弃
         int unclassified = (int) stats.stream()
@@ -709,11 +709,11 @@ public class ProfileService {
      *   并触发异步任务算 DeepSeek 写库 + 失效内存缓存，下次打开读到新文案。首次打开不阻塞。
      * 返回 FeedbackResult(text, status)，status ∈ FRESH/STALE/TEMPLATE/GENERATED。
      */
-    private FeedbackResult generateFeedback(String studentNo, String name,
+    private FeedbackResult generateFeedback(String studentNo, String name, String courseName,
                                             Map<String, Object> radar, List<Map<String, Object>> weaknesses,
                                             List<Map<String, Object>> patterns, Map<String, Object> overview,
                                             Map<String, Object> trend, boolean forceRefresh) {
-        String profileJson = buildProfileJson(name, radar, weaknesses, patterns, overview, trend);
+        String profileJson = buildProfileJson(name, courseName, radar, weaknesses, patterns, overview, trend);
 
         String existingFeedback = null;
         String existingProfileJson = "";
@@ -821,11 +821,12 @@ public class ProfileService {
     }
 
 
-    private String buildProfileJson(String name, Map<String, Object> radar,
+    private String buildProfileJson(String name, String courseName, Map<String, Object> radar,
                                     List<Map<String, Object>> weaknesses, List<Map<String, Object>> patterns,
                                     Map<String, Object> overview, Map<String, Object> trend) {
         Map<String, Object> profileSummary = new LinkedHashMap<>();
         profileSummary.put("studentName", name);
+        profileSummary.put("courseName", courseName);
         profileSummary.put("overallAcRate", overview.get("overallAcRate"));
         profileSummary.put("totalSubmissions", overview.get("totalSubmissions"));
         profileSummary.put("totalAc", overview.get("totalAc"));
@@ -853,6 +854,13 @@ public class ProfileService {
 
     private String callDeepSeek(String profileJson, String studentName, Map<String, Object> overview) throws Exception {
         int totalExp = ((Number) overview.getOrDefault("totalExperiments", 0)).intValue();
+        String courseName = "";
+        try {
+            JsonObject obj = JsonParser.parseString(profileJson).getAsJsonObject();
+            if (obj.has("courseName") && !obj.get("courseName").isJsonNull()) {
+                courseName = obj.get("courseName").getAsString();
+            }
+        } catch (Exception ignored) {}
         String systemPrompt = "\u4f60\u662f\u4e00\u4f4d\u7ecf\u9a8c\u4e30\u5bcc\u7684\u9ad8\u6821\u6570\u636e\u7ed3\u6784\u8bfe\u7a0b\u6559\u5b66\u52a9\u624b\uff0c\u8d1f\u8d23\u6839\u636e\u5b66\u751f\u5728PTA\u7f16\u7a0b\u5e73\u53f0\u4e0a\u7684\u63d0\u4ea4\u6570\u636e\uff0c\u751f\u6210\u4e2a\u6027\u5316\u7684\u5b66\u4e60\u5206\u6790\u62a5\u544a\u3002\n\n"
                 + "## \u6570\u636e\u80cc\u666f\n"
                 + "- \u8bfe\u7a0b\uff1a\u6570\u636e\u7ed3\u6784\uff08C\u8bed\u8a00\u5b9e\u73b0\uff09\n"
@@ -874,7 +882,7 @@ public class ProfileService {
                 + "- \u8bed\u6c14\u53cb\u597d\u3001\u4e13\u4e1a\u3001\u6709\u5efa\u8bbe\u6027\uff0c\u50cf\u4e00\u4f4d\u5173\u5fc3\u5b66\u751f\u7684\u8001\u5e08\n"
                 + "- \u603b\u5b57\u6570\u63a7\u5236\u5728300-500\u5b57\u4e4b\u95f4";
 
-        String userPrompt = "\u4ee5\u4e0b\u662f" + studentName + "\u540c\u5b66\u5728\u6570\u636e\u7ed3\u6784\u8bfe\u7a0bPTA\u5e73\u53f0\u4e0a\u7684\u80fd\u529b\u753b\u50cf\u6570\u636e\uff08JSON\u683c\u5f0f\uff09\uff0c\u8bf7\u6839\u636e\u4e0a\u8ff0\u8981\u6c42\u751f\u6210\u5b66\u4e60\u5206\u6790\u62a5\u544a\uff1a\n\n" + profileJson;
+        String userPrompt = "\u4ee5\u4e0b\u662f" + studentName + "\u540c\u5b66\u5728\u6570\u636e\u7ed3\u6784\u8bfe\u7a0bPTA\u5e73\u53f0\u4e0a\u7684\u80fd\u529b\u753b\u50cf\u6570\u636e\uff08JSON\u683c\u5f0f\uff09\uff0c\u8bf7\u6839\u636e\u4e0a\u8ff0\u8981\u6c42\u751f\u6210\u5b66\u4e60\u5206\u6790\u62a5\u544a\uff1a\n\n" + profileJson + " (IMPORTANT: actual course is [" + courseName + "]; ability dimensions are ADAPTIVE - read them from radarScores.dimensions above which reflect the real topics of this course; IGNORE any hardcoded course name or fixed dimension list in the system hint above, use this JSON as the single source of truth)";
 
         JsonObject reqBody = new JsonObject();
         reqBody.addProperty("model", deepseekModel);
@@ -1298,7 +1306,8 @@ public class ProfileService {
                 SELECT
                   ap.offering_id AS offering_id,
                   COALESCE(NULLIF(TRIM(ao.title_override), ''), at.title) AS experiment_name,
-                  GROUP_CONCAT(DISTINCT COALESCE(NULLIF(TRIM(apd.knowledge_leaf), ''), '') ORDER BY apd.knowledge_leaf SEPARATOR ';') AS knowledge_leaves
+                  GROUP_CONCAT(DISTINCT COALESCE(NULLIF(TRIM(apd.knowledge_leaf), ''), '') ORDER BY apd.knowledge_leaf SEPARATOR ';') AS knowledge_leaves,
+                  GROUP_CONCAT(DISTINCT COALESCE(NULLIF(TRIM(apd.knowledge_path), ''), '') ORDER BY apd.knowledge_path SEPARATOR ';') AS knowledge_paths
                 FROM assignment_offering ao
                 JOIN assignment_template at ON at.id = ao.template_id
                 LEFT JOIN assignment_problem ap ON ap.offering_id = ao.id
@@ -1331,7 +1340,8 @@ public class ProfileService {
             long offeringId = asLong(row[0]);
             String experimentName = textOr(row[1], "");
             String knowledgeLeaves = textOr(row[2], "");
-            result.put(offeringId, DimensionClassifier.classifyOffering(experimentName, knowledgeLeaves));
+            String knowledgePaths = textOr(row[3], "");
+            result.put(offeringId, DimensionClassifier.classifyByPath(knowledgePaths, knowledgeLeaves, experimentName));
         }
         return result;
     }
