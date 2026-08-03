@@ -704,13 +704,21 @@ private static final int LONG_DOCUMENT_PAGE_THRESHOLD = 15;
                 }
             }
 
-            // 3) Draw teacher signature — prefer the cover page near 指导教师/签字
+            // 3) 封面有「指导教师/签字」栏时优先签在封面
+            boolean coverSigned = false;
             if (!documentContainsGeneratedReview(document)) {
-                drawPdfTeacherSignature(document, pages, fontSelection, teacherSignature);
+                coverSigned = tryDrawPdfCoverSignature(document, pages, fontSelection, teacherSignature);
             }
 
-            // 4) 结尾追加一页手写体「教师评语」（教师总评），画在独立页避免压到学生原文
-            drawPdfTeacherReviewPage(document, pages, fontSelection, teacherComment);
+            // 4) 结尾追加一页手写体「教师评语」（教师总评），画在独立页避免压到学生原文；
+            //    未签封面时签名跟在评语正文之后（与 DOCX 版顺序一致）
+            boolean reviewDrawn = drawPdfTeacherReviewPage(document, pages, fontSelection, teacherComment,
+                    coverSigned ? null : teacherSignature);
+
+            // 5) 既无封面签名栏又无评语时，签名单独成页兜底
+            if (!coverSigned && !reviewDrawn) {
+                drawPdfSignatureFallbackPage(document, pages, fontSelection, teacherSignature);
+            }
 
             document.save(outputStream);
             return new RenderedReport(FILE_TYPE_ANNOTATED_PDF, ".pdf", "application/pdf", outputStream.toByteArray());
@@ -1954,14 +1962,13 @@ private static final int LONG_DOCUMENT_PAGE_THRESHOLD = 15;
     }
 
     /**
-     * Draw the teacher signature on the PDF.  First tries to find "指导教师" or "签字"
-     * on the first page and places the signature right after it.  If not found, falls
-     * back to a dedicated signature page.
+     * 首页存在「指导教师/签字」栏时，把教师签名画在该栏右侧。
+     * 返回是否已签在封面；未签封面时由调用方把签名追加到评语结尾或独立签名页。
      */
-    private void drawPdfTeacherSignature(PDDocument document,
-                                          List<PDPage> pages,
-                                          FontSelection fontSelection,
-                                          String teacherSignature) throws IOException {
+    private boolean tryDrawPdfCoverSignature(PDDocument document,
+                                             List<PDPage> pages,
+                                             FontSelection fontSelection,
+                                             String teacherSignature) throws IOException {
         String signatureLine = normalizeForFont(fontSelection, resolveTeacherSignature(teacherSignature), "Teacher");
         float sigFontSize = 12f;
         float sigWidth = measurePdfTextWidth(fontSelection, signatureLine, sigFontSize);
@@ -1984,12 +1991,21 @@ private static final int LONG_DOCUMENT_PAGE_THRESHOLD = 15;
                         stream.setNonStrokingColor(RED_COLOR);
                         drawPdfText(stream, fontSelection, sigFontSize, x, y, signatureLine);
                     }
-                    return;
+                    return true;
                 }
             }
         }
+        return false;
+    }
 
-        // Fallback: draw on a dedicated page
+    /** 兜底：既无封面签名栏又无评语页时，签名画在独立页。 */
+    private void drawPdfSignatureFallbackPage(PDDocument document,
+                                              List<PDPage> pages,
+                                              FontSelection fontSelection,
+                                              String teacherSignature) throws IOException {
+        String signatureLine = normalizeForFont(fontSelection, resolveTeacherSignature(teacherSignature), "Teacher");
+        float sigFontSize = 12f;
+        float sigWidth = measurePdfTextWidth(fontSelection, signatureLine, sigFontSize);
         PDPage lastPage = pages.get(pages.size() - 1);
         PDRectangle templateBox = lastPage.getMediaBox();
         float margin = 44f;
@@ -2012,14 +2028,17 @@ private static final int LONG_DOCUMENT_PAGE_THRESHOLD = 15;
      * very end of the document. Rendered on its own page(s) so the handwriting never
      * overlaps the student's original content. Idempotent across re-renders because
      * {@link #removeTrailingGeneratedReviewPages} strips the previous 教师评语 page first.
+     * 当 {@code teacherSignature} 非空时，签名右对齐画在评语正文之后（同页），与 DOCX 版顺序一致。
+     * 返回是否绘制了评语页。
      */
-    private void drawPdfTeacherReviewPage(PDDocument document,
-                                          List<PDPage> pages,
-                                          FontSelection fontSelection,
-                                          String teacherComment) throws IOException {
+    private boolean drawPdfTeacherReviewPage(PDDocument document,
+                                             List<PDPage> pages,
+                                             FontSelection fontSelection,
+                                             String teacherComment,
+                                             String teacherSignature) throws IOException {
         String comment = safeText(teacherComment).trim();
         if (comment.isBlank() || pages.isEmpty()) {
-            return;
+            return false;
         }
         List<StyledLine> styledLines = new ArrayList<>();
         styledLines.add(new StyledLine(normalizeForFont(fontSelection, "教师评语", "Teacher Review"), 16f));
@@ -2058,9 +2077,27 @@ private static final int LONG_DOCUMENT_PAGE_THRESHOLD = 15;
                 }
                 y -= 6f;
             }
+            // 签名右对齐画在评语正文之后；剩余空间不足时先换续页
+            String signatureLine = normalizeForFont(fontSelection, resolveTeacherSignature(teacherSignature), "Teacher");
+            if (!signatureLine.isBlank()) {
+                float sigFontSize = 12f;
+                float sigWidth = measurePdfTextWidth(fontSelection, signatureLine, sigFontSize);
+                if (y - sigFontSize - 10f < 48f) {
+                    stream.close();
+                    currentPage = new PDPage(templateBox);
+                    document.addPage(currentPage);
+                    stream = new PDPageContentStream(document, currentPage, AppendMode.APPEND, true, true);
+                    stream.setNonStrokingColor(RED_COLOR);
+                    y = startPdfReviewSection(stream, templateBox, margin, fontSelection, true,
+                            templateBox.getHeight() - 72f);
+                }
+                drawPdfText(stream, fontSelection, sigFontSize,
+                        templateBox.getWidth() - margin - sigWidth, y - 10f, signatureLine);
+            }
         } finally {
             stream.close();
         }
+        return true;
     }
 
     private float startPdfReviewSection(PDPageContentStream stream,
