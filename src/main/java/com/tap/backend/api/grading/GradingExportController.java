@@ -497,13 +497,19 @@ public class GradingExportController {
     }
 
     private List<String> ensureAnnotatedReports(List<GradingSubmissionEntity> submissions, Long teacherId) {
+        // 导出只补齐缺失的批注报告，不再每次导出都重新生成（旧实现每次导出都
+        // 调 refreshReviewAndAnnotatedReport 重跑 AI 评语+批注渲染，多份报告时
+        // 轻松超过网关 60s 超时导致导出 504「用不了」）。
         List<String> errors = new ArrayList<>();
         for (GradingSubmissionEntity submission : submissions) {
             if (submission.getTotalScore() == null) {
                 continue;
             }
+            if (hasAnnotatedReport(submission.getId())) {
+                continue;
+            }
             try {
-                gradingSubmissionService.refreshReviewAndAnnotatedReport(submission.getId(), teacherId);
+                gradingSubmissionService.ensureReviewAndAnnotatedReport(submission.getId(), teacherId);
             } catch (Exception e) {
                 String name = submission.getStudentName() != null ? submission.getStudentName() : "id=" + submission.getId();
                 errors.add(name + ": " + e.getMessage());
