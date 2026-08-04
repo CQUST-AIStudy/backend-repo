@@ -69,9 +69,14 @@ public class StudentGradingResultService {
         result.put("publishedAt",
                 submission.getPublishedAt() == null ? null : submission.getPublishedAt().toString());
 
-        Object errorDemonstrations = parseErrorDemonstrations(submission.getErrorDemonstrationsJson());
+        Object errorDemonstrations = parseJsonLenient(submission.getErrorDemonstrationsJson());
         if (errorDemonstrations != null) {
             result.put("errorDemonstrations", errorDemonstrations);
+        }
+        // 代码问题定位随发布一并对学生可见（published_at 已做可见性控制）
+        Object codeAnalysis = parseJsonLenient(submission.getCodeAnalysisJson());
+        if (codeAnalysis != null) {
+            result.put("codeAnalysis", codeAnalysis);
         }
         return result;
     }
@@ -165,7 +170,7 @@ public class StudentGradingResultService {
         return cleaned.isEmpty() ? "report" : cleaned;
     }
 
-    private Object parseErrorDemonstrations(String json) {
+    private Object parseJsonLenient(String json) {
         if (json == null || json.isBlank()) {
             return null;
         }

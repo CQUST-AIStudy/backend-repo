@@ -35,4 +35,32 @@ public record ExecutionTrace(
                 .map(TraceStep::toMap)
                 .toList();
     }
+
+    /**
+     * 帧序列是否包含任何可可视化状态（非空 nodes / variables / memory）。
+     * <p>
+     * 真实执行「成功」但插桩捕获不到变量时（如结构体/指针类代码），
+     * 前端画布会全程空白，此时应回退 LLM 结构化步骤动画。
+     */
+    public static boolean hasVisualizableFrames(List<?> frames) {
+        if (frames == null || frames.isEmpty()) {
+            return false;
+        }
+        for (Object frame : frames) {
+            if (!(frame instanceof Map<?, ?> map)) {
+                continue;
+            }
+            if (map.get("state") instanceof Map<?, ?> state
+                    && state.get("nodes") instanceof List<?> nodes && !nodes.isEmpty()) {
+                return true;
+            }
+            if (map.get("variables") instanceof Map<?, ?> vars && !vars.isEmpty()) {
+                return true;
+            }
+            if (map.get("memory") instanceof List<?> memory && !memory.isEmpty()) {
+                return true;
+            }
+        }
+        return false;
+    }
 }

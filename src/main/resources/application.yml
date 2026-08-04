@@ -357,6 +357,9 @@ tap:
       # 留空则按默认路径查找 grading-worker/code_tracer.py 或 /app/tools/code_tracer.py
       script: ${CODE_TRACER_SCRIPT:}
       timeout-ms: ${CODE_TRACER_TIMEOUT_MS:10000}
+    # 错误演示执行前 LLM 补强：缺 main/宏时让大模型补可执行代码（补宏、生成真实调用学生函数的 main）
+    demo:
+      llm-code-prep-enabled: ${GRADING_DEMO_LLM_CODE_PREP_ENABLED:true}
 
 # PTA爬虫微服务对接配置
 pta:

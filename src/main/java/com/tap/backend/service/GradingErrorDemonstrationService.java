@@ -15,6 +15,7 @@ import com.tap.backend.service.grading.animation.CodeContextExtractor;
 import com.tap.backend.service.grading.animation.CommentIssueExtractor;
 import com.tap.backend.service.grading.animation.ConceptStepsWorkflow;
 import com.tap.backend.service.grading.animation.ErrorPatternDetector;
+import com.tap.backend.service.grading.animation.execution.ExecutionTrace;
 import com.tap.backend.service.grading.animation.ErrorPatternDetector.ErrorType;
 import com.tap.backend.service.grading.animation.LLMCodeExtractor;
 import com.tap.backend.service.grading.animation.ProblemContext;
@@ -430,7 +431,12 @@ public class GradingErrorDemonstrationService {
             return true;
         }
         Object reason = result.metadata().get("fallbackReason");
-        return reason != null && !reason.toString().isBlank();
+        if (reason != null && !reason.toString().isBlank()) {
+            return true;
+        }
+        // 真实执行成功但全程无可可视化状态（插桩捕获不到变量，如结构体/指针代码）时，
+        // 回退 CONCEPT_STEPS 让大模型读代码生成结构化步骤，避免前端画布全程空白
+        return !ExecutionTrace.hasVisualizableFrames(frames);
     }
 
     private ErrorDemonstration toErrorDemonstration(AnimationCandidate candidate,

@@ -60,7 +60,8 @@ public class CodeDemoComposer {
             ExecutionTrace trace = sandboxService.execute("c", executable, stdin);
             if (trace.success()) {
                 List<Map<String, Object>> frames = trace.toFrameList();
-                if (!frames.isEmpty()) {
+                // 空状态轨迹（插桩捕获不到变量）不可用，回退 LLM 读代码生成步骤
+                if (ExecutionTrace.hasVisualizableFrames(frames)) {
                     return demonstration(
                             title,
                             "逐行展示这段代码的真实执行过程。",

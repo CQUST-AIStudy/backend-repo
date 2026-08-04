@@ -1,14 +1,20 @@
 package com.tap.backend.service.grading.animation;
 
+import com.tap.backend.service.animation.AnimationAiClient;
 import com.tap.backend.service.grading.animation.execution.CodeExecutionSandboxService;
 import com.tap.backend.service.grading.animation.execution.ExecutionTrace;
 import com.tap.backend.service.grading.animation.execution.TraceStep;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 /**
@@ -16,16 +22,53 @@ import org.springframework.stereotype.Component;
  * <p>
  * 基于真实代码执行得到的 trace，生成教学动画数据。
  * 不再使用以前基于规则手工构造步骤的伪执行方式。
+ * <p>
+ * 执行前会对从报告提取的代码做「可执行化补强」：
+ * <ol>
+ *   <li>规则级：补缺失的 #include 与未定义的大写宏（如 MAX、N）；</li>
+ *   <li>LLM 级：缺少 main 时让大模型补一个真实调用学生函数、能触发批注错误的 main
+ *       （含忠实度校验：原文行覆盖率 &gt;= 80% 且原文连续保留，否则回退空壳）；</li>
+ *   <li>以上都失败时回退到最小 main 壳（保证可编译，交由上层回退策略处理）。</li>
+ * </ol>
  */
 @Component
 public class PythonTutorWorkflow {
 
     private static final Logger log = LoggerFactory.getLogger(PythonTutorWorkflow.class);
 
-    private final CodeExecutionSandboxService sandboxService;
+    /** 提取代码中常见但无需补定义的标准宏/标识符。 */
+    private static final Set<String> STD_MACROS = Set.of(
+            "NULL", "EOF", "TRUE", "FALSE", "BUFSIZ", "STDIN", "STDOUT", "STDERR", "INT_MAX",
+            "INT_MIN", "LONG_MAX", "SIZE_MAX", "RAND_MAX", "EXIT_SUCCESS", "EXIT_FAILURE");
 
-    public PythonTutorWorkflow(CodeExecutionSandboxService sandboxService) {
+    private static final Pattern JSON_BLOCK = Pattern.compile("```(?:c|C|cpp)?\\s*([\\s\\S]*?)```");
+    private static final Pattern DEFINE_PATTERN = Pattern.compile("#define\\s+([A-Za-z_]\\w*)");
+    private static final Pattern MACRO_USE_PATTERN = Pattern.compile("\\b([A-Z][A-Z0-9_]{1,15})\\b");
+
+    private static final String PREP_SYSTEM_PROMPT = """
+            你是 C 代码"可执行化"助手。把从学生实验报告提取的（可能残缺的）C 代码片段，补成能编译、能运行、能触发指定错误的完整程序。
+
+            ## 铁律
+            1. 学生原始代码的每一行都必须【原样保留、顺序不变、一字不改】（包括其中的错误！绝对不要修复错误）。
+            2. 只允许做两件事：
+               a) 在【文件开头】补缺失的 #include 与 #define（如 MAX、N、SIZE 等宏给一个合理默认值）
+               b) 在【文件末尾】追加一个 main 函数：构造小规模测试数据，【真实调用】学生代码里的函数
+                  （例如给数组赋值后调用排序函数），让程序执行能够走到批注指出的错误行
+            3. 不要修复学生代码里的错误，不要改变其逻辑，不要删除任何一行学生代码。
+            4. 不要使用交互式输入（scanf 会卡住程序），测试数据直接写在 main 里。
+            5. 只输出完整 C 代码：不要 markdown 代码块标记（```）、不要任何解释文字。
+            """;
+
+    private final CodeExecutionSandboxService sandboxService;
+    private final AnimationAiClient aiClient;
+    private final boolean llmCodePrepEnabled;
+
+    public PythonTutorWorkflow(CodeExecutionSandboxService sandboxService,
+                               AnimationAiClient aiClient,
+                               @Value("${tap.grading.demo.llm-code-prep-enabled:true}") boolean llmCodePrepEnabled) {
         this.sandboxService = sandboxService;
+        this.aiClient = aiClient;
+        this.llmCodePrepEnabled = llmCodePrepEnabled;
     }
 
     public AnimationResult generate(AnimationCandidate candidate, int index) {
@@ -37,10 +80,10 @@ public class PythonTutorWorkflow {
             errorType = ErrorPatternDetector.ErrorType.GENERIC_HIGHLIGHT;
         }
 
-        // 1. 真实执行代码（缺 main 的片段自动补最小 main 壳，保证可编译）
-        String executableCode = ensureMainFunction(sourceCode);
-        int lineOffset = countPrependedLines(sourceCode, executableCode);
-        int adjustedAnchorLine = anchorLine + lineOffset;
+        // 1. 真实执行代码（执行前做可执行化补强：规则补宏/头文件 + LLM 生成调用 main）
+        ExecutablePrep prep = prepareExecutableCode(candidate, sourceCode);
+        String executableCode = prep.code();
+        int adjustedAnchorLine = anchorLine + prep.lineOffset();
         ExecutionTrace trace = sandboxService.execute("c", executableCode, buildStdin(candidate));
 
         if (!trace.success()) {
@@ -73,6 +116,193 @@ public class PythonTutorWorkflow {
                 trace.toFrameList(),
                 metadata
         );
+    }
+
+    // ------------------------------------------------------------------
+    // 执行前代码补强
+    // ------------------------------------------------------------------
+
+    record ExecutablePrep(String code, int lineOffset) {}
+
+    /**
+     * 把提取的代码补强为可执行形态，并返回行号偏移（原文在补强代码中前移的行数）。
+     *
+     * <p>顺序：规则补 #include/#define → 缺 main 时 LLM 补调用 main（忠实度校验）→ 空壳回退。</p>
+     */
+    ExecutablePrep prepareExecutableCode(AnimationCandidate candidate, String sourceCode) {
+        String rulePrep = ruleBasedPreparation(sourceCode);
+        String executable;
+        if (hasMainFunction(rulePrep)) {
+            executable = rulePrep;
+        } else {
+            executable = llmPreparation(candidate, sourceCode, rulePrep);
+            if (executable == null) {
+                executable = appendMainShell(rulePrep);
+            }
+        }
+        int lineOffset = countPrependedLines(sourceCode, executable);
+        return new ExecutablePrep(executable, lineOffset);
+    }
+
+    /** 规则级补强：只允许在原文【开头】插入 #include 与 #define，不改动原文任何行。 */
+    private String ruleBasedPreparation(String sourceCode) {
+        StringBuilder prefix = new StringBuilder();
+        if (!sourceCode.contains("#include <stdio.h>")
+                && (sourceCode.contains("printf") || sourceCode.contains("scanf")
+                    || sourceCode.contains("puts") || sourceCode.contains("gets"))) {
+            prefix.append("#include <stdio.h>\n");
+        }
+        if (!sourceCode.contains("#include <stdlib.h>")
+                && (sourceCode.contains("malloc") || sourceCode.contains("free")
+                    || sourceCode.contains("atoi") || sourceCode.contains("exit"))) {
+            prefix.append("#include <stdlib.h>\n");
+        }
+        if (!sourceCode.contains("#include <string.h>")
+                && (sourceCode.contains("strcpy") || sourceCode.contains("strcat")
+                    || sourceCode.contains("strlen") || sourceCode.contains("strcmp")
+                    || sourceCode.contains("strncpy"))) {
+            prefix.append("#include <string.h>\n");
+        }
+        for (String macro : findUndefinedMacros(sourceCode)) {
+            prefix.append("#define ").append(macro).append(" 100\n");
+        }
+        return prefix.length() == 0 ? sourceCode : prefix + sourceCode;
+    }
+
+    /** 找出代码中使用但未定义的大写标识符（视为缺失宏）。 */
+    private Set<String> findUndefinedMacros(String code) {
+        Set<String> defined = new HashSet<>();
+        Matcher def = DEFINE_PATTERN.matcher(code);
+        while (def.find()) {
+            defined.add(def.group(1));
+        }
+        Set<String> used = new HashSet<>();
+        Matcher use = MACRO_USE_PATTERN.matcher(code);
+        while (use.find()) {
+            String name = use.group(1);
+            if (!defined.contains(name) && !STD_MACROS.contains(name)) {
+                used.add(name);
+            }
+        }
+        return used;
+    }
+
+    /** LLM 补强：无 main 时让大模型补一个真实调用学生函数的 main。失败或失真返回 null。 */
+    private String llmPreparation(AnimationCandidate candidate, String originalCode, String rulePrepCode) {
+        if (!llmCodePrepEnabled || aiClient == null || !aiClient.isChatAvailable()) {
+            return null;
+        }
+        String userPrompt = buildPrepPrompt(candidate, originalCode, rulePrepCode);
+        try {
+            String raw = aiClient.chat(PREP_SYSTEM_PROMPT, userPrompt, 0.2);
+            String code = stripCodeBlock(raw);
+            if (code == null || code.isBlank() || !code.contains("\n")) {
+                return null;
+            }
+            // 忠实度校验：原文必须连续保留（保证行号可对齐），且原文行覆盖率 >= 80%
+            if (!code.contains(originalCode)) {
+                if (lineCoverage(code, originalCode) < 0.8) {
+                    log.warn("LLM 代码补强失真，回退空壳 (candidate={})", candidate.anchor());
+                    return null;
+                }
+                // 原文不连续：行号无法对齐，视为不可用
+                log.warn("LLM 代码补强未连续保留原文，回退空壳 (candidate={})", candidate.anchor());
+                return null;
+            }
+            log.info("LLM 代码补强成功: candidate={}, codeLength={}", candidate.anchor(), code.length());
+            return code;
+        } catch (Exception e) {
+            log.warn("LLM 代码补强失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    private String buildPrepPrompt(AnimationCandidate candidate, String originalCode, String rulePrepCode) {
+        StringBuilder sb = new StringBuilder();
+        ErrorPatternDetector.ErrorType errorType = candidate.detectedErrorType();
+        if (errorType != null) {
+            sb.append("【错误类型】").append(errorType.name()).append('\n');
+        }
+        if (candidate.note() != null && !candidate.note().isBlank()) {
+            sb.append("【批注描述】").append(candidate.note()).append('\n');
+        }
+        if (candidate.anchor() != null && !candidate.anchor().isBlank()
+                && !originalCode.contains(candidate.anchor())) {
+            sb.append("【错误相关代码片段】\n").append(candidate.anchor()).append('\n');
+        }
+        sb.append("【已规则补强的代码（可直接在其基础上补充 main）】\n")
+                .append(rulePrepCode)
+                .append('\n')
+                .append("【输出】完整 C 代码：");
+        return sb.toString();
+    }
+
+    /** 去掉 LLM 可能包裹的 markdown 代码块标记。 */
+    private String stripCodeBlock(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        String trimmed = raw.trim();
+        Matcher matcher = JSON_BLOCK.matcher(trimmed);
+        if (matcher.find()) {
+            trimmed = matcher.group(1).trim();
+        }
+        return trimmed;
+    }
+
+    /** 原文非空行在补强结果中出现的比例（trim 后逐行匹配）。 */
+    private double lineCoverage(String completed, String raw) {
+        Set<String> completedLines = new HashSet<>();
+        for (String line : completed.split("\n")) {
+            String t = line.trim();
+            if (!t.isEmpty()) {
+                completedLines.add(t);
+            }
+        }
+        int total = 0, hit = 0;
+        for (String line : raw.split("\n")) {
+            String t = line.trim();
+            if (t.isEmpty()) {
+                continue;
+            }
+            total++;
+            if (completedLines.contains(t)) {
+                hit++;
+            }
+        }
+        return total == 0 ? 1.0 : (double) hit / total;
+    }
+
+    private boolean hasMainFunction(String code) {
+        return code != null && (code.contains("int main(") || code.contains("void main("));
+    }
+
+    /**
+     * 代码片段缺少 main 函数时，补一个最小 main 壳使其可编译执行。
+     * <p>补壳只保证编译通过；有意义的执行轨迹依赖上游 LLM 补出的测试 main。</p>
+     */
+    private String appendMainShell(String sourceCode) {
+        StringBuilder sb = new StringBuilder();
+        if (!sourceCode.contains("#include")) {
+            sb.append("#include <stdio.h>\n#include <stdlib.h>\n\n");
+        }
+        sb.append(sourceCode);
+        sb.append("\n\n/* auto-added for trace */\nint main(void) {\n    return 0;\n}\n");
+        return sb.toString();
+    }
+
+    /**
+     * 计算补强后原始代码前方被插入的行数，用于对齐 trace 行号与锚点行。
+     */
+    private int countPrependedLines(String sourceCode, String executableCode) {
+        if (sourceCode == null || executableCode == null || executableCode.equals(sourceCode)) {
+            return 0;
+        }
+        int idx = executableCode.indexOf(sourceCode);
+        if (idx <= 0) {
+            return 0;
+        }
+        return (int) executableCode.substring(0, idx).chars().filter(c -> c == '\n').count();
     }
 
     private int findErrorStepIndex(ExecutionTrace trace, int anchorLine,
@@ -116,38 +346,6 @@ public class PythonTutorWorkflow {
         // 如果题目或实验上下文提供了输入数据，可以在这里注入。
         // 目前先返回空输入，后续可从 problemContext 或测试用例中提取。
         return "";
-    }
-
-    /**
-     * 代码片段缺少 main 函数时，补一个最小 main 壳使其可编译执行。
-     * <p>补壳只保证编译通过（结构体/函数片段也能拿到编译诊断），
-     * 有意义的执行轨迹依赖上游 LLM 提取时补出的测试 main。</p>
-     */
-    private String ensureMainFunction(String sourceCode) {
-        if (sourceCode == null || sourceCode.contains("int main(") || sourceCode.contains("void main(")) {
-            return sourceCode;
-        }
-        StringBuilder sb = new StringBuilder();
-        if (!sourceCode.contains("#include")) {
-            sb.append("#include <stdio.h>\n#include <stdlib.h>\n\n");
-        }
-        sb.append(sourceCode);
-        sb.append("\n\n/* auto-added for trace */\nint main(void) {\n    return 0;\n}\n");
-        return sb.toString();
-    }
-
-    /**
-     * 计算补壳后原始代码前方被插入的行数，用于对齐 trace 行号与锚点行。
-     */
-    private int countPrependedLines(String sourceCode, String executableCode) {
-        if (sourceCode == null || executableCode == null || executableCode.equals(sourceCode)) {
-            return 0;
-        }
-        int idx = executableCode.indexOf(sourceCode);
-        if (idx <= 0) {
-            return 0;
-        }
-        return (int) executableCode.substring(0, idx).chars().filter(c -> c == '\n').count();
     }
 
     private String buildExplanation(AnimationCandidate candidate,
