@@ -405,6 +405,7 @@ public class ApiController {
             p.put("problemTitle", row.getProblemTitle());
             p.put("statementMd", row.getStatementMd());
             p.put("code", trimmedCode);
+            p.put("problemId", row.getProblemId());
             if (hasCode) {
                 displayIndex++;
             }

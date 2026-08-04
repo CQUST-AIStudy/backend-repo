@@ -205,6 +205,13 @@ public class ErrorAnalysisController {
 
             Integer experimentId = getExperimentId(payload);
             Map<String, Object> responseBody;
+            boolean forceRefresh = Boolean.TRUE.equals(payload.get("forceRefresh"));
+
+            if ("error".equals(type) && experimentId != null) {
+                responseBody = errorAnalysisService.analyzeErrorFromDb(
+                        studentId, studentName, experimentId, forceRefresh);
+                return successResponse(responseBody);
+            }
 
             // 判断模式
             boolean isProxyMode = switch (type) {
@@ -228,9 +235,7 @@ public class ErrorAnalysisController {
                 }
                 responseBody = errorAnalysisService.proxyToMicroservice("/analyze/" + type, payload);
             } else if (experimentId != null) {
-                boolean forceRefresh = Boolean.TRUE.equals(payload.get("forceRefresh"));
                 responseBody = switch (type) {
-                    case "error" -> errorAnalysisService.analyzeErrorFromDb(studentId, studentName, experimentId, forceRefresh);
                     case "learning" -> errorAnalysisService.learningSuggestFromDb(studentId, studentName, experimentId);
                     case "warning" -> errorAnalysisService.warningAnalyzeFromDb(studentId, studentName, experimentId, forceRefresh);
                     default -> null;
@@ -242,14 +247,7 @@ public class ErrorAnalysisController {
                 return ResponseEntity.badRequest().body(err);
             }
 
-            Map<String, Object> result = new HashMap<>();
-            result.put("success", true);
-            if (responseBody != null && responseBody.get("data") != null) {
-                result.put("data", responseBody.get("data"));
-            } else if (responseBody != null) {
-                result.put("data", responseBody);
-            }
-            return ResponseEntity.ok(result);
+            return successResponse(responseBody);
         } catch (Exception e) {
             logger.error("Analysis proxy failed: type={}", type, e);
             Map<String, Object> result = new HashMap<>();
@@ -257,6 +255,17 @@ public class ErrorAnalysisController {
             result.put("message", type + " analysis failed: " + e.getMessage());
             return ResponseEntity.internalServerError().body(result);
         }
+    }
+
+    private ResponseEntity<Map<String, Object>> successResponse(Map<String, Object> responseBody) {
+        Map<String, Object> result = new HashMap<>();
+        result.put("success", true);
+        if (responseBody != null && responseBody.get("data") != null) {
+            result.put("data", responseBody.get("data"));
+        } else if (responseBody != null) {
+            result.put("data", responseBody);
+        }
+        return ResponseEntity.ok(result);
     }
 
     private Integer getExperimentId(Map<String, Object> payload) {

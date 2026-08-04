@@ -414,6 +414,7 @@ public interface TeacherExperimentQueryDao {
     @Select({
             "SELECT",
             "  CAST(ap.sort_order AS SIGNED) AS sortOrder,",
+            "  ap.id AS problemId,",
             "  ap.problem_no AS problemNo,",
             "  ap.title AS problemTitle,",
             "  apd.content AS statementMd,",

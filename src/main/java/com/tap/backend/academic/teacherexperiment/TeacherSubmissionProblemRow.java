@@ -5,6 +5,7 @@ import java.util.Date;
 public class TeacherSubmissionProblemRow {
 
     private Integer sortOrder;
+    private Long problemId;
     private String problemNo;
     private String problemTitle;
     private String statementMd;
@@ -20,6 +21,14 @@ public class TeacherSubmissionProblemRow {
 
     public void setSortOrder(Integer sortOrder) {
         this.sortOrder = sortOrder;
+    }
+
+    public Long getProblemId() {
+        return problemId;
+    }
+
+    public void setProblemId(Long problemId) {
+        this.problemId = problemId;
     }
 
     public String getProblemNo() {

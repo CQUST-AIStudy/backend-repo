@@ -60,7 +60,10 @@ public class AiConfig {
                 .build();
             return new OpenAiProvider(restClient, objectMapper, model);
         }
-        return new MockAiProvider();
+        if ("mock".equals(provider)) {
+            return new MockAiProvider();
+        }
+        throw new IllegalStateException("Unsupported tap.ai.provider: " + provider);
     }
 
     /**

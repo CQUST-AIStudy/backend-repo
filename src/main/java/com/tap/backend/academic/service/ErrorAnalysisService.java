@@ -7,6 +7,7 @@ import com.tap.backend.academic.dao.teacherexperiment.TeacherExperimentQueryDao;
 import com.tap.backend.academic.entity.AiErrorAnalysisReport;
 import com.tap.backend.academic.entity.Experiment;
 import com.tap.backend.academic.entity.StudentSubmissionAttempt;
+import com.tap.backend.ai.AiProvider;
 import com.tap.backend.email.EmailService;
 import com.tap.backend.email.ExperimentWarningSummary;
 import com.tap.backend.email.ProblemWarningInfo;
@@ -49,6 +50,9 @@ public class ErrorAnalysisService {
     private static final long REDIS_TTL_HOURS = 24;
     private static final long REDIS_SYNC_TTL_HOURS = 1;
     private static final SimpleDateFormat ISO_FORMAT = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
+    private static final int AI_ERROR_MAX_ATTEMPTS = 8;
+    private static final int AI_ERROR_MAX_CODE_CHARS = 1200;
+    private static final int AI_ERROR_MAX_ERROR_MESSAGE_CHARS = 500;
 
     @Autowired
     private TeacherExperimentQueryDao teacherExperimentQueryDao;
@@ -64,6 +68,9 @@ public class ErrorAnalysisService {
 
     @Autowired
     private EmailService emailService;
+
+    @Autowired(required = false)
+    private AiProvider aiProvider;
 
     @Value("${tap.error-analysis.base-url:http://127.0.0.1:8002}")
     private String errorAnalysisBaseUrl;
@@ -115,7 +122,16 @@ public class ErrorAnalysisService {
             // 4a. 错误分析
             Map<String, Object> errorPayload = buildErrorPayload(studentNo, studentName,
                     experimentId, experimentName, submissions, attempts);
-            Map<String, Object> errorResult = callMicroservice("/analyze/error", errorPayload);
+            Map<String, Object> errorResult = callMicroserviceOrNull("/analyze/error", errorPayload);
+            if (isEmptyAnalysisResponse(errorResult)) {
+                errorResult = buildAiModelErrorAnalysisResult(studentNo, studentName,
+                        experimentId, experimentName, attempts, submissions);
+            }
+            if (isEmptyAnalysisResponse(errorResult)) {
+                errorResult = buildRuleFallbackErrorAnalysisResult(studentNo, studentName,
+                        experimentId, experimentName, attempts, submissions);
+            }
+            errorResult = normalizeErrorAnalysisResult(errorResult, attempts);
             saveReport(studentNo, experimentId, experimentName, "ERROR", errorResult);
 
             // 4b. 学习建议
@@ -160,9 +176,12 @@ public class ErrorAnalysisService {
         // ── 缓存命中 ──
         if (!forceRefresh) {
             Map<String, Object> cached = getSyncCache(studentNo, experimentId, "error");
-            if (cached != null) {
+            if (cached != null && hasProblemAnalyses(cached)) {
                 logger.info("analyzeErrorFromDb: cache hit for student={}, experiment={}", studentNo, experimentId);
-                return cached;
+                return normalizeErrorAnalysisResult(cached, null);
+            } else if (cached != null) {
+                logger.info("analyzeErrorFromDb: cached result has no per-problem analysis; rebuilding for student={}, experiment={}",
+                        studentNo, experimentId);
             }
         }
 
@@ -202,9 +221,13 @@ public class ErrorAnalysisService {
             logger.info("analyzeErrorFromDb: no submissions for student={}, experiment={}", studentNo, experimentId);
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("aiGenerated", false);
+            result.put("generationMode", "JUDGE_RESULT");
+            result.put("provider", "system");
+            result.put("fallbackReason", "NO_SUBMISSION");
             result.put("overallAssessment", "暂无提交记录，完成PTA平台实验后可使用AI错误分析功能。");
             result.put("errorCategories", new ArrayList<>());
             result.put("learningSuggestions", new ArrayList<>());
+            result.put("problemAnalyses", new ArrayList<>());
             result.put("latestCode", null);
             result.put("latestJudgeStatus", null);
             return result;
@@ -223,7 +246,20 @@ public class ErrorAnalysisService {
             logger.info("analyzeError — submission[0]: problemTitle={}, codeLen={}, judgeStatus={}",
                     first.get("problemTitle"), firstCode.length(), first.get("judgeStatus"));
         }
-        Map<String, Object> result = callMicroservice("/analyze/error", payload);
+        Map<String, Object> result = callMicroserviceOrNull("/analyze/error", payload);
+        if (isEmptyAnalysisResponse(result)) {
+            logger.warn("analyzeErrorFromDb: microservice unavailable, using backend AI provider for student={}, experiment={}",
+                    studentNo, experimentId);
+            result = buildAiModelErrorAnalysisResult(studentNo, studentName, experimentId,
+                    experiment != null ? experiment.getName() : ("实验" + experimentId), attempts, submissions);
+        }
+        if (isEmptyAnalysisResponse(result)) {
+            logger.warn("analyzeErrorFromDb: AI provider unavailable, using rule fallback for student={}, experiment={}",
+                    studentNo, experimentId);
+            result = buildRuleFallbackErrorAnalysisResult(studentNo, studentName, experimentId,
+                    experiment != null ? experiment.getName() : ("实验" + experimentId), attempts, submissions);
+        }
+        result = normalizeErrorAnalysisResult(result, attempts);
 
         // ── 缓存 1h ──
         if (result != null) {
@@ -528,20 +564,28 @@ public class ErrorAnalysisService {
                         experimentId, experimentName, problemAttempts);
                 payload.put("problemTitle", problemTitle);
 
-                Map<String, Object> responseBody = callMicroservice("/analyze/warning", payload);
-
-                @SuppressWarnings("unchecked")
-                Map<String, Object> data = (Map<String, Object>) responseBody.getOrDefault("data", responseBody);
-                @SuppressWarnings("unchecked")
-                Map<String, Object> warning = (Map<String, Object>) data.get("warning");
-                if (warning == null) warning = data;
-
-                if (Boolean.TRUE.equals(warning.get("autoNotify"))) {
+                Map<String, Object> responseBody = callMicroserviceOrNull("/analyze/warning", payload);
+                Map<String, Object> data = extractDataMap(responseBody);
+                if (data == null || data.isEmpty()) {
+                    logger.warn("Warning analysis unavailable; skipping notification for student={}, experiment={}, problem={}",
+                            studentNo, experimentId, problemTitle);
+                } else {
+                    Object rawWarning = data.get("warning");
                     @SuppressWarnings("unchecked")
-                    List<String> actions = (List<String>) warning.get("suggestedActions");
-                    suggestedActions = actions;
-                    level = safeString(warning.get("level"), "MEDIUM");
-                    warningType = safeString(warning.get("warningType"), "FREQUENT_FAILURE");
+                    Map<String, Object> warning = rawWarning instanceof Map<?, ?>
+                            ? (Map<String, Object>) rawWarning : data;
+
+                    if (Boolean.TRUE.equals(warning.get("autoNotify"))) {
+                        Object rawActions = warning.get("suggestedActions");
+                        if (rawActions instanceof List<?> actions) {
+                            suggestedActions = actions.stream()
+                                    .filter(String.class::isInstance)
+                                    .map(String.class::cast)
+                                    .toList();
+                        }
+                        level = safeString(warning.get("level"), "MEDIUM");
+                        warningType = safeString(warning.get("warningType"), "FREQUENT_FAILURE");
+                    }
                 }
             }
 
@@ -588,8 +632,9 @@ public class ErrorAnalysisService {
             data.put("analysisId", r.getAnalysisId());
             data.put("reportType", r.getReportType());
             data.put("severity", r.getSeverity());
-            data.put("aiGenerated", r.getAiGenerated());
             data.put("createdAt", r.getCreatedAt() != null ? ISO_FORMAT.format(r.getCreatedAt()) : null);
+            Map<String, Object> rawData = extractDataMap(parseJsonObject(r.getRawResponseJson()));
+            applyStoredGenerationMetadata(data, rawData, r);
 
             // 反序列化 JSON 字段
             if (r.getOverallAssessment() != null) data.put("overallAssessment", r.getOverallAssessment());
@@ -604,6 +649,9 @@ public class ErrorAnalysisService {
             data.put("weakPoints", parseJsonArray(r.getWeakPointsJson()));
             data.put("studyPlan", parseJsonArray(r.getStudyPlanJson()));
             data.put("recommendedProblems", parseJsonArray(r.getRecommendedProblemsJson()));
+            if (rawData != null && rawData.get("problemAnalyses") instanceof List<?>) {
+                data.put("problemAnalyses", rawData.get("problemAnalyses"));
+            }
 
             result.put(r.getReportType().toLowerCase(), data);
         }
@@ -667,7 +715,7 @@ public class ErrorAnalysisService {
     private int countErrors(List<StudentSubmissionAttempt> attempts) {
         if (attempts == null) return 0;
         return (int) attempts.stream()
-                .filter(a -> a.getJudgeStatus() != null && !"ACCEPTED".equalsIgnoreCase(a.getJudgeStatus()))
+                .filter(a -> a.getJudgeStatus() != null && !isAcceptedStatus(a.getJudgeStatus()))
                 .count();
     }
 
@@ -860,7 +908,8 @@ public class ErrorAnalysisService {
         report.setExperimentName(experimentName);
         report.setReportType(reportType);
         report.setSeverity(safeString(data.get("severity"), "MEDIUM"));
-        report.setAiGenerated(Boolean.TRUE.equals(data.get("aiGenerated")));
+        String generationMode = normalizeGenerationMode(data.get("generationMode"));
+        report.setAiGenerated("AI_MODEL".equals(generationMode) || Boolean.TRUE.equals(data.get("aiGenerated")));
         report.setOverallAssessment(safeString(data.get("overallAssessment"), null));
         report.setSummaryMessage(safeString(data.get("summaryMessage"), null));
         report.setWarningType(safeString(data.get("warningType"), null));
@@ -898,8 +947,8 @@ public class ErrorAnalysisService {
     private Map<String, Integer> buildStatusCounts(List<StudentSubmissionAttempt> attempts) {
         Map<String, Integer> counts = new LinkedHashMap<>();
         for (StudentSubmissionAttempt a : attempts) {
-            String status = a.getJudgeStatus();
-            if (status == null || "ACCEPTED".equalsIgnoreCase(status)) continue;
+            String status = normalizeJudgeStatus(a.getJudgeStatus());
+            if (isAcceptedStatus(status)) continue;
             counts.merge(status.toUpperCase(), 1, Integer::sum);
         }
         return counts;
@@ -1015,6 +1064,692 @@ public class ErrorAnalysisService {
         }
     }
 
+    private Map<String, Object> callMicroserviceOrNull(String path, Map<String, Object> payload) {
+        try {
+            return callMicroservice(path, payload);
+        } catch (Exception e) {
+            logger.warn("Optional error-analysis microservice unavailable: path={}, error={}",
+                    path, e.getMessage());
+            return null;
+        }
+    }
+
+    private boolean isEmptyAnalysisResponse(Map<String, Object> responseBody) {
+        Map<String, Object> data = extractDataMap(responseBody);
+        return data == null || data.isEmpty();
+    }
+
+    private Map<String, Object> buildAiModelErrorAnalysisResult(
+            String studentNo,
+            String studentName,
+            int experimentId,
+            String experimentName,
+            List<StudentSubmissionAttempt> attempts,
+            List<Map<String, Object>> submissions) {
+        if (!isRealAiProviderAvailable() || !hasNonAcceptedAttempt(attempts)) {
+            return null;
+        }
+
+        try {
+            String prompt = buildAiErrorAnalysisPrompt(studentNo, studentName,
+                    experimentId, experimentName, attempts, submissions);
+            String raw = aiProvider.chat(prompt, null);
+            Map<String, Object> data = parseModelJsonObject(raw);
+            data = extractDataMap(data);
+            if (data == null || data.isEmpty()) return null;
+
+            normalizeAiErrorAnalysisData(data, studentNo, studentName,
+                    experimentId, experimentName, attempts, submissions);
+            if (!hasUsableAiErrorAnalysis(data)) {
+                logger.warn("AI provider returned unusable error analysis for student={}, experiment={}",
+                        studentNo, experimentId);
+                return null;
+            }
+
+            logger.info("AI provider generated error analysis: provider={}, model={}, student={}, experiment={}",
+                    aiProvider.name(), aiProvider.model(), studentNo, experimentId);
+            return data;
+        } catch (Exception e) {
+            logger.warn("AI provider error analysis failed: provider={}, student={}, experiment={}, error={}",
+                    aiProvider != null ? aiProvider.name() : "none", studentNo, experimentId, e.getMessage());
+            return null;
+        }
+    }
+
+    private boolean isRealAiProviderAvailable() {
+        if (aiProvider == null) return false;
+        String name = aiProvider.name();
+        return name != null && !name.isBlank() && !"mock".equalsIgnoreCase(name);
+    }
+
+    private boolean hasNonAcceptedAttempt(List<StudentSubmissionAttempt> attempts) {
+        if (attempts == null || attempts.isEmpty()) return false;
+        for (StudentSubmissionAttempt attempt : attempts) {
+            if (attempt != null && !isAcceptedStatus(attempt.getJudgeStatus())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String buildAiErrorAnalysisPrompt(
+            String studentNo,
+            String studentName,
+            int experimentId,
+            String experimentName,
+            List<StudentSubmissionAttempt> attempts,
+            List<Map<String, Object>> submissions) {
+        return """
+                你是高校程序设计课程的 AI 错误分析助手。请只基于下面给出的真实提交记录、判题状态、题目标题和代码进行分析，不要编造知识点、分数或未提供的测试点。
+
+                输出必须是严格 JSON，不要 Markdown 代码块，不要解释。JSON schema：
+                {
+                  "severity": "HIGH|MEDIUM|LOW",
+                  "overallAssessment": "用中文说明整个实验的主要错误表现和下一步修复重点",
+                  "errorCategories": [
+                    {
+                      "type": "COMPILE_ERROR|RUNTIME_ERROR|WRONG_ANSWER|TIME_LIMIT_EXCEEDED|MEMORY_LIMIT_EXCEEDED|SEGMENTATION_FAULT|UNKNOWN",
+                      "count": 1,
+                      "isSystemic": false,
+                      "rootCause": "只能写提交证据能支持的原因，证据不足要说明需结合最小样例核验",
+                      "specificIssues": ["受影响题目或可从代码/判题状态直接看出的具体问题"],
+                      "suggestions": ["可执行的修改步骤"]
+                    }
+                  ],
+                  "learningSuggestions": [
+                    {
+                      "priority": "HIGH|MEDIUM|LOW",
+                      "topic": "需要补的能力点",
+                      "reason": "对应真实判题证据",
+                      "suggestedResources": "具体练习或复查动作"
+                    }
+                  ],
+                  "problemAnalyses": [
+                    {
+                      "problemId": 123,
+                      "problemTitle": "必须与证据中的题目对应",
+                      "severity": "HIGH|MEDIUM|LOW",
+                      "overallAssessment": "只分析该 problemId 的代码和判题记录",
+                      "errorCategories": [],
+                      "learningSuggestions": []
+                    }
+                  ]
+                }
+
+                problemAnalyses 必须按 problemId 分题输出。只能使用 selectedErrorAttempts 中真实存在的 problemId，
+                每个有错误证据的 problemId 最多输出一项，严禁把其他题目的错误、代码或建议混入当前题。
+
+                学生：%s（%s）
+                实验：%s（%d）
+                真实提交证据：
+                %s
+                """.formatted(
+                safeString(studentName, studentNo),
+                safeString(studentNo, ""),
+                safeString(experimentName, "实验" + experimentId),
+                experimentId,
+                compactErrorAnalysisEvidence(attempts, submissions));
+    }
+
+    private String compactErrorAnalysisEvidence(
+            List<StudentSubmissionAttempt> attempts,
+            List<Map<String, Object>> submissions) {
+        Map<String, Object> evidence = new LinkedHashMap<>();
+        Map<String, Integer> statusCounts = new LinkedHashMap<>();
+        Map<String, LinkedHashSet<String>> affectedProblems = new LinkedHashMap<>();
+        List<Map<String, Object>> rows = new ArrayList<>();
+        List<StudentSubmissionAttempt> safeAttempts = attempts != null ? attempts : new ArrayList<>();
+        evidence.put("totalAttemptCount", safeAttempts.size());
+        evidence.put("submittedPayloadCount", submissions != null ? submissions.size() : 0);
+        for (int i = 0; i < safeAttempts.size(); i++) {
+            StudentSubmissionAttempt attempt = safeAttempts.get(i);
+            if (attempt == null) continue;
+            String status = normalizeJudgeStatus(attempt.getJudgeStatus());
+            statusCounts.merge(status, 1, Integer::sum);
+            String problemTitle = safeString(attempt.getProblemTitle(), "");
+            if (!isAcceptedStatus(status) && !problemTitle.isBlank()) {
+                affectedProblems
+                        .computeIfAbsent(status, ignored -> new LinkedHashSet<>())
+                        .add(problemTitle);
+            }
+            if (isAcceptedStatus(status) || rows.size() >= AI_ERROR_MAX_ATTEMPTS) continue;
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("attemptNo", i + 1);
+            row.put("problemId", attempt.getProblemId());
+            row.put("judgeStatus", status);
+            row.put("problemTitle", problemTitle);
+            row.put("score", attempt.getScore());
+            row.put("runtimeMs", attempt.getRuntimeMs());
+            row.put("memoryKb", attempt.getMemoryKb());
+            row.put("errorMessage", limitText(buildErrorMessage(attempt), AI_ERROR_MAX_ERROR_MESSAGE_CHARS));
+            row.put("codeSnippet", limitText(cleanCode(attempt.getCode()), AI_ERROR_MAX_CODE_CHARS));
+            rows.add(row);
+        }
+        evidence.put("statusCounts", statusCounts);
+        Map<String, Object> problemSummary = new LinkedHashMap<>();
+        for (Map.Entry<String, LinkedHashSet<String>> entry : affectedProblems.entrySet()) {
+            problemSummary.put(entry.getKey(), new ArrayList<>(entry.getValue()));
+        }
+        evidence.put("affectedProblems", problemSummary);
+        evidence.put("selectedErrorAttempts", rows);
+        evidence.put("selectionNote", "Only non-accepted representative attempts are sent to the model. Code is truncated to control tokens.");
+        return toJson(evidence);
+    }
+
+    private String limitText(String value, int maxChars) {
+        if (value == null) return "";
+        String text = value.trim();
+        if (text.length() <= maxChars) return text;
+        return text.substring(0, maxChars) + "\n// ... truncated for AI prompt";
+    }
+
+    private void normalizeAiErrorAnalysisData(
+            Map<String, Object> data,
+            String studentNo,
+            String studentName,
+            int experimentId,
+            String experimentName,
+            List<StudentSubmissionAttempt> attempts,
+            List<Map<String, Object>> submissions) {
+        StudentSubmissionAttempt latest = latestAttempt(attempts);
+        data.putIfAbsent("analysisId", "ai_error_" + UUID.randomUUID().toString().substring(0, 8));
+        data.put("studentNo", studentNo);
+        data.put("studentName", studentName != null && !studentName.isBlank() ? studentName : studentNo);
+        data.put("experimentId", experimentId);
+        data.put("experimentName", experimentName);
+        data.putIfAbsent("severity", "MEDIUM");
+        data.putIfAbsent("overallAssessment", "AI 已根据真实提交记录生成错误分析。");
+        data.putIfAbsent("errorCategories", new ArrayList<>());
+        data.putIfAbsent("learningSuggestions", new ArrayList<>());
+        normalizeProblemAnalyses(data, attempts, "AI_MODEL");
+        data.put("latestCode", latest != null ? cleanCode(latest.getCode()) : null);
+        data.put("latestJudgeStatus", latest != null ? normalizeJudgeStatus(latest.getJudgeStatus()) : null);
+        data.put("submissions", submissions != null ? submissions : new ArrayList<>());
+        data.put("generationMode", "AI_MODEL");
+        data.put("aiGenerated", true);
+        data.put("provider", aiProvider.name());
+        data.put("model", aiProvider.model());
+        data.put("source", "ai_provider");
+        normalizeErrorCategories(data);
+    }
+
+    private boolean hasUsableAiErrorAnalysis(Map<String, Object> data) {
+        Object analyses = data.get("problemAnalyses");
+        if (data.get("overallAssessment") == null || !(analyses instanceof List<?> list)) return false;
+        return list.stream()
+                .filter(Map.class::isInstance)
+                .map(Map.class::cast)
+                .anyMatch(item -> "AI_MODEL".equals(item.get("generationMode"))
+                        && item.get("errorCategories") instanceof List<?> categories
+                        && !categories.isEmpty());
+    }
+
+    @SuppressWarnings("unchecked")
+    private void normalizeErrorCategories(Map<String, Object> data) {
+        Object rawCategories = data.get("errorCategories");
+        if (!(rawCategories instanceof List<?> categories)) return;
+        List<Map<String, Object>> normalized = new ArrayList<>();
+        for (Object item : categories) {
+            if (!(item instanceof Map<?, ?> raw)) continue;
+            Map<String, Object> category = new LinkedHashMap<>((Map<String, Object>) raw);
+            category.put("type", normalizeJudgeStatus(safeString(category.get("type"), "UNKNOWN")));
+            category.putIfAbsent("count", 1);
+            category.putIfAbsent("isSystemic", false);
+            category.putIfAbsent("specificIssues", new ArrayList<>());
+            category.putIfAbsent("suggestions", new ArrayList<>());
+            normalized.add(category);
+        }
+        data.put("errorCategories", normalized);
+    }
+
+    private StudentSubmissionAttempt latestAttempt(List<StudentSubmissionAttempt> attempts) {
+        if (attempts == null || attempts.isEmpty()) return null;
+        StudentSubmissionAttempt latest = null;
+        for (StudentSubmissionAttempt attempt : attempts) {
+            if (attempt == null) continue;
+            if (latest == null
+                    || (attempt.getSubmittedAt() == null && latest.getSubmittedAt() == null)
+                    || (attempt.getSubmittedAt() != null
+                    && (latest.getSubmittedAt() == null
+                    || attempt.getSubmittedAt().after(latest.getSubmittedAt())))) {
+                latest = attempt;
+            }
+        }
+        return latest;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> parseModelJsonObject(String raw) throws JsonProcessingException {
+        String text = raw == null ? "" : raw.trim();
+        if (text.startsWith("```")) {
+            int first = text.indexOf('\n');
+            int last = text.lastIndexOf("```");
+            if (first >= 0 && last > first) {
+                text = text.substring(first + 1, last).trim();
+            }
+        }
+        int start = text.indexOf('{');
+        int end = text.lastIndexOf('}');
+        if (start >= 0 && end > start) {
+            text = text.substring(start, end + 1);
+        }
+        return objectMapper.readValue(text, Map.class);
+    }
+
+    private Map<String, Object> buildRuleFallbackErrorAnalysisResult(
+            String studentNo,
+            String studentName,
+            int experimentId,
+            String experimentName,
+            List<StudentSubmissionAttempt> attempts,
+            List<Map<String, Object>> submissions) {
+        List<StudentSubmissionAttempt> safeAttempts =
+                attempts != null ? attempts : new ArrayList<>();
+        Map<String, Integer> errorCounts = new LinkedHashMap<>();
+        Map<String, LinkedHashSet<String>> problemTitlesByType = new LinkedHashMap<>();
+        StudentSubmissionAttempt latestAttempt = null;
+
+        for (StudentSubmissionAttempt attempt : safeAttempts) {
+            if (attempt == null) continue;
+            if (latestAttempt == null
+                    || (attempt.getSubmittedAt() == null && latestAttempt.getSubmittedAt() == null)
+                    || (attempt.getSubmittedAt() != null
+                    && (latestAttempt.getSubmittedAt() == null
+                    || attempt.getSubmittedAt().after(latestAttempt.getSubmittedAt())))) {
+                latestAttempt = attempt;
+            }
+
+            String status = normalizeJudgeStatus(attempt.getJudgeStatus());
+            if (isAcceptedStatus(status)) continue;
+
+            errorCounts.merge(status, 1, Integer::sum);
+            String title = attempt.getProblemTitle();
+            if (title != null && !title.isBlank()) {
+                problemTitlesByType
+                        .computeIfAbsent(status, ignored -> new LinkedHashSet<>())
+                        .add(title.trim());
+            }
+        }
+
+        List<Map<String, Object>> categories = new ArrayList<>();
+        List<Map<String, Object>> learningSuggestions = new ArrayList<>();
+        for (Map.Entry<String, Integer> entry : errorCounts.entrySet()) {
+            String type = entry.getKey();
+            int count = entry.getValue();
+            List<String> affectedProblems = new ArrayList<>(
+                    problemTitlesByType.getOrDefault(type, new LinkedHashSet<>()));
+
+            Map<String, Object> category = new LinkedHashMap<>();
+            category.put("type", type);
+            category.put("count", count);
+            category.put("isSystemic", count >= 2);
+            category.put("rootCause", ruleRootCause(type));
+            category.put("specificIssues", affectedProblems);
+            category.put("suggestions", ruleSuggestions(type));
+            categories.add(category);
+
+            Map<String, Object> learningSuggestion = new LinkedHashMap<>();
+            learningSuggestion.put("priority", count >= 2 ? "HIGH" : "MEDIUM");
+            learningSuggestion.put("topic", ruleTopic(type));
+            learningSuggestion.put("reason", "根据真实判题结果统计：" + count + " 次" + type);
+            learningSuggestion.put("suggestedResources", ruleResource(type));
+            learningSuggestions.add(learningSuggestion);
+        }
+
+        boolean allAccepted = !safeAttempts.isEmpty() && errorCounts.isEmpty()
+                && safeAttempts.stream().allMatch(attempt ->
+                attempt != null && isAcceptedStatus(attempt.getJudgeStatus()));
+        String generationMode = allAccepted ? "JUDGE_RESULT" : "RULE_FALLBACK";
+        String fallbackReason = allAccepted ? "JUDGE_RESULT_ONLY" : "AI_SERVICE_UNAVAILABLE";
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("analysisId", "rule_fallback_" + UUID.randomUUID().toString().substring(0, 8));
+        result.put("studentNo", studentNo);
+        result.put("studentName", studentName != null && !studentName.isBlank() ? studentName : studentNo);
+        result.put("experimentId", experimentId);
+        result.put("experimentName", experimentName);
+        result.put("severity", categories.isEmpty() ? "LOW"
+                : categories.stream().anyMatch(category ->
+                List.of("COMPILE_ERROR", "RUNTIME_ERROR", "SEGMENTATION_FAULT")
+                        .contains(category.get("type")) || Boolean.TRUE.equals(category.get("isSystemic")))
+                ? "HIGH" : "MEDIUM");
+        result.put("overallAssessment", buildRuleOverallAssessment(allAccepted, safeAttempts, categories));
+        result.put("errorCategories", categories);
+        result.put("learningSuggestions", learningSuggestions);
+        result.put("problemAnalyses", buildRuleProblemAnalyses(safeAttempts));
+        result.put("latestCode", latestAttempt != null ? cleanCode(latestAttempt.getCode()) : null);
+        result.put("latestJudgeStatus", latestAttempt != null
+                ? normalizeJudgeStatus(latestAttempt.getJudgeStatus()) : null);
+        result.put("submissions", submissions != null ? submissions : new ArrayList<>());
+        result.put("generationMode", generationMode);
+        result.put("aiGenerated", false);
+        result.put("provider", "system");
+        result.put("fallbackReason", fallbackReason);
+        result.put("source", "rule_fallback");
+        return result;
+    }
+
+    private String normalizeJudgeStatus(String rawStatus) {
+        if (rawStatus == null || rawStatus.isBlank()) return "UNKNOWN";
+        String status = rawStatus.trim().toUpperCase().replace(' ', '_').replace('-', '_');
+        return switch (status) {
+            case "AC", "ACCEPT", "ACCEPTED" -> "ACCEPTED";
+            case "CE", "COMPILATION_ERROR", "COMPILE_ERROR" -> "COMPILE_ERROR";
+            case "RE", "RUNTIME_ERROR" -> "RUNTIME_ERROR";
+            case "WA", "WRONG_ANSWER" -> "WRONG_ANSWER";
+            case "TLE", "TIME_LIMIT", "TIME_LIMIT_EXCEEDED" -> "TIME_LIMIT_EXCEEDED";
+            case "MLE", "MEMORY_LIMIT", "MEMORY_LIMIT_EXCEEDED" -> "MEMORY_LIMIT_EXCEEDED";
+            case "SE", "SEGMENTATION_ERROR", "SEGMENTATION_FAULT" -> "SEGMENTATION_FAULT";
+            default -> status;
+        };
+    }
+
+    private String ruleRootCause(String type) {
+        return switch (type) {
+            case "COMPILE_ERROR" -> "提交未通过编译，优先检查语法、头文件、类型和接口声明。";
+            case "RUNTIME_ERROR" -> "程序运行阶段发生异常，优先检查空指针、数组越界、非法输入和递归边界。";
+            case "WRONG_ANSWER" -> "程序能够运行但输出与判题结果不一致，优先核对边界条件、状态转移和输出格式。";
+            case "TIME_LIMIT_EXCEEDED" -> "程序运行时间超过限制，优先检查算法复杂度和重复计算。";
+            case "MEMORY_LIMIT_EXCEEDED" -> "程序使用内存超过限制，优先检查大对象、数组规模和不必要的数据副本。";
+            case "SEGMENTATION_FAULT" -> "程序访问了无效内存，优先检查指针、数组下标和对象生命周期。";
+            default -> "当前提交记录没有可进一步细化的错误类型，需结合判题详情继续定位。";
+        };
+    }
+
+    private String ruleTopic(String type) {
+        return switch (type) {
+            case "COMPILE_ERROR" -> "编译与语法";
+            case "RUNTIME_ERROR", "SEGMENTATION_FAULT" -> "运行时安全与边界";
+            case "WRONG_ANSWER" -> "测试用例与边界条件";
+            case "TIME_LIMIT_EXCEEDED" -> "算法复杂度";
+            case "MEMORY_LIMIT_EXCEEDED" -> "空间复杂度";
+            default -> "判题结果核对";
+        };
+    }
+
+    private String ruleResource(String type) {
+        return switch (type) {
+            case "COMPILE_ERROR" -> "回看编译器报错位置，逐条修复后重新提交。";
+            case "RUNTIME_ERROR", "SEGMENTATION_FAULT" -> "用最小输入复现异常，逐步检查边界和变量生命周期。";
+            case "WRONG_ANSWER" -> "补充空输入、最小值、重复值和极端值测试。";
+            case "TIME_LIMIT_EXCEEDED" -> "先估算当前复杂度，再比较是否存在重复遍历或可替换的数据结构。";
+            case "MEMORY_LIMIT_EXCEEDED" -> "检查容器容量、缓存范围和是否可以流式处理数据。";
+            default -> "查看 PTA 判题详情后再进行针对性修改。";
+        };
+    }
+
+    private List<String> ruleSuggestions(String type) {
+        return List.of(ruleResource(type));
+    }
+
+    private String buildRuleOverallAssessment(
+            boolean allAccepted,
+            List<StudentSubmissionAttempt> attempts,
+            List<Map<String, Object>> categories) {
+        if (allAccepted) {
+            return "根据当前真实提交记录，所有可识别的判题结果均为通过。本次展示基于判题结果，不冒充 AI 分析。";
+        }
+        if (attempts.isEmpty()) {
+            return "存在提交记录，但当前没有足够的判题证据生成详细分析。";
+        }
+        if (categories.isEmpty()) {
+            return "已读取真实提交记录，但判题服务未提供可识别的错误类型，请查看 PTA 详情后重试。";
+        }
+        return "AI 错误分析服务当前不可用，以下内容根据真实提交记录中的判题状态统计生成，仅作为规则兜底参考。";
+    }
+
+    private Map<String, Object> normalizeErrorAnalysisResult(
+            Map<String, Object> responseBody,
+            List<StudentSubmissionAttempt> attempts) {
+        if (responseBody == null) return null;
+        Map<String, Object> data = extractDataMap(responseBody);
+        if (data == null || data.isEmpty()) return responseBody;
+
+        String mode = normalizeGenerationMode(data.get("generationMode"));
+        if (mode == null) {
+            if (Boolean.TRUE.equals(data.get("aiGenerated"))) {
+                mode = "AI_MODEL";
+            } else if (data.containsKey("aiGenerated") && Boolean.FALSE.equals(data.get("aiGenerated"))) {
+                mode = isAllAcceptedResult(data, attempts) ? "JUDGE_RESULT" : "RULE_FALLBACK";
+            } else {
+                mode = isAllAcceptedResult(data, attempts) ? "JUDGE_RESULT" : "AI_MODEL";
+            }
+        }
+
+        data.put("generationMode", mode);
+        data.put("aiGenerated", "AI_MODEL".equals(mode));
+        data.putIfAbsent("provider", "AI_MODEL".equals(mode) ? "error-analysis-service" : "system");
+        if ("RULE_FALLBACK".equals(mode)) {
+            data.putIfAbsent("fallbackReason", "AI_SERVICE_RULE_FALLBACK");
+        } else if ("JUDGE_RESULT".equals(mode)) {
+            data.putIfAbsent("fallbackReason", "JUDGE_RESULT_ONLY");
+        }
+        if (attempts != null) {
+            normalizeProblemAnalyses(data, attempts, mode);
+        }
+        return responseBody;
+    }
+
+    private boolean hasProblemAnalyses(Map<String, Object> responseBody) {
+        Map<String, Object> data = extractDataMap(responseBody);
+        return data != null
+                && data.get("problemAnalyses") instanceof List<?> analyses
+                && !analyses.isEmpty();
+    }
+
+    @SuppressWarnings("unchecked")
+    private void normalizeProblemAnalyses(
+            Map<String, Object> data,
+            List<StudentSubmissionAttempt> attempts,
+            String defaultMode) {
+        Map<Long, List<StudentSubmissionAttempt>> attemptsByProblem = groupAttemptsByProblemId(attempts);
+        if (attemptsByProblem.isEmpty()) {
+            data.put("problemAnalyses", new ArrayList<>());
+            return;
+        }
+
+        Map<Long, Map<String, Object>> providedByProblem = new LinkedHashMap<>();
+        Object rawAnalyses = data.get("problemAnalyses");
+        if (rawAnalyses instanceof List<?> analyses) {
+            for (Object item : analyses) {
+                if (!(item instanceof Map<?, ?> raw)) continue;
+                Map<String, Object> analysis = new LinkedHashMap<>((Map<String, Object>) raw);
+                Long problemId = parseProblemId(analysis.get("problemId"));
+                List<StudentSubmissionAttempt> problemAttempts = attemptsByProblem.get(problemId);
+                if (problemId == null || problemAttempts == null || providedByProblem.containsKey(problemId)) continue;
+
+                StudentSubmissionAttempt latest = latestAttempt(problemAttempts);
+                String mode = normalizeGenerationMode(analysis.get("generationMode"));
+                if (mode == null) mode = defaultMode;
+                analysis.put("problemId", problemId);
+                analysis.put("problemTitle", resolveProblemTitle(problemAttempts));
+                analysis.putIfAbsent("severity", "MEDIUM");
+                analysis.putIfAbsent("overallAssessment", "当前题目暂无可用的详细分析。");
+                analysis.putIfAbsent("errorCategories", new ArrayList<>());
+                analysis.putIfAbsent("learningSuggestions", new ArrayList<>());
+                analysis.put("latestCode", latest != null ? cleanCode(latest.getCode()) : null);
+                analysis.put("latestJudgeStatus", latest != null
+                        ? normalizeJudgeStatus(latest.getJudgeStatus()) : null);
+                analysis.put("generationMode", mode);
+                analysis.put("aiGenerated", "AI_MODEL".equals(mode));
+                analysis.putIfAbsent("provider", "AI_MODEL".equals(mode)
+                        ? safeString(data.get("provider"), "error-analysis-service") : "system");
+                normalizeErrorCategories(analysis);
+                providedByProblem.put(problemId, analysis);
+            }
+        }
+
+        List<Map<String, Object>> normalized = new ArrayList<>();
+        for (Map.Entry<Long, List<StudentSubmissionAttempt>> entry : attemptsByProblem.entrySet()) {
+            Map<String, Object> analysis = providedByProblem.get(entry.getKey());
+            if (analysis == null) {
+                analysis = buildRuleProblemAnalysis(entry.getKey(), entry.getValue());
+            }
+            normalized.add(analysis);
+        }
+        data.put("problemAnalyses", normalized);
+    }
+
+    private Map<Long, List<StudentSubmissionAttempt>> groupAttemptsByProblemId(
+            List<StudentSubmissionAttempt> attempts) {
+        Map<Long, List<StudentSubmissionAttempt>> grouped = new LinkedHashMap<>();
+        if (attempts == null) return grouped;
+        for (StudentSubmissionAttempt attempt : attempts) {
+            if (attempt == null || attempt.getProblemId() == null) continue;
+            grouped.computeIfAbsent(attempt.getProblemId(), ignored -> new ArrayList<>()).add(attempt);
+        }
+        return grouped;
+    }
+
+    private List<Map<String, Object>> buildRuleProblemAnalyses(
+            List<StudentSubmissionAttempt> attempts) {
+        List<Map<String, Object>> analyses = new ArrayList<>();
+        for (Map.Entry<Long, List<StudentSubmissionAttempt>> entry : groupAttemptsByProblemId(attempts).entrySet()) {
+            analyses.add(buildRuleProblemAnalysis(entry.getKey(), entry.getValue()));
+        }
+        return analyses;
+    }
+
+    private Map<String, Object> buildRuleProblemAnalysis(
+            Long problemId,
+            List<StudentSubmissionAttempt> problemAttempts) {
+        Map<String, Integer> errorCounts = new LinkedHashMap<>();
+        for (StudentSubmissionAttempt attempt : problemAttempts) {
+            if (attempt == null) continue;
+            String status = normalizeJudgeStatus(attempt.getJudgeStatus());
+            if (!isAcceptedStatus(status)) errorCounts.merge(status, 1, Integer::sum);
+        }
+
+        List<Map<String, Object>> categories = new ArrayList<>();
+        List<Map<String, Object>> suggestions = new ArrayList<>();
+        for (Map.Entry<String, Integer> entry : errorCounts.entrySet()) {
+            String type = entry.getKey();
+            int count = entry.getValue();
+            Map<String, Object> category = new LinkedHashMap<>();
+            category.put("type", type);
+            category.put("count", count);
+            category.put("isSystemic", count >= 2);
+            category.put("rootCause", ruleRootCause(type));
+            category.put("specificIssues", List.of(resolveProblemTitle(problemAttempts)));
+            category.put("suggestions", ruleSuggestions(type));
+            categories.add(category);
+
+            Map<String, Object> suggestion = new LinkedHashMap<>();
+            suggestion.put("priority", count >= 2 ? "HIGH" : "MEDIUM");
+            suggestion.put("topic", ruleTopic(type));
+            suggestion.put("reason", "本题真实判题记录中出现 " + count + " 次" + type);
+            suggestion.put("suggestedResources", ruleResource(type));
+            suggestions.add(suggestion);
+        }
+
+        boolean allAccepted = !problemAttempts.isEmpty() && errorCounts.isEmpty()
+                && problemAttempts.stream().allMatch(attempt ->
+                attempt != null && isAcceptedStatus(attempt.getJudgeStatus()));
+        StudentSubmissionAttempt latest = latestAttempt(problemAttempts);
+        Map<String, Object> analysis = new LinkedHashMap<>();
+        analysis.put("problemId", problemId);
+        analysis.put("problemTitle", resolveProblemTitle(problemAttempts));
+        analysis.put("severity", categories.isEmpty() ? "LOW"
+                : categories.stream().anyMatch(category ->
+                List.of("COMPILE_ERROR", "RUNTIME_ERROR", "SEGMENTATION_FAULT")
+                        .contains(category.get("type")) || Boolean.TRUE.equals(category.get("isSystemic")))
+                ? "HIGH" : "MEDIUM");
+        analysis.put("overallAssessment", allAccepted
+                ? "根据本题当前真实提交记录，所有可识别的判题结果均为通过。"
+                : "本题 AI 详细分析暂不可用，以下内容仅根据本题真实判题状态生成。");
+        analysis.put("errorCategories", categories);
+        analysis.put("learningSuggestions", suggestions);
+        analysis.put("latestCode", latest != null ? cleanCode(latest.getCode()) : null);
+        analysis.put("latestJudgeStatus", latest != null
+                ? normalizeJudgeStatus(latest.getJudgeStatus()) : null);
+        analysis.put("generationMode", allAccepted ? "JUDGE_RESULT" : "RULE_FALLBACK");
+        analysis.put("aiGenerated", false);
+        analysis.put("provider", "system");
+        analysis.put("fallbackReason", allAccepted
+                ? "JUDGE_RESULT_ONLY" : "AI_PROBLEM_ANALYSIS_UNAVAILABLE");
+        return analysis;
+    }
+
+    private Long parseProblemId(Object value) {
+        if (value instanceof Number number) return number.longValue();
+        if (value == null) return null;
+        try {
+            return Long.valueOf(value.toString().trim());
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> extractDataMap(Map<String, Object> responseBody) {
+        if (responseBody == null) return null;
+        Object data = responseBody.get("data");
+        if (data instanceof Map<?, ?>) {
+            return (Map<String, Object>) data;
+        }
+        return responseBody;
+    }
+
+    private void applyStoredGenerationMetadata(
+            Map<String, Object> data,
+            Map<String, Object> rawData,
+            AiErrorAnalysisReport report) {
+        String mode = normalizeGenerationMode(rawData != null ? rawData.get("generationMode") : null);
+        if (mode == null) {
+            if (rawData != null && Boolean.TRUE.equals(rawData.get("aiGenerated"))) {
+                mode = "AI_MODEL";
+            } else if (Boolean.TRUE.equals(report.getAiGenerated())) {
+                mode = "AI_MODEL";
+            } else if ("ERROR".equalsIgnoreCase(report.getReportType()) && rawData != null
+                    && !rawData.containsKey("aiGenerated")) {
+                mode = "AI_MODEL";
+            } else {
+                mode = "RULE_FALLBACK";
+            }
+        }
+
+        data.put("generationMode", mode);
+        data.put("aiGenerated", "AI_MODEL".equals(mode));
+        Object provider = rawData != null ? rawData.get("provider") : null;
+        data.put("provider", safeString(provider, "AI_MODEL".equals(mode) ? "error-analysis-service" : "system"));
+        Object fallbackReason = rawData != null ? rawData.get("fallbackReason") : null;
+        String reason = safeString(fallbackReason, null);
+        if (reason != null) {
+            data.put("fallbackReason", reason);
+        } else if ("RULE_FALLBACK".equals(mode)) {
+            data.put("fallbackReason", "AI_SERVICE_RULE_FALLBACK");
+        }
+    }
+
+    private String normalizeGenerationMode(Object rawMode) {
+        String mode = safeString(rawMode, null);
+        if (mode == null) return null;
+        mode = mode.toUpperCase();
+        return switch (mode) {
+            case "AI_MODEL", "RULE_FALLBACK", "JUDGE_RESULT" -> mode;
+            default -> null;
+        };
+    }
+
+    private boolean isAllAcceptedResult(Map<String, Object> data, List<StudentSubmissionAttempt> attempts) {
+        Object categories = data.get("errorCategories");
+        if (categories instanceof List<?> list && !list.isEmpty()) return false;
+
+        if (attempts != null && !attempts.isEmpty()) {
+            for (StudentSubmissionAttempt attempt : attempts) {
+                String status = attempt.getJudgeStatus();
+                if (!isAcceptedStatus(status)) return false;
+            }
+            return true;
+        }
+
+        return isAcceptedStatus(safeString(data.get("latestJudgeStatus"), null));
+    }
+
+    private boolean isAcceptedStatus(String status) {
+        return "ACCEPTED".equals(normalizeJudgeStatus(status));
+    }
+
     /**
      * 检查 learning payload 的 errorHistory 是否包含有效错误记录（count >= 1）
      */
@@ -1045,6 +1780,16 @@ public class ErrorAnalysisService {
         if (json == null || json.isEmpty()) return null;
         try {
             return objectMapper.readValue(json, List.class);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> parseJsonObject(String json) {
+        if (json == null || json.isEmpty()) return null;
+        try {
+            return objectMapper.readValue(json, Map.class);
         } catch (Exception e) {
             return null;
         }
