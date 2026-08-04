@@ -92,7 +92,9 @@ def _build_prompt(code_items: list[dict], rubric_subject: str) -> str:
         "(可能来自截图 OCR,存在少量识别噪声)。请你**基于代码的实际内容**判断其中的"
         "逻辑与边界问题——例如逻辑错误、数组越界、空指针、死循环、复杂度过高、未处理异常等。"
         "只定位问题并给出改进思路,不要输出完整代码。语言用中文。"
-        "若某片段并非代码或无明显问题,则不必强行编造。\n\n"
+        "若某片段并非代码或无明显问题,则不必强行编造。\n"
+        "【已修正降级规则】若报告对某段代码同时给出了修正版本、修复说明或\"问题分析与修改\"类分析，"
+        "说明学生已识别并处理该问题：severity 必须降一级(HIGH→MEDIUM→LOW)，并在 explanation 末尾注明\"(报告已分析并修正)\"。\n\n"
         f"{subject_line}代码片段:\n{joined}\n\n"
         "只返回如下 JSON(evidence_id 必须来自上面出现过的编号,anchor_text 摘录相关代码原文):\n"
         '{"language":"c|python|java|unknown","code_summary":"整体正确性概述,80字以内",'

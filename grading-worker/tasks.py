@@ -70,7 +70,7 @@ from models.db_models import (
 
 from models.pipeline_models import EvidenceBlock, ImageKind, TaskMessage
 
-from pipeline.code_block_extractor import extract_code_blocks
+from pipeline.code_block_extractor import extract_code_blocks, merge_code_evidence_blocks
 from pipeline.document_parser import parse_document
 
 from pipeline.evidence_builder import build_evidence_packs
@@ -85,7 +85,16 @@ from pipeline.ocr_processor import run_ocr
 
 from pipeline.score_calculator import calculate_weighted_total
 
-from pipeline.scorer import score_dimension, score_dimensions_batch
+from pipeline.scorer import score_dimension, score_dimensions_batch, code_error_ceiling
+
+
+_CODE_DIM_HINTS = ("代码", "程序", "实现", "正确", "调试", "编程", "算法", "语法")
+
+
+def _code_related_dim(dim: dict) -> bool:
+    """维度名称/描述是否与代码正确性相关（用于未修复错误硬上限）。"""
+    text = (str(dim.get("name") or "") + str(dim.get("description") or ""))
+    return any(h in text for h in _CODE_DIM_HINTS)
 
 from pipeline.trace_logger import trace_step
 
@@ -1008,6 +1017,9 @@ def process_submission(self, task_message_json: str):
 
 
 
+        # 合并被分页拆分的 code 证据块，减少喂给下游分析/演示的碎片
+        evidence_blocks = merge_code_evidence_blocks(evidence_blocks)
+
         code_analysis_result = None
         code_findings = []
         if CODE_ANALYSIS_ENABLED:
@@ -1033,6 +1045,23 @@ def process_submission(self, task_message_json: str):
             except Exception:
                 code_analysis_result = None
                 code_findings = []
+
+        # 未修复代码错误参与评分：prompt 硬规则 + 代码相关维度硬上限
+        unfixed_code_findings = [f for f in code_findings if f.get("severity") in ("HIGH", "MEDIUM")]
+        high_cnt = sum(1 for f in unfixed_code_findings if f.get("severity") == "HIGH")
+        med_cnt = len(unfixed_code_findings) - high_cnt
+        code_issue_section = ""
+        if unfixed_code_findings:
+            issue_lines = "\n".join(
+                f"- [{f.get('severity')}] {f.get('issue_type')}: {f.get('explanation')}"
+                for f in unfixed_code_findings[:6]
+            )
+            code_issue_section = (
+                "\n## 代码问题分析结果（来自对学生报告中代码的实际分析）\n"
+                + issue_lines
+                + "\n硬规则：若报告正文未对上述问题进行分析与修正，代码正确性/程序实现相关维度不得判优，"
+                "且原则上不超过该维度满分的 80%；若报告已明确指出并修正，则按修正后的内容正常评分。"
+            )
 
         with trace_step(msg.submissionId, "evidence_build") as info:
 
@@ -1063,6 +1092,14 @@ def process_submission(self, task_message_json: str):
         )
 
         score_guidance = f"{score_guidance}\n\n{range_hint}" if score_guidance else range_hint
+
+        if code_issue_section:
+            score_guidance = f"{score_guidance}\n{code_issue_section}"
+
+        code_ceiling = (
+            code_error_ceiling(high_cnt, med_cnt, effective_score_range_max / 100.0)
+            if unfixed_code_findings else None
+        )
 
 
 
@@ -1234,7 +1271,15 @@ def process_submission(self, task_message_json: str):
 
             })
 
-
+            # 硬上限兜底：代码有未修复错误时，代码相关维度不超过 ceiling 比例
+            if (code_ceiling is not None and sr_data.get("score") is not None
+                    and _code_related_dim(dim)):
+                capped = round(float(dim["max_score"]) * code_ceiling, 1)
+                if float(sr_data["score"]) > capped:
+                    sr_data["score"] = capped
+                    sr_data["comment"] = (sr_data.get("comment") or "") + (
+                        f"（代码存在 {high_cnt} 处严重 / {med_cnt} 处中等问题未修复，"
+                        f"本维度上限为满分 {int(round(code_ceiling * 100))}%）")
 
             db_si = ScoreItem(
 

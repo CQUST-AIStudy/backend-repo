@@ -323,11 +323,58 @@ public class GradingErrorDemonstrationService {
         if (llmCode != null && !llmCode.isBlank()) {
             CodeContext fromLlm = codeContextExtractor.extract(llmCode, ann.anchorText());
             if (fromLlm != null && !fromLlm.fullLines().isEmpty()) {
-                // LLM 提取到更完整的代码，优先使用
-                return fromLlm;
+                // 原文优先：原始代码块本身结构完整时直接用原文，杜绝模型改写学生代码
+                if (isStructurallyCompleteCode(local)) {
+                    return local;
+                }
+                if (local == null || local.fullLines().isEmpty()) {
+                    return fromLlm.withSource("llm_completed");
+                }
+                // 忠实度校验：补全结果需覆盖原文 >=80% 的非空行，否则丢弃补全
+                if (lineCoverage(fromLlm.fullCode(), local.fullCode()) >= 0.8) {
+                    return fromLlm.withSource("llm_completed");
+                }
+                log.warn("LLM 代码补全忠实度不足，回退原文 (evidence={})", ann.evidenceId());
+                return local;
             }
         }
         return local;
+    }
+
+    /** 结构完整：大括号配平且含函数头/main，视为报告原文已是完整代码。 */
+    private boolean isStructurallyCompleteCode(CodeContext ctx) {
+        if (ctx == null || ctx.fullLines().isEmpty()) {
+            return false;
+        }
+        String code = ctx.fullCode();
+        long open = code.chars().filter(c -> c == '{').count();
+        long close = code.chars().filter(c -> c == '}').count();
+        boolean balanced = open > 0 && open == close;
+        boolean hasEntry = code.contains("main(") || code.contains("def ") || code.contains("class ");
+        return balanced && hasEntry;
+    }
+
+    /** 原文非空行在补全结果中出现的比例（trim 后逐行匹配）。 */
+    private double lineCoverage(String completed, String raw) {
+        java.util.Set<String> completedLines = new java.util.HashSet<>();
+        for (String line : completed.split("\n")) {
+            String t = line.trim();
+            if (!t.isEmpty()) {
+                completedLines.add(t);
+            }
+        }
+        int total = 0, hit = 0;
+        for (String line : raw.split("\n")) {
+            String t = line.trim();
+            if (t.isEmpty()) {
+                continue;
+            }
+            total++;
+            if (completedLines.contains(t)) {
+                hit++;
+            }
+        }
+        return total == 0 ? 1.0 : (double) hit / total;
     }
 
     private List<AnimationCandidate.AnnotationInfo> parseAnnotations(String annotationsJson) {

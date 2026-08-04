@@ -14692,6 +14692,15 @@ def _evidence_stats(evidence_pack: EvidencePack) -> tuple[int, int, int]:
 
 
 
+def code_error_ceiling(high_count: int, medium_count: int, base_ratio: float) -> float:
+    """代码存在未修复错误时,代码相关维度得分的硬上限比例。
+
+    每处 HIGH 扣 5%、MEDIUM 扣 2%,累计最多扣 25%;下限 55%。
+    """
+    penalty = min(0.25, 0.05 * max(0, high_count) + 0.02 * max(0, medium_count))
+    return max(0.55, min(1.0, base_ratio) - penalty)
+
+
 def _normalize_result(parsed: dict, evidence_pack: EvidencePack, dimension: dict,
                       score_range_min: float = None,
                       score_range_max: float = None) -> ScoreResult:

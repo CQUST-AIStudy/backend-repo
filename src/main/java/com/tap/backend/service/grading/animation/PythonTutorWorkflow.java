@@ -60,6 +60,7 @@ public class PythonTutorWorkflow {
         metadata.put("errorType", errorType.name());
         metadata.put("dataStructure", mapToDataStructure(errorType));
         metadata.put("sourceCode", executableCode);
+        metadata.put("codeSource", ctx == null ? "raw" : ctx.source());
         metadata.put("correctedCode", correctedCode);
         metadata.put("errorLine", adjustedAnchorLine);
         metadata.put("errorStepIndex", errorStepIndex);

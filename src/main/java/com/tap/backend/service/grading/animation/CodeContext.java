@@ -10,8 +10,19 @@ public record CodeContext(
         int anchorStartLine,
         int anchorEndLine,
         int highlightStartLine,
-        int highlightEndLine
+        int highlightEndLine,
+        String source
 ) {
+    /** 兼容旧调用：默认来源为报告原文。 */
+    public CodeContext(List<String> fullLines, int anchorStartLine, int anchorEndLine,
+                       int highlightStartLine, int highlightEndLine) {
+        this(fullLines, anchorStartLine, anchorEndLine, highlightStartLine, highlightEndLine, "raw");
+    }
+
+    public CodeContext withSource(String newSource) {
+        return new CodeContext(fullLines, anchorStartLine, anchorEndLine,
+                highlightStartLine, highlightEndLine, newSource);
+    }
     /**
      * 返回完整代码文本。
      */

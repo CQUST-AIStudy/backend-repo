@@ -154,3 +154,42 @@ def _calculate_confidence(lines: List[str]) -> float:
         return 0.0
     code_lines = sum(1 for line in lines if _looks_like_code(line))
     return round(code_lines / len(lines), 2)
+
+
+def _unbalanced_braces(code: str) -> bool:
+    """大括号未配平（开多于闭）视为代码被截断。"""
+    return code.count("{") > code.count("}")
+
+
+def merge_code_evidence_blocks(evidence_blocks: list) -> list:
+    """合并被分页拆分的 code 证据块。
+
+    规则：前一个 code 块大括号未配平，且下一个 code 块页码相同或相邻（+1），
+    则认为后者是同一代码段的延续，拼接到前者并移除后者。重复执行直到稳定，
+    以支持跨多页的长代码。非 code 块原样保留，顺序不变。
+    """
+    if not evidence_blocks:
+        return evidence_blocks
+
+    changed = True
+    blocks = list(evidence_blocks)
+    while changed:
+        changed = False
+        code_idxs = [i for i, eb in enumerate(blocks) if getattr(eb, "kind", "") == "code"]
+        remove = set()
+        for pos in range(len(code_idxs) - 1):
+            i, j = code_idxs[pos], code_idxs[pos + 1]
+            if i in remove or j in remove:
+                continue
+            cur, nxt = blocks[i], blocks[j]
+            if _unbalanced_braces(cur.content or "") and (nxt.page or 0) - (cur.page or 0) <= 1:
+                cur.content = (cur.content or "").rstrip("\n") + "\n" + (nxt.content or "")
+                cur.page = nxt.page
+                meta = getattr(cur, "metadata", None) or {}
+                meta["merged_pages"] = True
+                cur.metadata = meta
+                remove.add(j)
+                changed = True
+        if remove:
+            blocks = [eb for idx, eb in enumerate(blocks) if idx not in remove]
+    return blocks
