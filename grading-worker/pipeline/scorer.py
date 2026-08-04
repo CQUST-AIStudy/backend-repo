@@ -14692,71 +14692,9 @@ def _evidence_stats(evidence_pack: EvidencePack) -> tuple[int, int, int]:
 
 
 
-def _normalize_result(parsed: dict, evidence_pack: EvidencePack, dimension: dict,
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-                      score_range_min: float = None) -> ScoreResult:
+def _normalize_result(parsed: dict, evidence_pack: EvidencePack, dimension: dict,
+                      score_range_min: float = None,
+                      score_range_max: float = None) -> ScoreResult:
 
 
 
@@ -15716,7 +15654,9 @@ def _normalize_result(parsed: dict, evidence_pack: EvidencePack, dimension: dict
 
 
 
-        score = max(0.0, min(max_score, score))
+        score = max(0.0, min(max_score, score))
+        if score_range_max is not None and 0.0 < score_range_max < 100.0:
+            score = min(score, round(max_score * score_range_max / 100.0, 1))
 
 
 
@@ -33895,7 +33835,8 @@ def score_dimensions_batch(
 
 
 
-                    score_range_min=effective_score_range_min,
+                    score_range_min=effective_score_range_min,
+                    score_range_max=effective_score_range_max,
 
 
 
@@ -41575,7 +41516,8 @@ def score_dimension(
 
 
 
-                score_range_min=effective_score_range_min,
+                score_range_min=effective_score_range_min,
+                score_range_max=effective_score_range_max,
 
 
 

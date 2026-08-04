@@ -711,9 +711,10 @@ private static final int LONG_DOCUMENT_PAGE_THRESHOLD = 15;
             }
 
             // 4) 结尾追加一页手写体「教师评语」（教师总评），画在独立页避免压到学生原文；
-            //    未签封面时签名跟在评语正文之后（与 DOCX 版顺序一致）
+            //    签名始终右对齐跟在评语正文之后（与 DOCX 版顺序一致）；封面签名栏属于表单
+            //    签字位，与评语结尾署名并存，不再因封面已签而在评语页画占位「任课教师」
             boolean reviewDrawn = drawPdfTeacherReviewPage(document, pages, fontSelection, teacherComment,
-                    coverSigned ? null : teacherSignature);
+                    teacherSignature);
 
             // 5) 既无封面签名栏又无评语时，签名单独成页兜底
             if (!coverSigned && !reviewDrawn) {

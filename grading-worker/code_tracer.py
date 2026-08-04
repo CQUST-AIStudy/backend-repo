@@ -518,6 +518,20 @@ static void __trace_array_int(const char* name, int* arr, int size) {
     }
     fprintf(stderr, "\n");
 }
+static void __trace_var_string(const char* name, const char* val) {
+    if (!__trace_enabled) return;
+    fprintf(stderr, "__TRACE_VAR__ %s string ", name);
+    if (!val) {
+        fprintf(stderr, "(null)\n");
+        return;
+    }
+    for (int __i = 0; __i < 24 && val[__i] != '\0'; __i++) {
+        unsigned char __c = (unsigned char)val[__i];
+        if (__c >= 32 && __c < 127) fputc(__c, stderr);
+        else fputc('.', stderr);
+    }
+    fputc('\n', stderr);
+}
 
 #define __TRACE_STRINGIFY(x) #x
 #define __TRACE_TOSTRING(x) __TRACE_STRINGIFY(x)
@@ -578,6 +592,34 @@ static void __trace_array_int(const char* name, int* arr, int size) {
                         "kind": "scalar",
                         "decl_line": str(line_no),
                     })
+                # 同一行多个声明符：char s1[20], s2[20]; 逐个捕获
+                tail = stripped[stripped.find(var_name) + len(var_name):]
+                for extra in re.finditer(r",\s*(\*?)\s*([a-zA-Z_]\w*)\s*(\[\s*(\d+)\s*\])?", tail):
+                    extra_name = extra.group(2)
+                    if extra_name == var_name or any(d["name"] == extra_name for d in decls):
+                        continue
+                    if extra.group(3):
+                        decls.append({
+                            "name": extra_name,
+                            "type": var_type,
+                            "kind": "array",
+                            "size": extra.group(4) or "10",
+                            "decl_line": str(line_no),
+                        })
+                    elif extra.group(1):
+                        decls.append({
+                            "name": extra_name,
+                            "type": var_type,
+                            "kind": "pointer",
+                            "decl_line": str(line_no),
+                        })
+                    else:
+                        decls.append({
+                            "name": extra_name,
+                            "type": var_type,
+                            "kind": "scalar",
+                            "decl_line": str(line_no),
+                        })
 
         return decls
 
@@ -618,6 +660,9 @@ static void __trace_array_int(const char* name, int* arr, int size) {
                 if kind == "array":
                     if vtype == "int":
                         calls.append(f'__trace_array_int("{name}", {name}, {var.get("size", "10")});')
+                    elif vtype == "char":
+                        # char 数组按字符串捕获，前端以变量盒子展示
+                        calls.append(f'__trace_var_string("{name}", {name});')
                 elif kind == "pointer":
                     calls.append(f'__trace_var_ptr("{name}", (void*){name});')
                 elif vtype == "int":

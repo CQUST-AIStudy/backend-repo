@@ -114,3 +114,52 @@ def test_normalize_result_respects_score_range_min_above_hard_minimum():
 
     assert result.score == 15  # 75% of 20
     assert "75%" in result.comment
+
+
+def test_normalize_result_applies_hard_ceiling_from_score_range_max():
+    """AI 给满分时，score_range_max=99 应把分数硬钳制到满分的 99%。"""
+    pack = EvidencePack(
+        dimension_id=1,
+        blocks=[
+            EvidenceBlock(
+                evidence_id="ev-1",
+                kind="text",
+                page=1,
+                content="实验目的明确，步骤完整，结果分析合理。",
+            ),
+        ],
+    )
+    parsed = {
+        "dimension_id": 1,
+        "score": 20,
+        "comment": "完成得很好。",
+        "evidence_ids": ["ev-1"],
+        "status": "SCORED",
+        "annotations": [],
+    }
+
+    result = _normalize_result(parsed, pack, {"id": 1, "max_score": 20}, score_range_max=99)
+
+    assert result.score == 19.8  # 99% of 20
+
+
+def test_normalize_result_ceiling_not_applied_when_range_max_is_full():
+    """score_range_max=100（默认全区间）时不做上限钳制。"""
+    pack = EvidencePack(
+        dimension_id=1,
+        blocks=[
+            EvidenceBlock(evidence_id="ev-1", kind="text", page=1, content="实验完成。"),
+        ],
+    )
+    parsed = {
+        "dimension_id": 1,
+        "score": 20,
+        "comment": "完成得很好。",
+        "evidence_ids": ["ev-1"],
+        "status": "SCORED",
+        "annotations": [],
+    }
+
+    result = _normalize_result(parsed, pack, {"id": 1, "max_score": 20}, score_range_max=100)
+
+    assert result.score == 20
