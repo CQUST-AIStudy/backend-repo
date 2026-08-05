@@ -267,7 +267,7 @@ tap:
   # 翻译服务缓存与厂商
   translation:
     cache-ttl-seconds: ${TRANS_CACHE_TTL_SECONDS:604800}
-    provider: ${TRANS_PROVIDER:deepl}
+    provider: ${TRANS_PROVIDER:disabled}
     deepl:
       api-key: ${DEEPL_API_KEY:}
       base-url: ${DEEPL_BASE_URL:https://api-free.deepl.com}

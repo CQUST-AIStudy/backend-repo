@@ -12,6 +12,9 @@ public class DeepLConfig {
     if ("mock".equalsIgnoreCase(translationProps.provider())) {
       return new MockDeepLClient();
     }
+    if ("disabled".equalsIgnoreCase(translationProps.provider())) {
+      return new DisabledDeepLClient();
+    }
     if (!"deepl".equalsIgnoreCase(translationProps.provider())) {
       throw new IllegalStateException("Unsupported translation provider: " + translationProps.provider());
     }
@@ -21,16 +24,13 @@ public class DeepLConfig {
     }
 
     String key = props.apiKey();
-    if (key == null || key.isBlank()) {
-      key = System.getenv("DEEPL_API_KEY");
-    }
     String baseUrl = props.baseUrl();
     if (baseUrl == null || baseUrl.isBlank()) {
       baseUrl = System.getenv().getOrDefault("DEEPL_BASE_URL", "https://api-free.deepl.com");
     }
 
     if (key == null || key.isBlank()) {
-      throw new IllegalStateException("TRANS_PROVIDER=deepl but DEEPL_API_KEY is empty");
+      return new DisabledDeepLClient();
     }
 
     RestClient restClient = RestClient.builder().baseUrl(baseUrl).build();

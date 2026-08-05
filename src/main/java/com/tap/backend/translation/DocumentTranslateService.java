@@ -48,6 +48,9 @@ public class DocumentTranslateService {
 
   @Transactional
   public TranslateResult translateTextMode(long userId, long docId, String targetLang, boolean force) {
+    if (!deepLClient.isEnabled()) {
+      throw new IllegalStateException("翻译功能未启用");
+    }
     DocumentEntity doc = documentRepository.findByIdAndUser_Id(docId, userId)
         .orElseThrow(() -> new IllegalArgumentException("document not found"));
     String tl = normalizeLang(targetLang);
