@@ -31,6 +31,7 @@ import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -122,8 +123,16 @@ public class GradingExportController {
         byte[] bytes = storageService.getBytes(report.getObjectKey());
         return ResponseEntity.ok()
                 .contentType(resolveMediaType(report))
-                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=" + resolveDownloadName(submission, report))
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        attachmentDisposition(resolveDownloadName(submission, report)))
                 .body(bytes);
+    }
+
+    static String attachmentDisposition(String filename) {
+        return ContentDisposition.attachment()
+                .filename(filename, StandardCharsets.UTF_8)
+                .build()
+                .toString();
     }
 
     @GetMapping("/evidence/{evidenceId}/image")
