@@ -915,7 +915,8 @@ public class ApiController {
                 if (!offeringIds.isEmpty()) {
                     StringBuilder codeSql = new StringBuilder(
                             "SELECT sps.offering_id, ap.problem_no, ap.title, apd.content, " +
-                                    "CAST(ap.sort_order AS SIGNED) AS sort_order, a.text_content " +
+                                    "CAST(ap.sort_order AS SIGNED) AS sort_order, a.text_content, " +
+                                    "CAST(ap.id AS SIGNED) AS problem_id " +
                                     "FROM student_problem_state sps " +
                                     "JOIN student_profile sp ON sp.id = sps.student_id " +
                                     "JOIN assignment_problem ap ON ap.id = sps.problem_id " +
@@ -953,6 +954,8 @@ public class ApiController {
                         p.put("problemTitle", title);
                         p.put("statementMd", statementMd);
                         p.put("code", codeText.trim());
+                        // assignment_problem.id：前端按题匹配 AI 错误分析 problemAnalyses 必需
+                        p.put("problemId", toLong(cr[6]));
                         problemsMap.computeIfAbsent(oid, k -> new ArrayList<>()).add(p);
 
                         // 兼容：仅非空代码拼入合并 code 字符串
@@ -1049,7 +1052,8 @@ public class ApiController {
                     StringBuilder enrichSql = new StringBuilder(
                             "SELECT ao.id AS offering_id, ap.problem_no, ap.title, " +
                             "COALESCE(apd.content, ap.statement_md) AS statement_md, " +
-                            "CAST(ap.sort_order AS SIGNED) AS sort_order " +
+                            "CAST(ap.sort_order AS SIGNED) AS sort_order, " +
+                            "CAST(ap.id AS SIGNED) AS problem_id " +
                             "FROM assignment_offering ao " +
                             "JOIN assignment_problem ap ON ap.offering_id = ao.id " +
                             "LEFT JOIN pta_problem_detail apd ON apd.problem_set_problem_id = ap.problem_no " +
@@ -1077,6 +1081,7 @@ public class ApiController {
                         info.put("problemNo", er[1] != null ? er[1].toString() : null);
                         info.put("problemTitle", er[2] != null ? er[2].toString() : null);
                         info.put("statementMd", er[3] != null ? er[3].toString() : null);
+                        info.put("problemId", toLong(er[5]));
                         dbProblemsMap.computeIfAbsent(oid, k -> new ArrayList<>()).add(info);
                     }
 
@@ -1103,6 +1108,9 @@ public class ApiController {
                             if (p.get("problemNo") == null || "".equals(p.get("problemNo"))) {
                                 p.put("problemNo", db.get("problemNo"));
                             }
+                            if (p.get("problemId") == null) {
+                                p.put("problemId", db.get("problemId"));
+                            }
                         }
                         // 如果 problems 数量不够 DB 的数量，补上缺少的
                         for (int i = problems.size(); i < dbList.size(); i++) {
@@ -1112,6 +1120,7 @@ public class ApiController {
                             newP.put("problemNo", dbList.get(i).get("problemNo"));
                             newP.put("problemTitle", dbList.get(i).get("problemTitle"));
                             newP.put("statementMd", dbList.get(i).get("statementMd"));
+                            newP.put("problemId", dbList.get(i).get("problemId"));
                             newP.put("testResults", null);
                             problems.add(newP);
                         }

@@ -184,7 +184,7 @@ public class ErrorAnalysisService {
             Map<String, Object> cached = getSyncCache(studentNo, experimentId, "error");
             if (cached != null && cacheCoversCurrentProblems(cached, problemRows)) {
                 logger.info("analyzeErrorFromDb: cache hit for student={}, experiment={}", studentNo, experimentId);
-                return normalizeErrorAnalysisResult(cached, null);
+                return normalizeErrorAnalysisResult(cached, loadAttemptsForNormalization(studentNo, experimentId));
             } else if (cached != null) {
                 logger.info("analyzeErrorFromDb: cached result does not cover current problems; rebuilding for student={}, experiment={}",
                         studentNo, experimentId);
@@ -1987,6 +1987,26 @@ public class ErrorAnalysisService {
             logger.warn("Failed to load current problem states for error analysis: student={}, experiment={}, error={}",
                     studentNo, experimentId, e.getMessage());
             return new ArrayList<>();
+        }
+    }
+
+    /**
+     * 缓存命中路径专用：重新加载提交记录，供 normalizeProblemAnalyses 按题回填
+     * （全 AC 题目 AI 不输出 problemAnalyses，若不回填前端会显示“没有可量化错误记录”）。
+     */
+    private List<StudentSubmissionAttempt> loadAttemptsForNormalization(String studentNo, int experimentId) {
+        try {
+            List<TeacherSubmissionProblemRow> rows = findProblemRowsForAnalysis(studentNo, experimentId);
+            List<StudentSubmissionAttempt> primary = teacherExperimentQueryDao
+                    .findSubmissionAttemptsForErrorAnalysis(studentNo, experimentId);
+            List<StudentSubmissionAttempt> attempts = primary == null ? new ArrayList<>() : new ArrayList<>(primary);
+            mergeRawAttempts(attempts, findRawAttemptsForAnalysis(studentNo, experimentId));
+            appendCurrentProblemStates(attempts, rows);
+            return attempts;
+        } catch (Exception e) {
+            logger.warn("Failed to load attempts for cached analysis normalization: student={}, experiment={}, error={}",
+                    studentNo, experimentId, e.getMessage());
+            return null;
         }
     }
 
