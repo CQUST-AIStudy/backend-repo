@@ -41,4 +41,13 @@ public interface AiErrorAnalysisReportDao {
             @Param("studentNo") String studentNo,
             @Param("experimentId") int experimentId,
             @Param("reportType") String reportType);
+
+    /**
+     * 删除学生在指定实验的某个类型且指定 analysisId 的报告（分题深度解析覆盖写入前清理）
+     */
+    int deleteByStudentExperimentTypeAndAnalysisId(
+            @Param("studentNo") String studentNo,
+            @Param("experimentId") int experimentId,
+            @Param("reportType") String reportType,
+            @Param("analysisId") String analysisId);
 }

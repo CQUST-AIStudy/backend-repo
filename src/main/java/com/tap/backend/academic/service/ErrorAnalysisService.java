@@ -56,6 +56,12 @@ public class ErrorAnalysisService {
     private static final int AI_ERROR_MAX_ERROR_MESSAGE_CHARS = 500;
     private static final int AI_ERROR_MAX_STATEMENT_CHARS = 1800;
     private static final int AI_ERROR_MAX_OUTPUT_TOKENS = 6000;
+    // 分题深度解析（按需单题调 AI，节省 token）
+    private static final String PROBLEM_DEEP_REPORT_TYPE = "ERROR_PROBLEM";
+    private static final int PROBLEM_DEEP_MAX_CODE_CHARS = 8000;
+    private static final int PROBLEM_DEEP_MAX_STATEMENT_CHARS = 4000;
+    private static final int PROBLEM_DEEP_MAX_OUTPUT_TOKENS = 6000;
+    private static final long PROBLEM_DEEP_CACHE_HOURS = 24;
 
     @Autowired
     private TeacherExperimentQueryDao teacherExperimentQueryDao;
@@ -178,9 +184,17 @@ public class ErrorAnalysisService {
      */
     public Map<String, Object> analyzeErrorFromDb(String studentNo, String studentName,
                                                    int experimentId, boolean forceRefresh) {
+        return analyzeErrorFromDb(studentNo, studentName, experimentId, forceRefresh, false);
+    }
+
+    /**
+     * @param skipAi true 时只返回提交快照与已存储的分题深度解析，不触发任何 AI 调用（节省 token，分题按需生成）
+     */
+    public Map<String, Object> analyzeErrorFromDb(String studentNo, String studentName,
+                                                   int experimentId, boolean forceRefresh, boolean skipAi) {
         List<TeacherSubmissionProblemRow> problemRows = findProblemRowsForAnalysis(studentNo, experimentId);
         // ── 缓存命中 ──
-        if (!forceRefresh) {
+        if (!forceRefresh && !skipAi) {
             Map<String, Object> cached = getSyncCache(studentNo, experimentId, "error");
             if (cached != null && cacheCoversCurrentProblems(cached, problemRows)) {
                 logger.info("analyzeErrorFromDb: cache hit for student={}, experiment={}", studentNo, experimentId);
@@ -191,36 +205,9 @@ public class ErrorAnalysisService {
             }
         }
 
-        List<StudentSubmissionAttempt> primaryAttempts = teacherExperimentQueryDao
-                .findSubmissionAttemptsForErrorAnalysis(studentNo, experimentId);
-        List<StudentSubmissionAttempt> attempts = primaryAttempts == null
-                ? new ArrayList<>() : new ArrayList<>(primaryAttempts);
-        List<StudentSubmissionAttempt> rawAttempts = findRawAttemptsForAnalysis(studentNo, experimentId);
-        mergeRawAttempts(attempts, rawAttempts);
-        appendCurrentProblemStates(attempts, problemRows);
-        // ── 通用优化：raw 数据中若代码含多题标记，拆分为每题独立提交 ──
-        if (attempts != null && !attempts.isEmpty()) {
-            String firstCode = attempts.get(0).getCode();
-            if (firstCode != null && firstCode.contains("第") && firstCode.contains("题")) {
-                String codeBlob = fetchCodeOnly(studentNo, experimentId);
-                if (codeBlob != null && !codeBlob.isBlank()) {
-                    List<String> chunks = splitCodePerProblem(codeBlob);
-                    if (chunks.size() > 1) {
-                        logger.info("analyzeErrorFromDb: split code blob into {} per-problem submissions for student={}, experiment={}",
-                                chunks.size(), studentNo, experimentId);
-                        attempts = buildAttemptsFromCode(codeBlob, experimentId);
-                    }
-                }
-            }
-        }
-        if (attempts == null || attempts.isEmpty()) {
-            // ── second fallback: student_code 表有代码但无判题记录 ──
-            String codeOnly = fetchCodeOnly(studentNo, experimentId);
-            if (codeOnly != null && !codeOnly.isBlank()) {
-                logger.info("analyzeErrorFromDb: code-only fallback for student={}, experiment={}",
-                        studentNo, experimentId);
-                attempts = buildAttemptsFromCode(codeOnly, experimentId);
-            }
+        List<StudentSubmissionAttempt> attempts = loadAnalysisAttempts(studentNo, experimentId);
+        if (skipAi) {
+            return buildSubmissionSnapshotResult(studentNo, experimentId, attempts);
         }
         if (attempts == null || attempts.isEmpty()) {
             logger.info("analyzeErrorFromDb: no submissions for student={}, experiment={}", studentNo, experimentId);
@@ -276,6 +263,363 @@ public class ErrorAnalysisService {
                     "ERROR", result);
         }
         return result;
+    }
+
+    // ==================== 分题按需深度解析（节省 token） ====================
+
+    /**
+     * 加载学生该实验的完整提交记录：
+     * primary → raw 合并 → 当前题目状态补齐 → 多题代码拆分 → code-only 兜底。
+     */
+    private List<StudentSubmissionAttempt> loadAnalysisAttempts(String studentNo, int experimentId) {
+        List<TeacherSubmissionProblemRow> problemRows = findProblemRowsForAnalysis(studentNo, experimentId);
+        List<StudentSubmissionAttempt> primaryAttempts = teacherExperimentQueryDao
+                .findSubmissionAttemptsForErrorAnalysis(studentNo, experimentId);
+        List<StudentSubmissionAttempt> attempts = primaryAttempts == null
+                ? new ArrayList<>() : new ArrayList<>(primaryAttempts);
+        mergeRawAttempts(attempts, findRawAttemptsForAnalysis(studentNo, experimentId));
+        appendCurrentProblemStates(attempts, problemRows);
+        // ── 通用优化：raw 数据中若代码含多题标记，拆分为每题独立提交 ──
+        if (!attempts.isEmpty()) {
+            String firstCode = attempts.get(0).getCode();
+            if (firstCode != null && firstCode.contains("第") && firstCode.contains("题")) {
+                String codeBlob = fetchCodeOnly(studentNo, experimentId);
+                if (codeBlob != null && !codeBlob.isBlank()) {
+                    List<String> chunks = splitCodePerProblem(codeBlob);
+                    if (chunks.size() > 1) {
+                        logger.info("loadAnalysisAttempts: split code blob into {} per-problem submissions for student={}, experiment={}",
+                                chunks.size(), studentNo, experimentId);
+                        attempts = buildAttemptsFromCode(codeBlob, experimentId);
+                    }
+                }
+            }
+        }
+        if (attempts.isEmpty()) {
+            // ── second fallback: student_code 表有代码但无判题记录 ──
+            String codeOnly = fetchCodeOnly(studentNo, experimentId);
+            if (codeOnly != null && !codeOnly.isBlank()) {
+                logger.info("loadAnalysisAttempts: code-only fallback for student={}, experiment={}",
+                        studentNo, experimentId);
+                attempts = buildAttemptsFromCode(codeOnly, experimentId);
+            }
+        }
+        return attempts;
+    }
+
+    /**
+     * 快照模式：不触发任何 AI 调用，只返回每题提交状态 + 已落库的分题深度解析，
+     * 供前端按题点击"生成深度解析"时再单独调 AI（节省 token）。
+     */
+    private Map<String, Object> buildSubmissionSnapshotResult(
+            String studentNo, int experimentId, List<StudentSubmissionAttempt> attempts) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("generationMode", "SNAPSHOT");
+        result.put("aiGenerated", false);
+        result.put("provider", "system");
+        result.put("overallAssessment", "已加载提交快照，可点击各题的\"生成AI深度解析\"按钮按需生成。");
+        result.put("errorCategories", new ArrayList<>());
+        result.put("learningSuggestions", new ArrayList<>());
+
+        List<Map<String, Object>> summaries = new ArrayList<>();
+        for (Map.Entry<Long, List<StudentSubmissionAttempt>> entry
+                : groupAttemptsByProblemId(attempts).entrySet()) {
+            List<StudentSubmissionAttempt> problemAttempts = entry.getValue();
+            StudentSubmissionAttempt latest = latestAttempt(problemAttempts);
+            Map<String, Object> summary = new LinkedHashMap<>();
+            summary.put("problemId", entry.getKey());
+            summary.put("problemTitle", resolveProblemTitle(problemAttempts));
+            summary.put("submissionCount", problemAttempts.size());
+            summary.put("latestCode", latest != null ? cleanCode(latest.getCode()) : null);
+            summary.put("latestJudgeStatus", latest != null
+                    ? normalizeJudgeStatus(latest.getJudgeStatus()) : null);
+            summary.put("generationMode", "SNAPSHOT");
+            summary.put("aiGenerated", false);
+            summary.put("provider", "system");
+            summaries.add(summary);
+        }
+        result.put("problemAnalyses", summaries);
+        result.put("problemDeepAnalyses", findStoredProblemDeepAnalyses(studentNo, experimentId));
+        StudentSubmissionAttempt overallLatest = attempts != null ? latestAttempt(attempts) : null;
+        result.put("latestCode", overallLatest != null ? cleanCode(overallLatest.getCode()) : null);
+        result.put("latestJudgeStatus", overallLatest != null
+                ? normalizeJudgeStatus(overallLatest.getJudgeStatus()) : null);
+        return result;
+    }
+
+    /**
+     * 单题深度解析：真实调用 AI 对题面 + 完整代码（带行号）+ 判题历史做详细解析。
+     * <ul>
+     *   <li>Redis 缓存 24h + DB 落库（reportType=ERROR_PROBLEM，analysisId=errprob-{problemId}）；</li>
+     *   <li>forceRefresh=true 时跳过缓存重新生成并覆盖落库；</li>
+     *   <li>AI 不可用时降级为规则分析；该题无代码时返回友好提示。</li>
+     * </ul>
+     */
+    public Map<String, Object> analyzeProblemDeep(String studentNo, String studentName,
+                                                  int experimentId, long problemId, boolean forceRefresh) {
+        if (!forceRefresh) {
+            Map<String, Object> cached = getProblemDeepCache(studentNo, experimentId, problemId);
+            if (cached != null) {
+                logger.info("analyzeProblemDeep: cache hit student={}, experiment={}, problem={}",
+                        studentNo, experimentId, problemId);
+                return cached;
+            }
+            Map<String, Object> stored = findStoredProblemDeepAnalyses(studentNo, experimentId).get(problemId);
+            if (stored != null && hasUsableProblemDeepAnalysis(stored)) {
+                putProblemDeepCache(studentNo, experimentId, problemId, stored);
+                return stored;
+            }
+        }
+
+        List<StudentSubmissionAttempt> attempts = loadAnalysisAttempts(studentNo, experimentId);
+        List<StudentSubmissionAttempt> problemAttempts = attempts.stream()
+                .filter(a -> a != null && a.getProblemId() != null && a.getProblemId() == problemId)
+                .collect(Collectors.toList());
+        StudentSubmissionAttempt latest = latestAttempt(problemAttempts);
+        String latestCode = latest != null ? cleanCode(latest.getCode()) : "";
+        if (latestCode == null || latestCode.isBlank()) {
+            Map<String, Object> empty = new LinkedHashMap<>();
+            empty.put("problemId", problemId);
+            empty.put("problemTitle", resolveProblemTitle(problemAttempts));
+            empty.put("generationMode", "NO_CODE");
+            empty.put("aiGenerated", false);
+            empty.put("provider", "system");
+            empty.put("fallbackReason", "NO_CODE_FOR_PROBLEM");
+            empty.put("overallAssessment", "本题暂未找到可分析的代码，请先在PTA平台提交代码后再生成深度解析。");
+            return empty;
+        }
+
+        TeacherSubmissionProblemRow problemRow = findProblemRowForProblem(studentNo, experimentId, problemId);
+        String experimentName = resolveExperimentName(experimentId);
+        Map<String, Object> analysis = null;
+        boolean aiGenerated = false;
+        if (isRealAiProviderAvailable()) {
+            try {
+                String prompt = buildProblemDeepAnalysisPrompt(studentNo, studentName, experimentId,
+                        experimentName, problemId, problemRow, problemAttempts, latestCode);
+                String raw = aiProvider.chatJson(prompt, null, PROBLEM_DEEP_MAX_OUTPUT_TOKENS);
+                try {
+                    analysis = parseModelJsonObject(raw);
+                } catch (JsonProcessingException firstError) {
+                    logger.warn("analyzeProblemDeep: JSON incomplete, retrying compact: student={}, problem={}",
+                            studentNo, problemId);
+                    raw = aiProvider.chatJson(prompt + """
+
+                            请重新输出完整JSON，并压缩内容：detailedAnalysis不超过600个汉字，fixPlan与testCases各不超过4条，knowledgePoints不超过5条。
+                            """, null, PROBLEM_DEEP_MAX_OUTPUT_TOKENS);
+                    analysis = parseModelJsonObject(raw);
+                }
+                analysis = extractDataMap(analysis);
+                aiGenerated = analysis != null && hasUsableProblemDeepAnalysis(analysis);
+            } catch (Exception e) {
+                logger.warn("analyzeProblemDeep: AI provider failed: student={}, problem={}, error={}",
+                        studentNo, problemId, e.getMessage());
+                analysis = null;
+            }
+        }
+        if (!aiGenerated) {
+            logger.warn("analyzeProblemDeep: falling back to rule analysis: student={}, problem={}",
+                    studentNo, problemId);
+            analysis = buildRuleProblemAnalysis(problemId, problemAttempts);
+        }
+
+        // ── 回填元数据（前端展示与落库） ──
+        analysis.put("problemId", problemId);
+        analysis.putIfAbsent("problemTitle", resolveProblemTitle(problemAttempts));
+        analysis.putIfAbsent("severity", "MEDIUM");
+        analysis.put("latestCode", latestCode);
+        analysis.put("latestJudgeStatus", latest.getJudgeStatus() != null
+                ? normalizeJudgeStatus(latest.getJudgeStatus()) : null);
+        if (aiGenerated) {
+            analysis.put("generationMode", "AI_MODEL");
+            analysis.put("aiGenerated", true);
+            analysis.put("provider", aiProvider.name());
+            analysis.put("model", aiProvider.model());
+        }
+        normalizeErrorCategories(analysis);
+
+        saveProblemDeepReport(studentNo, experimentId, experimentName, problemId, analysis);
+        putProblemDeepCache(studentNo, experimentId, problemId, analysis);
+        logger.info("analyzeProblemDeep completed: student={}, experiment={}, problem={}, aiGenerated={}",
+                studentNo, experimentId, problemId, aiGenerated);
+        return analysis;
+    }
+
+    private TeacherSubmissionProblemRow findProblemRowForProblem(
+            String studentNo, int experimentId, long problemId) {
+        for (TeacherSubmissionProblemRow row : findProblemRowsForAnalysis(studentNo, experimentId)) {
+            if (row != null && row.getProblemId() != null && row.getProblemId() == problemId) {
+                return row;
+            }
+        }
+        return null;
+    }
+
+    /** 读取已落库的分题深度解析（reportType=ERROR_PROBLEM），按 problemId 组 map。 */
+    @SuppressWarnings("unchecked")
+    private Map<Long, Map<String, Object>> findStoredProblemDeepAnalyses(
+            String studentNo, int experimentId) {
+        Map<Long, Map<String, Object>> byProblem = new LinkedHashMap<>();
+        try {
+            List<AiErrorAnalysisReport> reports = reportDao.findByStudentAndExperiment(studentNo, experimentId);
+            if (reports == null) return byProblem;
+            for (AiErrorAnalysisReport report : reports) {
+                if (report == null || !PROBLEM_DEEP_REPORT_TYPE.equals(report.getReportType())) continue;
+                String rawJson = report.getRawResponseJson();
+                if (rawJson == null || rawJson.isBlank()) continue;
+                Map<String, Object> data;
+                try {
+                    data = extractDataMap(objectMapper.readValue(rawJson, Map.class));
+                } catch (Exception e) {
+                    logger.debug("Skip unreadable stored problem deep report: analysisId={}",
+                            report.getAnalysisId());
+                    continue;
+                }
+                if (data == null || data.isEmpty()) continue;
+                Long problemId = parseProblemId(data.get("problemId"));
+                if (problemId == null) continue;
+                byProblem.put(problemId, data);
+            }
+        } catch (Exception e) {
+            logger.warn("Failed to load stored problem deep analyses: student={}, experiment={}, error={}",
+                    studentNo, experimentId, e.getMessage());
+        }
+        return byProblem;
+    }
+
+    /** 分题深度解析落库：先删同题旧记录再写入（analysisId = errprob-{problemId}）。 */
+    private void saveProblemDeepReport(String studentNo, int experimentId, String experimentName,
+                                       long problemId, Map<String, Object> analysis) {
+        try {
+            String analysisId = "errprob-" + problemId;
+            analysis.put("analysisId", analysisId);
+            Map<String, Object> wrapper = new LinkedHashMap<>();
+            wrapper.put("data", analysis);
+            reportDao.deleteByStudentExperimentTypeAndAnalysisId(
+                    studentNo, experimentId, PROBLEM_DEEP_REPORT_TYPE, analysisId);
+            saveReport(studentNo, experimentId, experimentName, PROBLEM_DEEP_REPORT_TYPE, wrapper);
+        } catch (Exception e) {
+            logger.warn("Failed to save problem deep report: student={}, experiment={}, problem={}, error={}",
+                    studentNo, experimentId, problemId, e.getMessage());
+        }
+    }
+
+    private String problemDeepCacheKey(String studentNo, int experimentId, long problemId) {
+        return REDIS_SYNC_KEY_PREFIX + studentNo + ":" + experimentId + ":error:problem:" + problemId;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> getProblemDeepCache(String studentNo, int experimentId, long problemId) {
+        if (redisTemplate == null) return null;
+        try {
+            String json = redisTemplate.opsForValue()
+                    .get(problemDeepCacheKey(studentNo, experimentId, problemId));
+            if (json == null || json.isEmpty()) return null;
+            return objectMapper.readValue(json, Map.class);
+        } catch (Exception e) {
+            logger.debug("Problem deep cache miss: {}/{}/{}", studentNo, experimentId, problemId);
+            return null;
+        }
+    }
+
+    private void putProblemDeepCache(String studentNo, int experimentId, long problemId,
+                                     Map<String, Object> analysis) {
+        if (redisTemplate == null || analysis == null || analysis.isEmpty()) return;
+        try {
+            redisTemplate.opsForValue().set(problemDeepCacheKey(studentNo, experimentId, problemId),
+                    objectMapper.writeValueAsString(analysis),
+                    PROBLEM_DEEP_CACHE_HOURS, TimeUnit.HOURS);
+        } catch (Exception e) {
+            logger.warn("Problem deep cache write failed: {}", e.getMessage());
+        }
+    }
+
+    private boolean hasUsableProblemDeepAnalysis(Map<String, Object> analysis) {
+        if (analysis == null || analysis.isEmpty()) return false;
+        String overall = safeString(analysis.get("overallAssessment"), "").trim();
+        String detailed = safeString(analysis.get("detailedAnalysis"), "").trim();
+        return overall.length() >= 10 || detailed.length() >= 20;
+    }
+
+    /** 构建单题深度解析 prompt：题面 + 判题历史 + 带行号完整代码。 */
+    private String buildProblemDeepAnalysisPrompt(
+            String studentNo, String studentName, int experimentId, String experimentName,
+            long problemId,
+            TeacherSubmissionProblemRow problemRow,
+            List<StudentSubmissionAttempt> problemAttempts,
+            String latestCode) {
+        StringBuilder history = new StringBuilder();
+        int index = 1;
+        for (StudentSubmissionAttempt attempt : problemAttempts) {
+            if (attempt == null) continue;
+            history.append(index++).append(". 状态=")
+                    .append(normalizeJudgeStatus(attempt.getJudgeStatus()));
+            if (attempt.getScore() != null) {
+                history.append(" 得分=").append(attempt.getScore());
+            }
+            String errorMessage = buildErrorMessage(attempt);
+            if (errorMessage != null && !errorMessage.isBlank()) {
+                history.append(" 错误信息=").append(limitText(errorMessage, 400));
+            }
+            history.append('\n');
+        }
+        String statement = problemRow != null
+                ? limitText(safeString(problemRow.getStatementMd(), ""), PROBLEM_DEEP_MAX_STATEMENT_CHARS)
+                : "";
+        String problemTitle = problemRow != null
+                ? safeString(problemRow.getProblemTitle(), "")
+                : resolveProblemTitle(problemAttempts);
+        return """
+                你是高校程序设计课程的资深助教。请针对下面这一道题，结合真实题面、学生完整代码和真实判题历史，做一次深入、具体的解析。禁止编造测试数据、期望输出或分数。
+
+                分析要求：
+                1. problemUnderstanding：用2~4句概括题目的核心要求、输入输出格式与关键约束/边界条件。
+                2. approachReview：点评学生代码的整体思路与算法是否正确、是否满足题目复杂度要求，指出思路层面的优缺点。
+                3. detailedAnalysis：深入分析代码（必须引用具体行号或表达式），涵盖：正确性（逻辑与题面要求是否一致）、边界与异常输入处理、复杂度、代码风格与潜在隐患；若存在失败判题记录，必须结合错误信息定位根因：能由错误信息直接证明时用"已确认："开头，否则用"待验证："开头并写明缺少的证据与最小验证方法。若全部通过，则分析代码质量、潜在风险与可优化点。
+                4. fixPlan：按顺序给出2~5条可执行的改进步骤（至少1条代码级修改）；全部通过时可给优化建议。
+                5. testCases：给出2~4个学生可自行验证的测试用例（输入+预期输出+验证目的），不得编造OJ官方测试点。
+                6. knowledgePoints：本题涉及的2~5个知识点。
+                7. learningSuggestions：1~3条，含priority/topic/reason/suggestedResources。
+                8. overallAssessment：不超过200个汉字，总结本题完成质量与下一步重点。
+
+                输出必须是严格 JSON，不要 Markdown 代码块，不要解释。JSON schema：
+                {
+                  "severity": "HIGH|MEDIUM|LOW",
+                  "overallAssessment": "...",
+                  "problemUnderstanding": "...",
+                  "approachReview": "...",
+                  "detailedAnalysis": "...(600~1000个汉字，引用行号，分点论述)",
+                  "errorCategories": [
+                    {"type": "COMPILE_ERROR|RUNTIME_ERROR|WRONG_ANSWER|TIME_LIMIT_EXCEEDED|MEMORY_LIMIT_EXCEEDED|SEGMENTATION_FAULT|UNKNOWN", "count": 1, "isSystemic": false, "rootCause": "...", "specificIssues": ["..."], "suggestions": ["..."]}
+                  ],
+                  "fixPlan": ["..."],
+                  "testCases": [{"input": "...", "expectedOutput": "...", "purpose": "..."}],
+                  "knowledgePoints": ["..."],
+                  "learningSuggestions": [
+                    {"priority": "HIGH|MEDIUM|LOW", "topic": "...", "reason": "...", "suggestedResources": "..."}
+                  ]
+                }
+
+                学生：%s（%s）
+                实验：%s（%d）
+                题目：%s（problemId=%d）
+                题面（Markdown）：
+                %s
+
+                判题历史（按提交顺序）：
+                %s
+
+                学生最新完整代码（带行号）：
+                %s
+                """.formatted(
+                safeString(studentName, studentNo),
+                safeString(studentNo, ""),
+                safeString(experimentName, "实验" + experimentId),
+                experimentId,
+                safeString(problemTitle, "题目" + problemId),
+                problemId,
+                statement.isBlank() ? "（未获取到题面，请仅基于代码与判题历史分析）" : statement,
+                history.length() == 0 ? "（无判题记录）" : history.toString().trim(),
+                limitText(withLineNumbers(latestCode), PROBLEM_DEEP_MAX_CODE_CHARS));
     }
 
     public Map<String, Object> learningSuggestFromDb(String studentNo, String studentName, int experimentId) {

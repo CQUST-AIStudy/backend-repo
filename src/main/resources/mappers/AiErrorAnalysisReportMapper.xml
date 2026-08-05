@@ -66,4 +66,10 @@
           AND report_type = #{reportType}
     </delete>
 
+    <delete id="deleteByStudentExperimentTypeAndAnalysisId">
+        DELETE FROM ai_error_analysis_report
+        WHERE student_no = #{studentNo} AND experiment_id = #{experimentId}
+          AND report_type = #{reportType} AND analysis_id = #{analysisId}
+    </delete>
+
 </mapper>

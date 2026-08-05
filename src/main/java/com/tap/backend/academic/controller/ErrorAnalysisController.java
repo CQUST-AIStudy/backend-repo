@@ -188,6 +188,49 @@ public class ErrorAnalysisController {
         }
     }
 
+    /**
+     * 分题深度解析：只对单题真实调用 AI（题面+完整代码+判题历史），按需生成、节省 token。
+     * payload: experimentId, problemId, forceRefresh
+     */
+    @PostMapping("/error/problem")
+    public ResponseEntity<Map<String, Object>> analyzeProblemError(
+            @RequestBody Map<String, Object> payload,
+            HttpServletRequest request) {
+        try {
+            String studentId = studentSessionResolver.requireStudentId(request);
+            String studentName = resolveStudentName(request);
+            Integer experimentId = getExperimentId(payload);
+            Object rawProblemId = payload != null ? payload.get("problemId") : null;
+            Long problemId = parseLongOrNull(rawProblemId);
+            if (experimentId == null || problemId == null) {
+                Map<String, Object> err = new HashMap<>();
+                err.put("success", false);
+                err.put("message", "experimentId and problemId are required");
+                return ResponseEntity.badRequest().body(err);
+            }
+            boolean forceRefresh = Boolean.TRUE.equals(payload.get("forceRefresh"));
+            Map<String, Object> analysis = errorAnalysisService.analyzeProblemDeep(
+                    studentId, studentName, experimentId, problemId, forceRefresh);
+            return successResponse(analysis);
+        } catch (Exception e) {
+            logger.error("analyzeProblemError failed: payload={}", payload, e);
+            Map<String, Object> result = new HashMap<>();
+            result.put("success", false);
+            result.put("message", "分题深度解析失败，请稍后重试");
+            return ResponseEntity.internalServerError().body(result);
+        }
+    }
+
+    private Long parseLongOrNull(Object value) {
+        if (value instanceof Number number) return number.longValue();
+        if (value == null) return null;
+        try {
+            return Long.valueOf(String.valueOf(value).trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
     @PostMapping("/warning")
     public ResponseEntity<Map<String, Object>> warningAnalyze(
             @RequestBody Map<String, Object> payload,
@@ -208,8 +251,9 @@ public class ErrorAnalysisController {
             boolean forceRefresh = Boolean.TRUE.equals(payload.get("forceRefresh"));
 
             if ("error".equals(type) && experimentId != null) {
+                boolean skipAi = Boolean.TRUE.equals(payload.get("skipAi"));
                 responseBody = errorAnalysisService.analyzeErrorFromDb(
-                        studentId, studentName, experimentId, forceRefresh);
+                        studentId, studentName, experimentId, forceRefresh, skipAi);
                 return successResponse(responseBody);
             }
 
