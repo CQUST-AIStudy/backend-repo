@@ -141,6 +141,16 @@ public class LeetCodeRecommendController {
             return ResponseEntity.ok(response);
         } catch (ResponseStatusException e) {
             return error(e.getStatusCode(), e.getReason());
+        } catch (IllegalStateException e) {
+            // 推荐微服务（8003）不可用/调用失败时优雅降级：返回空列表而非 500，
+            // 避免学生端每次进入页面都报服务端错误
+            logger.warn("Recommendation service unavailable, returning empty list: {}", e.getMessage());
+            Map<String, Object> response = successBody();
+            response.put("items", List.of());
+            response.put("itemCount", 0);
+            response.put("serviceAvailable", false);
+            response.put("message", "recommendation service temporarily unavailable");
+            return ResponseEntity.ok(response);
         } catch (Exception e) {
             logger.error("Failed to generate sync recommendation", e);
             return error(HttpStatus.INTERNAL_SERVER_ERROR, "failed to generate recommendation: " + e.getMessage());
