@@ -26,7 +26,7 @@ public class StudentSessionResolver {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "student role required");
         }
 
-        String studentId = resolveStudentNo(user);
+        String studentId = firstNonBlank(user.getUsernum(), user.getUsername());
         if (studentId == null) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "student id missing");
         }
@@ -35,6 +35,49 @@ public class StudentSessionResolver {
 
     public String requireStudentId(HttpServletRequest request) {
         return resolveStudentNo(requireStudent(request));
+    }
+
+    public Integer requireStudentProfileId(HttpServletRequest request) {
+        UserEntity user = requireStudent(request);
+        String studentId = firstNonBlank(user.getUsernum(), user.getUsername());
+        @SuppressWarnings("unchecked")
+        List<Object> matchedProfileIds = em.createNativeQuery(
+                "SELECT id FROM student_profile " +
+                        "WHERE user_id = ?1 OR student_no = ?2 OR CAST(id AS CHAR) = ?2 " +
+                        "ORDER BY CASE WHEN user_id = ?1 THEN 0 WHEN student_no = ?2 THEN 1 ELSE 2 END LIMIT 1"
+        ).setParameter(1, user.getId() > 0 ? user.getId() : null)
+                .setParameter(2, studentId)
+                .getResultList();
+        if (matchedProfileIds.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "student profile missing");
+        }
+
+        Object profileId = matchedProfileIds.get(0);
+        if (profileId instanceof Number number) {
+            return number.intValue();
+        }
+        try {
+            return Integer.valueOf(String.valueOf(profileId));
+        } catch (NumberFormatException e) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "invalid student profile id");
+        }
+    }
+
+    public void requireActiveClassMembership(Integer studentProfileId, Long classId) {
+        if (studentProfileId == null || studentProfileId <= 0 || classId == null || classId <= 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "class id is invalid");
+        }
+        Number membershipCount = (Number) em.createNativeQuery(
+                "SELECT COUNT(*) FROM class_member cm " +
+                        "JOIN teaching_class tc ON tc.id = cm.class_id " +
+                        "WHERE cm.student_id = ?1 AND cm.class_id = ?2 " +
+                        "AND cm.member_status = 'ACTIVE' AND (tc.status IS NULL OR tc.status = 'ACTIVE')"
+        ).setParameter(1, studentProfileId)
+                .setParameter(2, classId)
+                .getSingleResult();
+        if (membershipCount == null || membershipCount.longValue() <= 0) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "student is not in this class");
+        }
     }
 
     public String requireAuthorizedStudentId(String requestedStudentId, HttpServletRequest request) {

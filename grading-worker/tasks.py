@@ -104,9 +104,9 @@ from pipeline.progress_reporter import publish_progress
 
 
 
-DEFAULT_SCORE_RANGE_MIN = 75.0
+DEFAULT_SCORE_RANGE_MIN = 0.0
 
-DEFAULT_SCORE_RANGE_MAX = 99.0
+DEFAULT_SCORE_RANGE_MAX = 100.0
 
 
 
@@ -1071,27 +1071,16 @@ def process_submission(self, task_message_json: str):
 
         score_guidance = msg.customPrompt
 
-        effective_score_range_min = msg.scoreRangeMin if msg.scoreRangeMin is not None else DEFAULT_SCORE_RANGE_MIN
-
-        effective_score_range_max = msg.scoreRangeMax if msg.scoreRangeMax is not None else DEFAULT_SCORE_RANGE_MAX
-
-        range_hint = (
-
-            f"Overall score calibration hint: the teacher expects most submissions in this batch "
-
-            f"to fall around {effective_score_range_min:.0f}-{effective_score_range_max:.0f} / 100. "
-
-            f"Use this only as a reference and do not force every dimension to match it. "
-
-            f"Focus on knowledge mastery, experiment reasoning, result analysis, and problem solving. "
-
-            f"If the report contains sections such as 实验目的, 上机要求, 实验要求, or 实验内容, treat them as the concrete experiment targets and assess whether the student actually completed them. "
-
-            f"Do not mainly deduct points for formatting, experiment environment, or Python version unless the rubric explicitly requires them."
-
-        )
-
-        score_guidance = f"{score_guidance}\n\n{range_hint}" if score_guidance else range_hint
+        if msg.scoreRangeMin is not None and msg.scoreRangeMax is not None:
+            range_hint = (
+                f"Overall score calibration hint: the teacher expects most submissions in this batch "
+                f"to fall around {msg.scoreRangeMin:.0f}-{msg.scoreRangeMax:.0f} / 100. "
+                f"Use this only as a reference and do not force every dimension to match it. "
+                f"Focus on knowledge mastery, experiment reasoning, result analysis, and problem solving. "
+                f"If the report contains sections such as 实验目的, 上机要求, 实验要求, or 实验内容, treat them as the concrete experiment targets and assess whether the student actually completed them. "
+                f"Do not mainly deduct points for formatting, experiment environment, or Python version unless the rubric explicitly requires them."
+            )
+            score_guidance = f"{score_guidance}\n\n{range_hint}" if score_guidance else range_hint
 
         if code_issue_section:
             score_guidance = f"{score_guidance}\n{code_issue_section}"

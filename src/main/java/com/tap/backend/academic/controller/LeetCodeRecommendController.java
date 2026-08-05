@@ -11,6 +11,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
@@ -37,6 +38,9 @@ public class LeetCodeRecommendController {
     private final StudentSessionResolver studentSessionResolver;
     private final LegacySessionAccessResolver legacySessionAccessResolver;
 
+    @Value("${tap.leetcode.dataset-path}")
+    private String leetCodeDatasetPath;
+
     public LeetCodeRecommendController(
             @Qualifier("intelligentRecommendationService") LeetCodeRecommendationService recommendationService,
             LeetCodeSyncService syncService,
@@ -52,12 +56,13 @@ public class LeetCodeRecommendController {
     public ResponseEntity<Map<String, Object>> generateRecommendation(
             @RequestParam(defaultValue = "20") Integer limit,
             @RequestParam(defaultValue = "default") String scene,
+            @RequestParam(required = false) Long classId,
             @RequestParam(required = false) Integer studentId,
             HttpServletRequest request) {
         try {
             Integer currentStudentId = requireCurrentStudentId(studentId, request);
             int validatedLimit = validateLimit(limit);
-            String validatedScene = normalizeScene(scene);
+            String validatedScene = resolveScene(scene, classId, currentStudentId);
             logger.info("Generate recommendation request studentId={} limit={} scene={}",
                     currentStudentId, validatedLimit, validatedScene);
 
@@ -117,14 +122,18 @@ public class LeetCodeRecommendController {
     @GetMapping("/sync")
     public ResponseEntity<Map<String, Object>> generateRecommendationSync(
             @RequestParam(defaultValue = "20") Integer limit,
+            @RequestParam(required = false) Long classId,
             @RequestParam(required = false) Integer studentId,
             HttpServletRequest request) {
         try {
             Integer currentStudentId = requireCurrentStudentId(studentId, request);
             int validatedLimit = validateLimit(limit);
-            logger.info("Generate sync recommendation request studentId={} limit={}", currentStudentId, validatedLimit);
+            String scene = resolveScene("default", classId, currentStudentId);
+            logger.info("Generate sync recommendation request studentId={} limit={} scene={}",
+                    currentStudentId, validatedLimit, scene);
 
-            List<LeetCodeRecommendItem> items = recommendationService.generateRecommendationSync(currentStudentId, validatedLimit);
+            List<LeetCodeRecommendItem> items = recommendationService.generateRecommendationSync(
+                    currentStudentId, validatedLimit, scene);
             Map<String, Object> response = successBody();
             response.put("items", items);
             response.put("itemCount", items.size());
@@ -180,8 +189,7 @@ public class LeetCodeRecommendController {
         try {
             requireAdmin(request);
             logger.info("Start LeetCode dataset sync");
-            String jsonFilePath = "datasets/leetcode/solutions_cleaned.json";
-            int syncCount = syncService.syncProblemsFromJson(jsonFilePath);
+            int syncCount = syncService.syncProblemsFromJson(leetCodeDatasetPath);
 
             Map<String, Object> response = successBody();
             response.put("syncCount", syncCount);
@@ -212,8 +220,7 @@ public class LeetCodeRecommendController {
     }
 
     private Integer requireCurrentStudentId(Integer requestedStudentId, HttpServletRequest request) {
-        String sessionStudentId = studentSessionResolver.requireStudentId(request);
-        Integer currentStudentId = parseStudentId(sessionStudentId);
+        Integer currentStudentId = studentSessionResolver.requireStudentProfileId(request);
         if (requestedStudentId != null && !requestedStudentId.equals(currentStudentId)) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "forbidden");
         }
@@ -258,20 +265,20 @@ public class LeetCodeRecommendController {
         return normalized == null ? "default" : normalized;
     }
 
+    private String resolveScene(String scene, Long classId, Integer studentProfileId) {
+        if (classId == null) {
+            return normalizeScene(scene);
+        }
+        studentSessionResolver.requireActiveClassMembership(studentProfileId, classId);
+        return "class:" + classId;
+    }
+
     private String requireText(String value, String fieldName) {
         String normalized = normalizeOptional(value);
         if (normalized == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, fieldName + " is required");
         }
         return normalized;
-    }
-
-    private Integer parseStudentId(String value) {
-        try {
-            return Integer.valueOf(value);
-        } catch (NumberFormatException e) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "invalid student id");
-        }
     }
 
     private Map<String, Object> successBody() {

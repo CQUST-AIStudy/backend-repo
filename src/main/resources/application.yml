@@ -1,19 +1,16 @@
 # Spring 顶层配置
 spring:
   mail:
-    host: smtp.qq.com
-    port: 587
-    username: ${MAIL_USERNAME:}
-    password: ${MAIL_PASSWORD:}
+    host: ${TAP_MAIL_HOST:${MAIL_HOST:localhost}}
+    port: ${TAP_MAIL_PORT:${MAIL_PORT:25}}
+    username: ${TAP_MAIL_USERNAME:${MAIL_USERNAME:}}
+    password: ${TAP_MAIL_PASSWORD:${MAIL_PASSWORD:}}
     properties:
       mail:
         smtp:
           auth: true
           starttls:
             enable: true
-  # 外部配置导入，optional 不存在文件不会报错
-  config:
-    import: optional:classpath:application-local.yml
   # 应用名称
   application:
     name: teaching-assistant-backend
@@ -64,8 +61,9 @@ spring:
   # Redis 缓存配置
   data:
     redis:
-      host: ${REDIS_HOST:localhost}
+      host: ${REDIS_HOST:127.0.0.1}
       port: ${REDIS_PORT:6379}
+      username: ${REDIS_USERNAME:}
       password: ${REDIS_PASSWORD:}
       lettuce:
         pool:
@@ -122,7 +120,7 @@ logging:
 
 # Tomcat Web服务容器配置
 server:
-  port: 8081
+  port: ${SERVER_PORT:8081}
   servlet:
     encoding:
       charset: UTF-8
@@ -203,10 +201,10 @@ tap:
   security:
     jwt:
       issuer: ${JWT_ISSUER:tap}
-      secret: ${JWT_SECRET:local_dev_only_jwt_secret_change_me_1234567890}
+      secret: ${JWT_SECRET:}
       access-token-ttl-seconds: ${JWT_TTL_SECONDS:3600}
     pta-credentials:
-      secret: ${PTA_CREDENTIALS_SECRET:${JWT_SECRET:local_dev_only_jwt_secret_change_me_1234567890}}
+      secret: ${PTA_CREDENTIALS_SECRET:}
   # 接口调用配额限制
   quota:
     translation-chars-per-day: ${QUOTA_TRANSLATION_CHARS_PER_DAY:200000}
@@ -214,7 +212,7 @@ tap:
     admin-unlimited: ${QUOTA_ADMIN_UNLIMITED:true}
   # AI大模型多厂商配置
   ai:
-    provider: ${AI_PROVIDER:mock}
+    provider: ${AI_PROVIDER:disabled}
     openai:
       base-url: ${OPENAI_BASE_URL:https://api.deepseek.com/v1}
       api-key: ${OPENAI_API_KEY:}
@@ -278,16 +276,25 @@ tap:
   # MinIO 对象存储
   storage:
     s3:
-      endpoint: ${MINIO_ENDPOINT:http://121.43.152.73:9000}
-      access-key: ${MINIO_ACCESS_KEY:root}
+      endpoint: ${MINIO_ENDPOINT:http://127.0.0.1:9000}
+      access-key: ${MINIO_ACCESS_KEY:minioadmin}
       secret-key: ${MINIO_SECRET_KEY:}
       bucket: ${MINIO_BUCKET:tap-files}
+  recommendation:
+    base-url: ${RECOMMENDATION_SERVICE_BASE_URL:http://127.0.0.1:8003}
+    connect-timeout-ms: ${RECOMMENDATION_SERVICE_CONNECT_TIMEOUT_MS:3000}
+    read-timeout-ms: ${RECOMMENDATION_SERVICE_READ_TIMEOUT_MS:10000}
+  error-analysis:
+    base-url: ${TAP_ERROR_ANALYSIS_BASE_URL:http://127.0.0.1:8002}
   # RAG 检索增强知识库全套配置
   rag:
     maintenance-mode: ${RAG_MAINTENANCE_MODE:false}
     proxy:
       # RAG 服务地址（RagProxyService 转发用，容器部署时通过 RAG_SERVICE_BASE_URL 覆盖）
       base-url: ${RAG_SERVICE_BASE_URL:http://127.0.0.1:8001}
+      connect-timeout-ms: ${RAG_SERVICE_CONNECT_TIMEOUT_MS:10000}
+      read-timeout-ms: ${RAG_SERVICE_READ_TIMEOUT_MS:300000}
+      stream-read-timeout-ms: ${RAG_SERVICE_STREAM_READ_TIMEOUT_MS:0}
     langchain4j:
       enabled: ${RAG_LANGCHAIN4J_ENABLED:false}
       use-streaming: ${RAG_LANGCHAIN4J_USE_STREAMING:true}
@@ -347,6 +354,11 @@ tap:
       index-path: ${LUCENE_INDEX_PATH:./data/lucene-index}
   # 作业导出批量并发
   grading:
+    worker:
+      base-url: ${GRADING_WORKER_BASE_URL:http://127.0.0.1:8004}
+      connect-timeout-ms: ${GRADING_WORKER_CONNECT_TIMEOUT_MS:10000}
+      read-timeout-ms: ${GRADING_WORKER_READ_TIMEOUT_MS:120000}
+    libreoffice-executable: ${LIBREOFFICE_EXECUTABLE:}
     export:
       max-concurrency: ${GRADING_EXPORT_MAX_CONCURRENCY:6}
       submit-interval-ms: ${GRADING_EXPORT_SUBMIT_INTERVAL_MS:30}
@@ -360,10 +372,13 @@ tap:
     # 错误演示执行前 LLM 补强：缺 main/宏时让大模型补可执行代码（补宏、生成真实调用学生函数的 main）
     demo:
       llm-code-prep-enabled: ${GRADING_DEMO_LLM_CODE_PREP_ENABLED:true}
+  leetcode:
+    dataset-path: ${LEETCODE_DATASET_PATH:datasets/leetcode/solutions_cleaned.json}
 
 # PTA爬虫微服务对接配置
 pta:
   spider-url: ${PTA_SPIDER_URL:http://127.0.0.1:8100}
+  problem-set-base-url: ${PTA_PROBLEM_SET_BASE_URL:https://pintia.cn/problem-sets}
   connect-timeout-ms: ${PTA_SPIDER_CONNECT_TIMEOUT_MS:5000}
   read-timeout-ms: ${PTA_SPIDER_READ_TIMEOUT_MS:20000}
   scheduler:
@@ -375,12 +390,3 @@ pta:
   auto-stop: ${PTA_SPIDER_AUTO_STOP:true}
   stop-script: ${PTA_SPIDER_STOP_SCRIPT:../services/pta_spider/stop_spider_api.ps1}
   stop-timeout-seconds: ${PTA_SPIDER_STOP_TIMEOUT_SECONDS:12}
-
-# 【报错修复提示】当前配置缺少 spring.mail 邮件模块配置
-# EmailService 使用了 ${spring.mail.username} 占位符，此处未定义导致启动失败
-# 解决方案二选一：
-# 1. 补充完整mail配置到spring节点下
-
-
-# 2. 修改 @Value("${spring.mail.username:}") 增加空默认值避免启动崩溃
-# 3. 临时注释掉EmailService的@Service注解，不实例化邮件Bean

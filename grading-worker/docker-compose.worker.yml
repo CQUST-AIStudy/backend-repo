@@ -8,30 +8,30 @@ services:
     restart: unless-stopped
     command: ["python", "-u", "run_worker.py"]
     environment: &worker-env
-      TZ: Asia/Shanghai
-      REDIS_HOST: 1Panel-redis-4SUW
-      REDIS_PORT: "6379"
-      REDIS_USERNAME: default
+      TZ: ${TZ:-Asia/Shanghai}
+      REDIS_HOST: ${REDIS_HOST:?REDIS_HOST is required}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_USERNAME: ${REDIS_USERNAME:-}
       REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
-      DB_HOST: 1Panel-mysql-kzG5
-      DB_PORT: "3306"
-      DB_NAME: ptadatabase
-      DB_USERNAME: root
+      DB_HOST: ${DB_HOST:?DB_HOST is required}
+      DB_PORT: ${DB_PORT:-3306}
+      DB_NAME: ${DB_NAME:-ptadatabase}
+      DB_USERNAME: ${DB_USERNAME:?DB_USERNAME is required}
       DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
-      MINIO_ENDPOINT: http://1Panel-minio-6CAm:9000
+      MINIO_ENDPOINT: ${MINIO_ENDPOINT:?MINIO_ENDPOINT is required}
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
-      MINIO_BUCKET: tap-files
+      MINIO_BUCKET: ${MINIO_BUCKET:-tap-files}
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?DASHSCOPE_API_KEY is required}
-      GRADING_AI_PROVIDER: qwen
-      GRADING_MODEL: qwen-plus-latest
+      GRADING_AI_PROVIDER: ${GRADING_AI_PROVIDER:-qwen}
+      GRADING_MODEL: ${GRADING_MODEL:-qwen-plus-latest}
       # 该账号对 -latest 快照版 VLM 无权限(403 access_denied)，改用稳定版
-      QWEN_VLM_MODEL: qwen-vl-max
-      OCR_STRATEGY: vlm_only
-      USE_VLM_UNIFIED_ANALYSIS: "true"
-      CELERY_CONCURRENCY: "3"
-      CELERY_POOL: threads
-      DIMENSION_SCORE_CONCURRENCY: "1"
+      QWEN_VLM_MODEL: ${QWEN_VLM_MODEL:-qwen-vl-max}
+      OCR_STRATEGY: ${OCR_STRATEGY:-vlm_only}
+      USE_VLM_UNIFIED_ANALYSIS: ${USE_VLM_UNIFIED_ANALYSIS:-true}
+      CELERY_CONCURRENCY: ${CELERY_CONCURRENCY:-3}
+      CELERY_POOL: ${CELERY_POOL:-threads}
+      DIMENSION_SCORE_CONCURRENCY: ${DIMENSION_SCORE_CONCURRENCY:-1}
     networks:
       - cqst-backend-network
 
@@ -46,6 +46,18 @@ services:
     networks:
       - cqst-backend-network
 
+  grading-api:
+    image: grading-worker:latest
+    container_name: grading-api
+    restart: unless-stopped
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8004"]
+    environment: *worker-env
+    ports:
+      - "${GRADING_API_PORT:-8004}:8004"
+    networks:
+      - cqst-backend-network
+
 networks:
   cqst-backend-network:
+    name: ${GRADING_NETWORK_NAME:-cqst-backend-network}
     external: true

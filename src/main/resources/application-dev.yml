@@ -16,6 +16,12 @@ tap:
   security:
     jwt:
       secret: ${JWT_SECRET:dev_only_jwt_secret_not_for_production_use_1234567890}
+    pta-credentials:
+      secret: ${PTA_CREDENTIALS_SECRET:dev_only_pta_credentials_secret_not_for_production}
+  ai:
+    provider: ${AI_PROVIDER:mock}
+  translation:
+    provider: ${TRANS_PROVIDER:mock}
 
 pta:
   auto-start: ${PTA_SPIDER_AUTO_START:true}

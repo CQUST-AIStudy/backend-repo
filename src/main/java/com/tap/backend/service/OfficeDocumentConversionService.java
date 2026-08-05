@@ -7,6 +7,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Locale;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -18,6 +19,12 @@ public class OfficeDocumentConversionService {
             "C:\\Program Files\\LibreOffice 7.5\\program\\soffice.exe",
             "C:\\Program Files\\LibreOffice 7.6\\program\\soffice.exe"
     };
+    private final String configuredExecutable;
+
+    public OfficeDocumentConversionService(
+            @Value("${tap.grading.libreoffice-executable:}") String configuredExecutable) {
+        this.configuredExecutable = configuredExecutable == null ? "" : configuredExecutable.trim();
+    }
 
     public byte[] convertWordToPdf(String originalFilename, byte[] sourceBytes) {
         if (sourceBytes == null || sourceBytes.length == 0) {
@@ -97,6 +104,9 @@ public class OfficeDocumentConversionService {
     }
 
     private String getLibreOfficePath() {
+        if (!configuredExecutable.isBlank()) {
+            return configuredExecutable;
+        }
         String osName = System.getProperty("os.name").toLowerCase(Locale.ROOT);
         if (osName.contains("win")) {
             Path path = Path.of(LIBREOFFICE_WIN_PATH);

@@ -84,10 +84,11 @@ public class IntelligentRecommendationServiceImpl implements LeetCodeRecommendat
     }
 
     @Override
-    public List<LeetCodeRecommendItem> generateRecommendationSync(Integer studentId, Integer limit) {
+    public List<LeetCodeRecommendItem> generateRecommendationSync(Integer studentId, Integer limit, String scene) {
         Map<String, Object> payload = new HashMap<>();
         payload.put("studentId", requireStudentId(studentId));
         payload.put("limit", normalizeLimit(limit));
+        payload.put("scene", normalizeScene(scene));
 
         Map<String, Object> data = postForData("/ai/recommendation/sync", payload);
         return mapItems(asMapList(data.get("items")), asString(data.get("requestId")));

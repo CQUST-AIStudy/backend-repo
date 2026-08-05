@@ -9,9 +9,15 @@ import org.springframework.web.client.RestClient;
 public class DeepLConfig {
   @Bean
   public DeepLClient deepLClient(TranslationProperties translationProps, ObjectMapper objectMapper) {
+    if ("mock".equalsIgnoreCase(translationProps.provider())) {
+      return new MockDeepLClient();
+    }
+    if (!"deepl".equalsIgnoreCase(translationProps.provider())) {
+      throw new IllegalStateException("Unsupported translation provider: " + translationProps.provider());
+    }
     DeepLProperties props = translationProps.deepl();
     if (props == null) {
-      return new MockDeepLClient();
+      throw new IllegalStateException("DeepL configuration is missing");
     }
 
     String key = props.apiKey();
@@ -24,7 +30,7 @@ public class DeepLConfig {
     }
 
     if (key == null || key.isBlank()) {
-      return new MockDeepLClient();
+      throw new IllegalStateException("TRANS_PROVIDER=deepl but DEEPL_API_KEY is empty");
     }
 
     RestClient restClient = RestClient.builder().baseUrl(baseUrl).build();

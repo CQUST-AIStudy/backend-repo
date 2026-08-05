@@ -460,12 +460,6 @@ public class ExperimentAnalyticsController {
         double bottomAvg = toDouble(row[9]);
         double fullScore = toDouble(row[10]);
 
-        if (fullScore <= 0 && maxScore > 0) {
-            fullScore = maxScore;
-        }
-        if (fullScore <= 0 && totalStudents > 0) {
-            fullScore = 100.0;
-        }
         if (totalStudents == 0) {
             fullScore = queryFullScore(experimentId);
         }
@@ -481,8 +475,8 @@ public class ExperimentAnalyticsController {
         overview.put("topAvg", round2(topAvg));
         overview.put("bottomAvg", round2(bottomAvg));
         overview.put("fullScore", round2(fullScore));
-        overview.put("difficulty", fullScore > 0 ? round2(1.0 - avgScore / fullScore) : 0);
-        overview.put("discrimination", fullScore > 0 ? round2((topAvg - bottomAvg) / fullScore) : 0);
+        overview.put("difficulty", fullScore > 0 ? round2(1.0 - avgScore / fullScore) : null);
+        overview.put("discrimination", fullScore > 0 ? round2((topAvg - bottomAvg) / fullScore) : null);
         return overview;
     }
 
@@ -550,55 +544,57 @@ public class ExperimentAnalyticsController {
             overview.put("submittedCount", toInt(row[2]));
             overview.put("scoredCount", toInt(row[3]));
             overview.put("totalStudents", toLong(row[4]));
-            double maxScore = toDouble(row[5]);
             double avgScore = toDouble(row[6]);
             double topAvg = toDouble(row[7]);
             double bottomAvg = toDouble(row[8]);
             double fullScore = toDouble(row[9]);
-            if (fullScore <= 0 && maxScore > 0) {
-                fullScore = maxScore;
-            }
-            if (fullScore <= 0 && toLong(row[4]) > 0) {
-                fullScore = 100.0;
-            }
             if (fullScore <= 0) {
                 fullScore = queryFullScore(experimentId);
             }
             overview.put("avgScore", round2(avgScore));
-            overview.put("difficulty", fullScore > 0 ? round2(1.0 - avgScore / fullScore) : 0);
-            overview.put("discrimination", fullScore > 0 ? round2((topAvg - bottomAvg) / fullScore) : 0);
+            overview.put("difficulty", fullScore > 0 ? round2(1.0 - avgScore / fullScore) : null);
+            overview.put("discrimination", fullScore > 0 ? round2((topAvg - bottomAvg) / fullScore) : null);
             result.put(experimentId, overview);
         }
         return result;
     }
 
     private Map<String, Object> computeScoreDistribution(int experimentId) {
-        @SuppressWarnings("unchecked")
-        List<Object[]> rows = em.createNativeQuery(
-                "SELECT " +
-                        "  SUM(CASE WHEN score = 100 THEN 1 ELSE 0 END), " +
-                        "  SUM(CASE WHEN score >= 90 AND score < 100 THEN 1 ELSE 0 END), " +
-                        "  SUM(CASE WHEN score >= 80 AND score < 90 THEN 1 ELSE 0 END), " +
-                        "  SUM(CASE WHEN score >= 70 AND score < 80 THEN 1 ELSE 0 END), " +
-                        "  SUM(CASE WHEN score >= 60 AND score < 70 THEN 1 ELSE 0 END), " +
-                        "  SUM(CASE WHEN score >= 50 AND score < 60 THEN 1 ELSE 0 END), " +
-                        "  SUM(CASE WHEN score >= 40 AND score < 50 THEN 1 ELSE 0 END), " +
-                        "  SUM(CASE WHEN score >= 30 AND score < 40 THEN 1 ELSE 0 END), " +
-                        "  SUM(CASE WHEN score >= 20 AND score < 30 THEN 1 ELSE 0 END), " +
-                        "  SUM(CASE WHEN score >= 10 AND score < 20 THEN 1 ELSE 0 END), " +
-                        "  SUM(CASE WHEN score >= 0 AND score < 10 THEN 1 ELSE 0 END) " +
-                        "FROM (" +
-                        "  SELECT COALESCE(sa.best_total_score, sa.latest_total_score, 0) AS score " +
-                        "  FROM student_assignment sa " +
-                        "  WHERE sa.offering_id = ?1" +
-                        ") scored"
-        ).setParameter(1, experimentId).getResultList();
-
+        double fullScore = queryFullScore(experimentId);
         Map<String, Object> dist = new LinkedHashMap<>();
         String[] labels = {
                 "[100,100]", "[90,100)", "[80,90)", "[70,80)", "[60,70)",
                 "[50,60)", "[40,50)", "[30,40)", "[20,30)", "[10,20)", "[0,10)"
         };
+        if (fullScore <= 0) {
+            for (String label : labels) {
+                dist.put(label, 0);
+            }
+            return dist;
+        }
+        @SuppressWarnings("unchecked")
+        List<Object[]> rows = em.createNativeQuery(
+                "SELECT " +
+                        "  SUM(CASE WHEN score_pct >= 100 THEN 1 ELSE 0 END), " +
+                        "  SUM(CASE WHEN score_pct >= 90 AND score_pct < 100 THEN 1 ELSE 0 END), " +
+                        "  SUM(CASE WHEN score_pct >= 80 AND score_pct < 90 THEN 1 ELSE 0 END), " +
+                        "  SUM(CASE WHEN score_pct >= 70 AND score_pct < 80 THEN 1 ELSE 0 END), " +
+                        "  SUM(CASE WHEN score_pct >= 60 AND score_pct < 70 THEN 1 ELSE 0 END), " +
+                        "  SUM(CASE WHEN score_pct >= 50 AND score_pct < 60 THEN 1 ELSE 0 END), " +
+                        "  SUM(CASE WHEN score_pct >= 40 AND score_pct < 50 THEN 1 ELSE 0 END), " +
+                        "  SUM(CASE WHEN score_pct >= 30 AND score_pct < 40 THEN 1 ELSE 0 END), " +
+                        "  SUM(CASE WHEN score_pct >= 20 AND score_pct < 30 THEN 1 ELSE 0 END), " +
+                        "  SUM(CASE WHEN score_pct >= 10 AND score_pct < 20 THEN 1 ELSE 0 END), " +
+                        "  SUM(CASE WHEN score_pct >= 0 AND score_pct < 10 THEN 1 ELSE 0 END) " +
+                        "FROM (" +
+                        "  SELECT COALESCE(sa.best_total_score, sa.latest_total_score, 0) / ?2 * 100 AS score_pct " +
+                        "  FROM student_assignment sa " +
+                        "  WHERE sa.offering_id = ?1" +
+                        ") scored"
+        ).setParameter(1, experimentId)
+                .setParameter(2, fullScore)
+                .getResultList();
+
         if (!rows.isEmpty() && rows.get(0) != null) {
             Object[] row = rows.get(0);
             for (int i = 0; i < labels.length; i++) {

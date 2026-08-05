@@ -21,8 +21,12 @@ public class AesGcmTextEncryptor {
   private final SecureRandom secureRandom = new SecureRandom();
 
   public AesGcmTextEncryptor(
-      @Value("${tap.security.pta-credentials.secret:${JWT_SECRET:local_dev_only_pta_credentials_secret_change_me_1234567890}}")
+      @Value("${tap.security.pta-credentials.secret:}")
       String secret) {
+    if (secret == null || secret.length() < 32) {
+      throw new IllegalStateException(
+          "PTA_CREDENTIALS_SECRET must be an independent random string of at least 32 characters");
+    }
     this.secretKey = new SecretKeySpec(deriveKey(secret), "AES");
   }
 
@@ -75,7 +79,7 @@ public class AesGcmTextEncryptor {
   private byte[] deriveKey(String secret) {
     try {
       MessageDigest digest = MessageDigest.getInstance("SHA-256");
-      return digest.digest((secret == null ? "" : secret).getBytes(StandardCharsets.UTF_8));
+      return digest.digest(secret.getBytes(StandardCharsets.UTF_8));
     } catch (Exception e) {
       throw new IllegalStateException("failed to derive encryption key", e);
     }

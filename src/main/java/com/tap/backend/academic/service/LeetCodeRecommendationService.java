@@ -37,9 +37,10 @@ public interface LeetCodeRecommendationService {
      * 同步生成推荐（用于兼容旧接口）
      * @param studentId 学生ID
      * @param limit 推荐数量限制
+     * @param scene 推荐场景
      * @return 推荐题目列表
      */
-    List<LeetCodeRecommendItem> generateRecommendationSync(Integer studentId, Integer limit);
+    List<LeetCodeRecommendItem> generateRecommendationSync(Integer studentId, Integer limit, String scene);
 
     /**
      * 记录推荐反馈

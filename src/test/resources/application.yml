@@ -34,7 +34,7 @@ tap:
       secret: test_jwt_secret_that_is_long_enough_for_hmac_signing
       access-token-ttl-seconds: 3600
     pta-credentials:
-      secret: test_pta_credentials_secret
+      secret: test_pta_credentials_secret_at_least_32_chars
   quota:
     translation-chars-per-day: 200000
     ai-requests-per-day: 200

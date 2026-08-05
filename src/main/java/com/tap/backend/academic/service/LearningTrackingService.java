@@ -11,6 +11,7 @@ import jakarta.persistence.PersistenceContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Value;
 
 import java.math.BigDecimal;
 import java.sql.Timestamp;
@@ -29,6 +30,9 @@ public class LearningTrackingService {
 
     private final LeetCodeSubmissionRecordDao submissionRecordDao;
     private final LeetCodeRecommendDao recommendDao;
+
+    @Value("${pta.problem-set-base-url}")
+    private String ptaProblemSetBaseUrl;
 
     public LearningTrackingService(
             LeetCodeSubmissionRecordDao submissionRecordDao,
@@ -74,7 +78,7 @@ public class LearningTrackingService {
             List<Object[]> rows = em.createNativeQuery(
                     "SELECT ao.id, COALESCE(NULLIF(ao.title_override, ''), at.title) AS title, " +
                             "sa.accepted_problem_count, sa.submitted_problem_count, sa.problem_count, " +
-                            "sa.best_total_score, sa.submission_status " +
+                             "sa.best_total_score, sa.submission_status, ao.pta_problem_set_id " +
                             "FROM student_profile sp " +
                             "JOIN student_assignment sa ON sa.student_id = sp.id " +
                             "JOIN assignment_offering ao ON ao.id = sa.offering_id " +
@@ -93,7 +97,10 @@ public class LearningTrackingService {
                 s.setProblemCount(toInt(row[4]));
                 s.setScore(toDouble(row[5]));
                 s.setStatus(mapSubmissionStatus(toStringVal(row[6])));
-                s.setSourceUrl("https://pintia.cn/problem-sets/" + s.getOfferingId());
+                String ptaProblemSetId = toStringVal(row[7]);
+                s.setSourceUrl(ptaProblemSetId == null || ptaProblemSetId.isBlank()
+                        ? null
+                        : ptaProblemSetBaseUrl.replaceAll("/+$", "") + "/" + ptaProblemSetId);
                 result.add(s);
             }
         } catch (Exception e) {

@@ -112,14 +112,26 @@ public class ProfileController {
     }
 
     @GetMapping("/skilltree")
-    public ResponseEntity<Map<String, Object>> getSkillTree() {
-        Map<String, Object> tree = profileService.getSkillTreeConfig();
+    public ResponseEntity<Map<String, Object>> getSkillTree(
+            @RequestParam Long classId,
+            HttpServletRequest request) {
+        UserEntity user = legacySessionAccessResolver.requireAuthenticated(request);
+        if ("student".equalsIgnoreCase(user.getRole())) {
+            Integer studentProfileId = studentSessionResolver.requireStudentProfileId(request);
+            studentSessionResolver.requireActiveClassMembership(studentProfileId, classId);
+        } else if ("teacher".equalsIgnoreCase(user.getRole())) {
+            teachingClassService.getClassForTeacher(classId, (long) user.getId());
+        } else if (!"admin".equalsIgnoreCase(user.getRole())) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.FORBIDDEN, "forbidden");
+        }
+        Map<String, Object> tree = profileService.getSkillTreeConfig(classId);
         return ResponseEntity.ok(tree);
     }
 
     @GetMapping("/skill-states")
     public ResponseEntity<Map<String, Object>> getSkillStates(HttpServletRequest request) {
-        String studentId = studentSessionResolver.requireStudentId(request);
+        Integer studentId = studentSessionResolver.requireStudentProfileId(request);
         try {
             String url = recommendationBaseUrl.replaceAll("/+$", "") + "/ai/profile/" + studentId;
             HttpHeaders headers = new HttpHeaders();

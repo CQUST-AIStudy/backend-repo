@@ -1391,27 +1391,41 @@ public class ProfileService {
 
     // ========== 技能树接口 ==========
 
-    @Cacheable(value = "skillTree")
-    public Map<String, Object> getSkillTreeConfig() {
+    @Cacheable(value = "skillTree", key = "#classId")
+    public Map<String, Object> getSkillTreeConfig(Long classId) {
         Map<String, Object> result = new LinkedHashMap<>();
+        Map<Long, String> dimensionsByOffering = loadOfferingDimensions(classId);
+        @SuppressWarnings("unchecked")
+        List<Object[]> offerings = em.createNativeQuery("""
+                SELECT ao.id, COALESCE(NULLIF(TRIM(ao.title_override), ''), at.title)
+                FROM assignment_offering ao
+                JOIN assignment_template at ON at.id = ao.template_id
+                WHERE ao.class_id = :classId AND ao.status IN ('PUBLISHED','CLOSED')
+                ORDER BY COALESCE(ao.seq_no, 999999), ao.id
+                """).setParameter("classId", classId).getResultList();
+        Map<String, List<Map<String, Object>>> grouped = new LinkedHashMap<>();
+        for (Object[] offering : offerings) {
+            long offeringId = asLong(offering[0]);
+            String dimension = dimensionsByOffering.getOrDefault(
+                    offeringId, DimensionClassifier.FALLBACK_DIMENSION);
+            Map<String, Object> child = new LinkedHashMap<>();
+            child.put("experimentId", offeringId);
+            child.put("name", textOr(offering[1], "未命名实验"));
+            grouped.computeIfAbsent(dimension, ignored -> new ArrayList<>()).add(child);
+        }
+
         List<Map<String, Object>> tree = new ArrayList<>();
-        for (var entry : skillTreeConfig.getDimensions().entrySet()) {
+        for (var entry : grouped.entrySet()) {
             Map<String, Object> node = new LinkedHashMap<>();
             node.put("dimension", entry.getKey());
-            node.put("description", skillTreeConfig.getDescriptions().get(entry.getKey()));
-            List<Map<String, Object>> children = new ArrayList<>();
-            for (int eid : entry.getValue()) {
-                children.add(Map.of(
-                        "experimentId", eid,
-                        "name", skillTreeConfig.getExperimentName(eid)
-                ));
-            }
-            node.put("experiments", children);
+            node.put("description", skillTreeConfig.getDescriptions().getOrDefault(
+                    entry.getKey(), entry.getKey()));
+            node.put("experiments", entry.getValue());
             tree.add(node);
         }
         result.put("skillTree", tree);
-        result.put("totalDimensions", skillTreeConfig.getDimensions().size());
-        result.put("totalExperiments", skillTreeConfig.getExperimentNames().size());
+        result.put("totalDimensions", grouped.size());
+        result.put("totalExperiments", offerings.size());
         return result;
     }
 }

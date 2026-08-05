@@ -63,7 +63,8 @@ public class LeetCodeController {
             problemData.put("problemText", problem.getProblemText());
             problemData.put("solutionText", problem.getSolutionText());
             problemData.put("estimatedMinutes", problem.getEstimatedMinutes());
-            problemData.put("sampleTestCases", generateSampleTestCases());
+            problemData.put("sampleTestCases", List.of());
+            problemData.put("samplesAvailable", false);
 
             response.put("success", true);
             response.put("data", problemData);
@@ -249,7 +250,4 @@ public class LeetCodeController {
         }
     }
 
-    private String[] generateSampleTestCases() {
-        return new String[]{"sample input 1", "sample input 2"};
-    }
 }

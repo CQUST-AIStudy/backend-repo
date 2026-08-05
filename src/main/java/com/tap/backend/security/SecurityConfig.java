@@ -25,7 +25,7 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 @Configuration
 @EnableMethodSecurity
 public class SecurityConfig {
-  @Value("${CORS_ALLOWED_ORIGIN_PATTERNS:http://localhost:*,http://127.0.0.1:*,http://172.21.11.128:8080,http://47.108.176.134:8090}")
+  @Value("${CORS_ALLOWED_ORIGIN_PATTERNS:http://localhost:*,http://127.0.0.1:*}")
   private String corsAllowedOriginPatterns;
 
   private static final String[] TAP_API_MATCHERS = {

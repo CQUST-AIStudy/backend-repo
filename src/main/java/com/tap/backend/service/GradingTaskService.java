@@ -40,8 +40,6 @@ public class GradingTaskService {
     private static final int MAX_BATCH_SIZE = 200;
     private static final String QUEUE_KEY = "grading:tasks";
     private static final byte[] PDF_MAGIC = {0x25, 0x50, 0x44, 0x46}; // %PDF
-    private static final java.math.BigDecimal DEFAULT_SCORE_RANGE_MIN = new java.math.BigDecimal("75");
-    private static final java.math.BigDecimal DEFAULT_SCORE_RANGE_MAX = new java.math.BigDecimal("99");
 
     private final GradingTaskRepository taskRepo;
     private final GradingBatchRepository batchRepo;
@@ -813,7 +811,7 @@ public class GradingTaskService {
 
     private ScoreRange resolveScoreRange(java.math.BigDecimal scoreRangeMin, java.math.BigDecimal scoreRangeMax) {
         if (scoreRangeMin == null && scoreRangeMax == null) {
-            return new ScoreRange(DEFAULT_SCORE_RANGE_MIN, DEFAULT_SCORE_RANGE_MAX);
+            return new ScoreRange(null, null);
         }
         return new ScoreRange(scoreRangeMin, scoreRangeMax);
     }

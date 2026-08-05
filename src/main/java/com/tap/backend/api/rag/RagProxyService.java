@@ -220,8 +220,8 @@ public class RagProxyService {
     }
 
     private String trimTrailingSlash(String value) {
-        if (value == null) {
-            return "http://127.0.0.1:8001";
+        if (value == null || value.isBlank()) {
+            throw new IllegalStateException("RAG_SERVICE_BASE_URL is required");
         }
         String trimmed = value.trim();
         if (trimmed.endsWith("/")) {

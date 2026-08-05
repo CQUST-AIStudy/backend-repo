@@ -22,7 +22,7 @@ ENV TZ=Asia/Shanghai \
 # 批注 PDF 的手写体签字/分数依赖中文楷体：fonts-arphic-ukai(AR PL UKai, 手写楷体)；
 # fonts-wqy-zenhei 兜底覆盖 UKai 缺失的少数字形，避免中文回退成英文 Score:/Teacher。
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends python3 gcc libc6-dev fonts-arphic-ukai fonts-wqy-zenhei \
+    && apt-get install -y --no-install-recommends python3 gcc libc6-dev libreoffice-writer fonts-arphic-ukai fonts-wqy-zenhei \
     && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd --system app \

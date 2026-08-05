@@ -86,6 +86,7 @@ public class StudentClassroomController {
         result.put("name", teachingClass.getName());
         result.put("classCode", teachingClass.getClassCode());
         result.put("grade", teachingClass.getGrade());
+        result.put("courseId", teachingClass.getCourseId());
         result.put("courseName", teachingClass.getCourseName());
         result.put("description", teachingClass.getDescription());
         result.put("teacherId", teachingClass.getTeacherId());

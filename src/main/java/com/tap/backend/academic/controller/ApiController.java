@@ -98,6 +98,9 @@ public class ApiController {
     @PersistenceContext
     private EntityManager em;
 
+    @Value("${pta.problem-set-base-url}")
+    private String ptaProblemSetBaseUrl;
+
     @Autowired
     @Qualifier("intelligentRecommendationService")
     private LeetCodeRecommendationService leetCodeRecommendationService;
@@ -428,16 +431,6 @@ public class ApiController {
         return Math.round(value * 100) / 100.0;
     }
 
-    private String buildDefaultReport(Experiment experiment) {
-        return "# " + experiment.getName() + "实验报告\n\n"
-                + "## 实验目的\n待补充。\n\n"
-                + "## 实验环境\n待补充。\n\n"
-                + "## 实验内容\n待补充。\n\n"
-                + "## 实验步骤\n待补充。\n\n"
-                + "## 实验结果\n待补充。\n\n"
-                + "## 实验总结\n待补充。";
-    }
-
     private String extractTeacherComment(String report) {
         if (report == null || report.isBlank()) {
             return null;
@@ -486,13 +479,13 @@ public class ApiController {
             Experiment experiment,
             int experimentId) {
         if (!submissionDetailLegacyReportFallbackEnabled) {
-            return buildDefaultReport(experiment);
+            return null;
         }
         Submission latestSubmission = resolveLatestSubmission(username, studentIdKey, experimentId);
         if (latestSubmission != null && latestSubmission.getReport() != null && !latestSubmission.getReport().isBlank()) {
             return latestSubmission.getReport();
         }
-        return buildDefaultReport(experiment);
+        return null;
     }
 
     private AIRemarks resolveLegacyAiRemarks(Integer studentId, int experimentId) {
@@ -730,32 +723,32 @@ public class ApiController {
 //                    experimentData.put("report", null);
 //                }
 
-                experimentData.put("report","示例报告11111111");
                 // 获取当前用户的提交信息
                 Submission latestSubmission = resolveLatestSubmission(currentUsername, studentId, experimentId);
                 String latestReport = latestSubmission != null && latestSubmission.getReport() != null
                         ? latestSubmission.getReport()
-                        : buildDefaultReport(experiment);
+                        : null;
                 experimentData.put("report", latestReport);
+                experimentData.put("reportStatus", latestReport == null ? "missing" : "submitted");
                 experimentData.put("teacherComment", extractTeacherComment(latestReport));
                 Score userScore = userScoresByExperimentId.get(experimentId);
 
                 if (userScore != null) {
-                    experimentData.put("status", "completed");
+                    experimentData.put("status", userScore.getStatus() == null
+                            ? "submitted" : userScore.getStatus());
                     experimentData.put("submitTime", userScore.getSubmit_time());
                     experimentData.put("score", userScore.getScore());
-                    // 计算平均查重率
-                    double avgPlagiarismRate = getPlagiarismRate(studentId, experimentId);
-                    avgPlagiarismRate = Math.round(avgPlagiarismRate * 100) / 100.0;
-                    experimentData.put("plagiarismRate", avgPlagiarismRate);
+                    experimentData.put("plagiarismRate", userScore.getPlagiarism_rate() == null
+                            ? null
+                            : Math.round(getPlagiarismRate(studentId, experimentId) * 100) / 100.0);
                 } else {
                     experimentData.put("status",
                             latestSubmission != null || (studentCode != null && !studentCode.isBlank())
                                     ? "submitted"
                                     : "not_started");
                     experimentData.put("submitTime", null);
-                    experimentData.put("score", 0);
-                    experimentData.put("plagiarismRate", 0.0);
+                    experimentData.put("score", null);
+                    experimentData.put("plagiarismRate", null);
                 }
 
                 experimentDataList.add(experimentData);
@@ -766,7 +759,7 @@ public class ApiController {
 
         } catch (Exception e) {
             e.printStackTrace();
-            response.put("success", true);
+            response.put("success", false);
             response.put("data", new ArrayList<>());
             response.put("source", "degraded_empty");
             response.put("message", "获取实验列表失败: " + e.getMessage());
@@ -1575,7 +1568,8 @@ public class ApiController {
                             "ao.deadline_at, at.description_md, ao.status, " +
                             "sa.submission_status, sa.first_submit_at, sa.last_submit_at, " +
                             "sa.accepted_problem_count, sa.submitted_problem_count, sa.problem_count, " +
-                            "sa.best_total_score, sa.latest_total_score, sp.student_no, sp.real_name, sp.id " +
+                            "sa.best_total_score, sa.latest_total_score, sp.student_no, sp.real_name, sp.id, " +
+                            "ao.pta_problem_set_id " +
                             "FROM student_profile sp " +
                             "JOIN class_member cm ON cm.student_id = sp.id AND cm.member_status = 'ACTIVE' " +
                             "JOIN teaching_class tc ON tc.id = cm.class_id " +
@@ -1713,7 +1707,10 @@ public class ApiController {
                 practice.put("problemCount", toInt(row[14]));
                 practice.put("score", roundTwoDecimals(score));
                 practice.put("studentProfileId", toLong(row[19]));
-                practice.put("sourceUrl", "https://pintia.cn/problem-sets/" + offeringId);
+                String ptaProblemSetId = toStringValue(row[20]);
+                practice.put("sourceUrl", ptaProblemSetId == null || ptaProblemSetId.isBlank()
+                        ? null
+                        : ptaProblemSetBaseUrl.replaceAll("/+$", "") + "/" + ptaProblemSetId);
                 practice.put("sourceLabel", "PTA");
                 practices.add(practice);
             }
@@ -2113,7 +2110,7 @@ public class ApiController {
             Date mergedSubmitTime = assignment.getSubmitTime();
             String mergedReport = latestSubmission != null && latestSubmission.getReport() != null
                     ? latestSubmission.getReport()
-                    : buildDefaultReport(experiment);
+                    : null;
 
             response.put("studentId", assignment.getStudentId());
             response.put("studentName", assignment.getStudentName());

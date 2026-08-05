@@ -159,13 +159,19 @@ public class LeetCodeAiEvaluationService {
         try {
             String normalized = extractJson(content.trim());
             JsonNode node = objectMapper.readTree(normalized);
+            if (!node.path("accepted").isBoolean()
+                    || !node.path("score").isNumber()
+                    || !node.path("confidence").isNumber()
+                    || !node.path("estimated_pass_rate").isNumber()) {
+                return unavailable("AI response is missing required evaluation fields.");
+            }
 
             AiEvaluationResult result = new AiEvaluationResult();
-            boolean accepted = node.path("accepted").asBoolean(false);
+            boolean accepted = node.path("accepted").asBoolean();
             result.setAccepted(accepted);
-            result.setScore(clampScore(node.path("score").asInt(accepted ? 85 : 55)));
-            result.setConfidence(clamp01(node.path("confidence").asDouble(accepted ? 0.8 : 0.6)));
-            result.setEstimatedPassRate(clamp01(node.path("estimated_pass_rate").asDouble(accepted ? 0.85 : 0.5)));
+            result.setScore(clampScore(node.path("score").asInt()));
+            result.setConfidence(clamp01(node.path("confidence").asDouble()));
+            result.setEstimatedPassRate(clamp01(node.path("estimated_pass_rate").asDouble()));
 
             String summary = node.path("summary").asText("");
             String feedback = node.path("feedback_markdown").asText("");

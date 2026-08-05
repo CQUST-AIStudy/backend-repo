@@ -37,9 +37,9 @@ services:
       JWT_ISSUER: ${JWT_ISSUER:-tap}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
       JWT_TTL_SECONDS: ${JWT_TTL_SECONDS:-3600}
-      PTA_CREDENTIALS_SECRET: ${PTA_CREDENTIALS_SECRET:-${JWT_SECRET}}
+      PTA_CREDENTIALS_SECRET: ${PTA_CREDENTIALS_SECRET:?PTA_CREDENTIALS_SECRET is required}
 
-      AI_PROVIDER: ${AI_PROVIDER:-mock}
+      AI_PROVIDER: ${AI_PROVIDER:?AI_PROVIDER is required}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.deepseek.com/v1}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-deepseek-chat}
@@ -57,7 +57,11 @@ services:
       TAP_FRONTEND_BASE_URL: ${TAP_FRONTEND_BASE_URL:-http://localhost:5173}
 
       RAG_SERVICE_BASE_URL: ${RAG_SERVICE_BASE_URL:-http://host.docker.internal:8001}
+      GRADING_WORKER_BASE_URL: ${GRADING_WORKER_BASE_URL:-http://host.docker.internal:8004}
+      LIBREOFFICE_EXECUTABLE: ${LIBREOFFICE_EXECUTABLE:-soffice}
+      LEETCODE_DATASET_PATH: ${LEETCODE_DATASET_PATH:-/app/data/leetcode/solutions_cleaned.json}
       PTA_SPIDER_URL: ${PTA_SPIDER_URL:-http://host.docker.internal:8100}
+      PTA_PROBLEM_SET_BASE_URL: ${PTA_PROBLEM_SET_BASE_URL:-https://pintia.cn/problem-sets}
       PTA_SPIDER_AUTO_START: ${PTA_SPIDER_AUTO_START:-false}
       RECOMMENDATION_SERVICE_BASE_URL: ${RECOMMENDATION_SERVICE_BASE_URL:-http://host.docker.internal:8003}
       TAP_ERROR_ANALYSIS_BASE_URL: ${TAP_ERROR_ANALYSIS_BASE_URL:-http://host.docker.internal:8002}

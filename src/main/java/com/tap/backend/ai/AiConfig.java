@@ -19,7 +19,7 @@ public class AiConfig {
 
     @Bean
     public AiProvider aiProvider(AiProperties props, ObjectMapper objectMapper) {
-        String provider = props.provider() == null ? "mock" : props.provider().trim().toLowerCase();
+        String provider = props.provider() == null ? "" : props.provider().trim().toLowerCase();
         if ("openai".equals(provider)) {
             AiProperties.OpenAi oa = props.openai();
             String apiKey = oa == null ? null : oa.apiKey();
@@ -63,7 +63,8 @@ public class AiConfig {
         if ("mock".equals(provider)) {
             return new MockAiProvider();
         }
-        throw new IllegalStateException("Unsupported tap.ai.provider: " + provider);
+        throw new IllegalStateException(
+            "Unsupported or disabled AI provider. Set AI_PROVIDER=openai or AI_PROVIDER=dashscope");
     }
 
     /**

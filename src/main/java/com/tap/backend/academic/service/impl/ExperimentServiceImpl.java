@@ -110,16 +110,15 @@ public class ExperimentServiceImpl implements ExperimentService {
                 score.setExperiment_id(experiment.getExperiment_id());
                 score.setNum(experiment.getNum());
                 score.setSubmit_time(new Date());
-                score.setStatus("completed");
-                score.setScore(0);
-                score.setPlagiarism_rate("0.0");
+                score.setStatus("pending_grading");
+                score.setScore(null);
+                score.setPlagiarism_rate(null);
                 scoreDao.saveScore(score);
             } else {
                 score.setSubmit_time(new Date());
-                score.setStatus("completed");
-                if (score.getPlagiarism_rate() == null) {
-                    score.setPlagiarism_rate("0.0");
-                }
+                score.setStatus("pending_grading");
+                score.setScore(null);
+                score.setPlagiarism_rate(null);
                 scoreDao.updateScore(score);
             }
 
@@ -155,8 +154,8 @@ public class ExperimentServiceImpl implements ExperimentService {
                 }
             } else {
                 experimentInfo.put("status", "not_started");
-                experimentInfo.put("score", 0);
-                experimentInfo.put("plagiarismRate", 0.0);
+                experimentInfo.put("score", null);
+                experimentInfo.put("plagiarismRate", null);
             }
 
             result.add(experimentInfo);
