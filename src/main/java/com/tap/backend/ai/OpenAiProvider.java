@@ -67,6 +67,19 @@ public class OpenAiProvider implements AiProvider {
 
   @Override
   public String chat(String userPrompt, String modelOverride) {
+    return chatInternal(userPrompt, modelOverride, null, false);
+  }
+
+  @Override
+  public String chatJson(String userPrompt, String modelOverride, int maxTokens) {
+    return chatInternal(userPrompt, modelOverride, Math.max(1, maxTokens), true);
+  }
+
+  private String chatInternal(
+      String userPrompt,
+      String modelOverride,
+      Integer maxTokens,
+      boolean jsonMode) {
     try {
       ObjectNode body = om.createObjectNode();
       body.put("model", modelOverride == null || modelOverride.isBlank() ? model : modelOverride);
@@ -75,6 +88,10 @@ public class OpenAiProvider implements AiProvider {
           msg("user", userPrompt)
       )));
       body.put("temperature", 0.3);
+      if (maxTokens != null) body.put("max_tokens", maxTokens);
+      if (jsonMode) {
+        body.set("response_format", om.createObjectNode().put("type", "json_object"));
+      }
       log.info("[AI] model={} prompt_len={}", body.get("model").asText(), userPrompt.length());
 
       String resp = restClient.post()
@@ -85,10 +102,22 @@ public class OpenAiProvider implements AiProvider {
           .body(String.class);
 
       JsonNode root = om.readTree(resp);
+      String finishReason = root.path("choices").path(0).path("finish_reason").asText();
+      if ("length".equalsIgnoreCase(finishReason)) {
+        log.warn("[AI] model={} reached output token limit; caller will validate whether JSON is complete",
+            body.get("model").asText());
+      }
       return root.path("choices").path(0).path("message").path("content").asText();
     } catch (Exception e) {
-      throw new IllegalStateException("openai call failed", e);
+      throw new IllegalStateException(
+          "openai call failed: " + e.getClass().getSimpleName() + ": " + safeErrorMessage(e), e);
     }
+  }
+
+  private String safeErrorMessage(Exception error) {
+    String message = error.getMessage();
+    if (message == null || message.isBlank()) return "no detail";
+    return message.replaceAll("(?i)Bearer\\s+[A-Za-z0-9._\\-]+", "Bearer [REDACTED]");
   }
 
   private String chat(String userPrompt) {

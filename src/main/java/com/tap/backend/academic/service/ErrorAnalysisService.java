@@ -7,6 +7,7 @@ import com.tap.backend.academic.dao.teacherexperiment.TeacherExperimentQueryDao;
 import com.tap.backend.academic.entity.AiErrorAnalysisReport;
 import com.tap.backend.academic.entity.Experiment;
 import com.tap.backend.academic.entity.StudentSubmissionAttempt;
+import com.tap.backend.academic.teacherexperiment.TeacherSubmissionProblemRow;
 import com.tap.backend.ai.AiProvider;
 import com.tap.backend.email.EmailService;
 import com.tap.backend.email.ExperimentWarningSummary;
@@ -50,9 +51,11 @@ public class ErrorAnalysisService {
     private static final long REDIS_TTL_HOURS = 24;
     private static final long REDIS_SYNC_TTL_HOURS = 1;
     private static final SimpleDateFormat ISO_FORMAT = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
-    private static final int AI_ERROR_MAX_ATTEMPTS = 8;
+    private static final int AI_ERROR_MAX_ATTEMPTS = 24;
     private static final int AI_ERROR_MAX_CODE_CHARS = 1200;
     private static final int AI_ERROR_MAX_ERROR_MESSAGE_CHARS = 500;
+    private static final int AI_ERROR_MAX_STATEMENT_CHARS = 1800;
+    private static final int AI_ERROR_MAX_OUTPUT_TOKENS = 6000;
 
     @Autowired
     private TeacherExperimentQueryDao teacherExperimentQueryDao;
@@ -113,6 +116,8 @@ public class ErrorAnalysisService {
 
             // 2. 构建提交历史
             List<Map<String, Object>> submissions = buildSubmissionList(attempts);
+            List<TeacherSubmissionProblemRow> problemRows =
+                    findProblemRowsForAnalysis(studentNo, experimentId);
             int totalErrors = countErrors(attempts);
 
             // 3. 删除旧报告（同一学生+实验），准备写入新报告
@@ -125,7 +130,7 @@ public class ErrorAnalysisService {
             Map<String, Object> errorResult = callMicroserviceOrNull("/analyze/error", errorPayload);
             if (isEmptyAnalysisResponse(errorResult)) {
                 errorResult = buildAiModelErrorAnalysisResult(studentNo, studentName,
-                        experimentId, experimentName, attempts, submissions);
+                        experimentId, experimentName, attempts, submissions, problemRows);
             }
             if (isEmptyAnalysisResponse(errorResult)) {
                 errorResult = buildRuleFallbackErrorAnalysisResult(studentNo, studentName,
@@ -173,26 +178,26 @@ public class ErrorAnalysisService {
      */
     public Map<String, Object> analyzeErrorFromDb(String studentNo, String studentName,
                                                    int experimentId, boolean forceRefresh) {
+        List<TeacherSubmissionProblemRow> problemRows = findProblemRowsForAnalysis(studentNo, experimentId);
         // ── 缓存命中 ──
         if (!forceRefresh) {
             Map<String, Object> cached = getSyncCache(studentNo, experimentId, "error");
-            if (cached != null && hasProblemAnalyses(cached)) {
+            if (cached != null && cacheCoversCurrentProblems(cached, problemRows)) {
                 logger.info("analyzeErrorFromDb: cache hit for student={}, experiment={}", studentNo, experimentId);
                 return normalizeErrorAnalysisResult(cached, null);
             } else if (cached != null) {
-                logger.info("analyzeErrorFromDb: cached result has no per-problem analysis; rebuilding for student={}, experiment={}",
+                logger.info("analyzeErrorFromDb: cached result does not cover current problems; rebuilding for student={}, experiment={}",
                         studentNo, experimentId);
             }
         }
 
-        List<StudentSubmissionAttempt> attempts = teacherExperimentQueryDao
+        List<StudentSubmissionAttempt> primaryAttempts = teacherExperimentQueryDao
                 .findSubmissionAttemptsForErrorAnalysis(studentNo, experimentId);
-        // ── fallback: 主表无数据时走 pta_raw 三表桥接 ──
-        if (attempts == null || attempts.isEmpty()) {
-            attempts = teacherExperimentQueryDao.findSubmissionAttemptsFromRaw(studentNo, experimentId);
-            logger.info("analyzeErrorFromDb: {} raw fallback rows for student={}, experiment={}",
-                    attempts != null ? attempts.size() : 0, studentNo, experimentId);
-        }
+        List<StudentSubmissionAttempt> attempts = primaryAttempts == null
+                ? new ArrayList<>() : new ArrayList<>(primaryAttempts);
+        List<StudentSubmissionAttempt> rawAttempts = findRawAttemptsForAnalysis(studentNo, experimentId);
+        mergeRawAttempts(attempts, rawAttempts);
+        appendCurrentProblemStates(attempts, problemRows);
         // ── 通用优化：raw 数据中若代码含多题标记，拆分为每题独立提交 ──
         if (attempts != null && !attempts.isEmpty()) {
             String firstCode = attempts.get(0).getCode();
@@ -251,7 +256,8 @@ public class ErrorAnalysisService {
             logger.warn("analyzeErrorFromDb: microservice unavailable, using backend AI provider for student={}, experiment={}",
                     studentNo, experimentId);
             result = buildAiModelErrorAnalysisResult(studentNo, studentName, experimentId,
-                    experiment != null ? experiment.getName() : ("实验" + experimentId), attempts, submissions);
+                    experiment != null ? experiment.getName() : ("实验" + experimentId),
+                    attempts, submissions, problemRows);
         }
         if (isEmptyAnalysisResponse(result)) {
             logger.warn("analyzeErrorFromDb: AI provider unavailable, using rule fallback for student={}, experiment={}",
@@ -709,7 +715,43 @@ public class ErrorAnalysisService {
                 }
             } catch (Exception ignored) {}
         }
+        String diagnostic = extractRawDiagnostic(a.getRawJson());
+        if (!diagnostic.isBlank()) {
+            sb.append("\n判题器诊断: ").append(diagnostic);
+        }
         return sb.toString();
+    }
+
+    @SuppressWarnings("unchecked")
+    private String extractRawDiagnostic(String rawJson) {
+        if (rawJson == null || rawJson.isBlank()) return "";
+        try {
+            Map<String, Object> raw = objectMapper.readValue(rawJson, Map.class);
+            String[] diagnosticKeys = {
+                    "errorMessage", "error_message", "compilerMessage", "compiler_message",
+                    "compileError", "compile_error", "diagnostic", "detail"
+            };
+            for (String key : diagnosticKeys) {
+                Object value = raw.get(key);
+                if (value instanceof String message && !message.isBlank()) {
+                    return limitText(message, AI_ERROR_MAX_ERROR_MESSAGE_CHARS);
+                }
+            }
+            for (String nestedKey : List.of("result", "data", "judgeResult", "judge_result")) {
+                Object nested = raw.get(nestedKey);
+                if (nested instanceof Map<?, ?> nestedMap) {
+                    for (String key : diagnosticKeys) {
+                        Object value = nestedMap.get(key);
+                        if (value instanceof String message && !message.isBlank()) {
+                            return limitText(message, AI_ERROR_MAX_ERROR_MESSAGE_CHARS);
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+            // A malformed raw row must not block the rest of the real judge evidence.
+        }
+        return "";
     }
 
     private int countErrors(List<StudentSubmissionAttempt> attempts) {
@@ -1085,21 +1127,52 @@ public class ErrorAnalysisService {
             int experimentId,
             String experimentName,
             List<StudentSubmissionAttempt> attempts,
-            List<Map<String, Object>> submissions) {
+            List<Map<String, Object>> submissions,
+            List<TeacherSubmissionProblemRow> problemRows) {
         if (!isRealAiProviderAvailable() || !hasNonAcceptedAttempt(attempts)) {
             return null;
         }
 
         try {
             String prompt = buildAiErrorAnalysisPrompt(studentNo, studentName,
-                    experimentId, experimentName, attempts, submissions);
-            String raw = aiProvider.chat(prompt, null);
-            Map<String, Object> data = parseModelJsonObject(raw);
+                    experimentId, experimentName, attempts, submissions, problemRows);
+            String raw = aiProvider.chatJson(prompt, null, AI_ERROR_MAX_OUTPUT_TOKENS);
+            Map<String, Object> data;
+            boolean retried = false;
+            try {
+                data = parseModelJsonObject(raw);
+            } catch (JsonProcessingException firstError) {
+                logger.warn("AI error analysis JSON was incomplete; retrying once with compact output: student={}, experiment={}",
+                        studentNo, experimentId);
+                raw = aiProvider.chatJson(buildCompactErrorAnalysisRetryPrompt(prompt), null,
+                        AI_ERROR_MAX_OUTPUT_TOKENS);
+                data = parseModelJsonObject(raw);
+                retried = true;
+            }
             data = extractDataMap(data);
             if (data == null || data.isEmpty()) return null;
 
             normalizeAiErrorAnalysisData(data, studentNo, studentName,
                     experimentId, experimentName, attempts, submissions);
+            guardUnprovenWrongAnswerClaims(data, attempts);
+            downgradeIncompleteAiProblemAnalyses(data, attempts);
+            if (!hasDetailedAiProblemAnalyses(data) && !retried) {
+                logger.warn("AI error analysis lacked clear evidence or mixed confirmed and uncertain claims; retrying once: student={}, experiment={}",
+                        studentNo, experimentId);
+                raw = aiProvider.chatJson(buildCompactErrorAnalysisRetryPrompt(prompt), null,
+                        AI_ERROR_MAX_OUTPUT_TOKENS);
+                data = extractDataMap(parseModelJsonObject(raw));
+                if (data == null || data.isEmpty()) return null;
+                normalizeAiErrorAnalysisData(data, studentNo, studentName,
+                        experimentId, experimentName, attempts, submissions);
+                guardUnprovenWrongAnswerClaims(data, attempts);
+                downgradeIncompleteAiProblemAnalyses(data, attempts);
+            }
+            if (!hasDetailedAiProblemAnalyses(data)) {
+                logger.warn("AI provider returned error analysis without the required evidence detail for student={}, experiment={}",
+                        studentNo, experimentId);
+                return null;
+            }
             if (!hasUsableAiErrorAnalysis(data)) {
                 logger.warn("AI provider returned unusable error analysis for student={}, experiment={}",
                         studentNo, experimentId);
@@ -1138,9 +1211,19 @@ public class ErrorAnalysisService {
             int experimentId,
             String experimentName,
             List<StudentSubmissionAttempt> attempts,
-            List<Map<String, Object>> submissions) {
+            List<Map<String, Object>> submissions,
+            List<TeacherSubmissionProblemRow> problemRows) {
         return """
-                你是高校程序设计课程的 AI 错误分析助手。请只基于下面给出的真实提交记录、判题状态、题目标题和代码进行分析，不要编造知识点、分数或未提供的测试点。
+                你是高校程序设计课程的 AI 错误分析助手。请只基于下面给出的真实题面、提交记录、判题状态和代码进行逐题诊断，不要编造分数、测试点、期望输出或实际输出。
+
+                分析质量要求：
+                1. 先核对 problemRequirement 中的题面要求，再检查同一 problemId 的代码和判题记录。
+                2. overallAssessment 要直接说明“判题证据 + 代码中的具体位置/表达式 + 造成的结果”，不要只写“可能是格式、精度或边界问题”。
+                3. rootCause 必须二选一：能够由编译器或运行时错误信息直接证明时，以“已确认：”开头并引用具体错误信息和代码表达式，且不得包含“可能、推测、需验证、证据不足”或问号；不能证明时，以“待验证：”开头，写明缺少的证据和最小验证方法，且不得使用“已确认”。仅有 WRONG_ANSWER、PARTIAL_ACCEPTED、得分或重复次数而没有失败输入、期望输出、实际输出时，一律使用“待验证：”，代码审查只能作为候选原因，不能宣布唯一根因。
+                4. specificIssues 输出 2 至 4 条定位依据，每条说明代码位置或表达式、违反的题面要求及影响。没有真实测试点时不得伪造具体输入输出。
+                5. suggestions 输出 2 至 4 个按顺序可执行的修改步骤，至少包含一条代码级修改和一条可自行构造的验证用例；不要只写“检查题目要求”。
+                6. 同一道题多次出现相同状态时，要说明重复次数及其代表的问题；不同 problemId 之间严禁串题。
+                7. 只为存在非通过记录的 problemId 输出 problemAnalyses；每题只保留一个最主要的 errorCategory。overallAssessment 和 rootCause 各不超过180个汉字，specificIssues 和 suggestions 每条不超过120个汉字，确保JSON完整闭合。
 
                 输出必须是严格 JSON，不要 Markdown 代码块，不要解释。JSON schema：
                 {
@@ -1151,9 +1234,9 @@ public class ErrorAnalysisService {
                       "type": "COMPILE_ERROR|RUNTIME_ERROR|WRONG_ANSWER|TIME_LIMIT_EXCEEDED|MEMORY_LIMIT_EXCEEDED|SEGMENTATION_FAULT|UNKNOWN",
                       "count": 1,
                       "isSystemic": false,
-                      "rootCause": "只能写提交证据能支持的原因，证据不足要说明需结合最小样例核验",
-                      "specificIssues": ["受影响题目或可从代码/判题状态直接看出的具体问题"],
-                      "suggestions": ["可执行的修改步骤"]
+                      "rootCause": "写明已确认根因及证据；无法确认时明确说明缺少什么证据",
+                      "specificIssues": ["定位依据1：代码位置/表达式 + 对应题面要求 + 影响", "定位依据2"],
+                      "suggestions": ["步骤1：具体代码修改", "步骤2：用于验证修改的自测用例"]
                     }
                   ],
                   "learningSuggestions": [
@@ -1188,12 +1271,13 @@ public class ErrorAnalysisService {
                 safeString(studentNo, ""),
                 safeString(experimentName, "实验" + experimentId),
                 experimentId,
-                compactErrorAnalysisEvidence(attempts, submissions));
+                compactErrorAnalysisEvidence(attempts, submissions, problemRows));
     }
 
     private String compactErrorAnalysisEvidence(
             List<StudentSubmissionAttempt> attempts,
-            List<Map<String, Object>> submissions) {
+            List<Map<String, Object>> submissions,
+            List<TeacherSubmissionProblemRow> problemRows) {
         Map<String, Object> evidence = new LinkedHashMap<>();
         Map<String, Integer> statusCounts = new LinkedHashMap<>();
         Map<String, LinkedHashSet<String>> affectedProblems = new LinkedHashMap<>();
@@ -1212,7 +1296,12 @@ public class ErrorAnalysisService {
                         .computeIfAbsent(status, ignored -> new LinkedHashSet<>())
                         .add(problemTitle);
             }
-            if (isAcceptedStatus(status) || rows.size() >= AI_ERROR_MAX_ATTEMPTS) continue;
+            if (isAcceptedStatus(status)) continue;
+            Long problemId = attempt.getProblemId();
+            if (problemId != null && rows.stream().anyMatch(row -> problemId.equals(parseProblemId(row.get("problemId"))))) {
+                continue;
+            }
+            if (rows.size() >= AI_ERROR_MAX_ATTEMPTS) continue;
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("attemptNo", i + 1);
             row.put("problemId", attempt.getProblemId());
@@ -1222,7 +1311,8 @@ public class ErrorAnalysisService {
             row.put("runtimeMs", attempt.getRuntimeMs());
             row.put("memoryKb", attempt.getMemoryKb());
             row.put("errorMessage", limitText(buildErrorMessage(attempt), AI_ERROR_MAX_ERROR_MESSAGE_CHARS));
-            row.put("codeSnippet", limitText(cleanCode(attempt.getCode()), AI_ERROR_MAX_CODE_CHARS));
+            row.put("codeSnippet", limitText(withLineNumbers(cleanCode(attempt.getCode())), AI_ERROR_MAX_CODE_CHARS));
+            row.put("codeScope", "LATEST_PROBLEM_STATE_SNAPSHOT");
             rows.add(row);
         }
         evidence.put("statusCounts", statusCounts);
@@ -1230,9 +1320,28 @@ public class ErrorAnalysisService {
         for (Map.Entry<String, LinkedHashSet<String>> entry : affectedProblems.entrySet()) {
             problemSummary.put(entry.getKey(), new ArrayList<>(entry.getValue()));
         }
+        LinkedHashSet<Long> errorProblemIds = rows.stream()
+                .map(row -> parseProblemId(row.get("problemId")))
+                .filter(java.util.Objects::nonNull)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        List<Map<String, Object>> requirements = new ArrayList<>();
+        if (problemRows != null) {
+            for (TeacherSubmissionProblemRow problem : problemRows) {
+                if (problem == null || problem.getProblemId() == null
+                        || !errorProblemIds.contains(problem.getProblemId())) continue;
+                Map<String, Object> requirement = new LinkedHashMap<>();
+                requirement.put("problemId", problem.getProblemId());
+                requirement.put("problemTitle", safeString(problem.getProblemTitle(), ""));
+                requirement.put("problemNo", safeString(problem.getProblemNo(), ""));
+                requirement.put("statementMd", limitText(
+                        safeString(problem.getStatementMd(), ""), AI_ERROR_MAX_STATEMENT_CHARS));
+                requirements.add(requirement);
+            }
+        }
         evidence.put("affectedProblems", problemSummary);
+        evidence.put("problemRequirements", requirements);
         evidence.put("selectedErrorAttempts", rows);
-        evidence.put("selectionNote", "Only non-accepted representative attempts are sent to the model. Code is truncated to control tokens.");
+        evidence.put("selectionNote", "Only real non-accepted records and real problem statements are sent. codeSnippet is the latest problem-state snapshot and must not be described as the exact code of every historical attempt. Code and statements may be truncated to control tokens.");
         return toJson(evidence);
     }
 
@@ -1241,6 +1350,17 @@ public class ErrorAnalysisService {
         String text = value.trim();
         if (text.length() <= maxChars) return text;
         return text.substring(0, maxChars) + "\n// ... truncated for AI prompt";
+    }
+
+    private String withLineNumbers(String code) {
+        if (code == null || code.isBlank()) return "";
+        String[] lines = code.split("\\R", -1);
+        StringBuilder numbered = new StringBuilder(code.length() + lines.length * 8);
+        for (int i = 0; i < lines.length; i++) {
+            if (i > 0) numbered.append('\n');
+            numbered.append(String.format("%04d | ", i + 1)).append(lines[i]);
+        }
+        return numbered.toString();
     }
 
     private void normalizeAiErrorAnalysisData(
@@ -1282,6 +1402,281 @@ public class ErrorAnalysisService {
                 .anyMatch(item -> "AI_MODEL".equals(item.get("generationMode"))
                         && item.get("errorCategories") instanceof List<?> categories
                         && !categories.isEmpty());
+    }
+
+    private String buildCompactErrorAnalysisRetryPrompt(String prompt) {
+        return prompt + """
+
+                请重新输出完整JSON，并严格压缩内容：每道题只保留1个主错误分类，定位依据和修改步骤各2条，每条不超过80个汉字。
+                rootCause 只能二选一：
+                - 已确认：题面与代码能直接证明时使用，后文不得再出现“可能、推测、需验证、证据不足”或问号；
+                - 待验证：证据不能直接证明时使用，写清缺少的证据和最小验证方法，不得使用“已确认”。
+                仅有 WRONG_ANSWER 或 PARTIAL_ACCEPTED 状态而没有失败输入、期望输出和实际输出时，必须使用“待验证：”。
+                """;
+    }
+
+    private boolean hasDetailedAiProblemAnalyses(Map<String, Object> data) {
+        Object rawAnalyses = data.get("problemAnalyses");
+        if (!(rawAnalyses instanceof List<?> analyses)) return false;
+        for (Object item : analyses) {
+            if (!(item instanceof Map<?, ?> analysis)) continue;
+            String mode = normalizeGenerationMode(analysis.get("generationMode"));
+            if (!"AI_MODEL".equals(mode)) continue;
+            Object rawCategories = analysis.get("errorCategories");
+            if (!(rawCategories instanceof List<?> categories)) continue;
+            for (Object categoryItem : categories) {
+                if (!(categoryItem instanceof Map<?, ?> category)) continue;
+                String rootCause = safeString(category.get("rootCause"), "").trim();
+                String type = normalizeJudgeStatus(safeString(category.get("type"), "UNKNOWN"));
+                boolean confirmed = rootCause.startsWith("已确认：") || rootCause.startsWith("已确认:");
+                boolean pending = rootCause.startsWith("待验证：") || rootCause.startsWith("待验证:");
+                if (isDetailedAiCategory(category, rootCause, type, confirmed, pending)) return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isDetailedAiCategory(
+            Map<?, ?> category,
+            String rootCause,
+            String type,
+            boolean confirmed,
+            boolean pending) {
+        if (rootCause.length() < 20 || confirmed == pending) return false;
+        if ("WRONG_ANSWER".equals(type) && confirmed) return false;
+        if (confirmed && containsUncertaintyMarker(rootCause)) return false;
+        return category.get("specificIssues") instanceof List<?> issues && issues.size() >= 2
+                && category.get("suggestions") instanceof List<?> suggestions && suggestions.size() >= 2;
+    }
+
+    @SuppressWarnings("unchecked")
+    private void downgradeIncompleteAiProblemAnalyses(
+            Map<String, Object> data,
+            List<StudentSubmissionAttempt> attempts) {
+        Object rawAnalyses = data.get("problemAnalyses");
+        if (!(rawAnalyses instanceof List<?> analyses)) return;
+
+        Map<Long, List<StudentSubmissionAttempt>> attemptsByProblem = groupAttemptsByProblemId(attempts);
+        List<Map<String, Object>> normalized = new ArrayList<>();
+        for (Object item : analyses) {
+            if (!(item instanceof Map<?, ?> raw)) continue;
+            Map<String, Object> analysis = new LinkedHashMap<>((Map<String, Object>) raw);
+            if (!"AI_MODEL".equals(normalizeGenerationMode(analysis.get("generationMode")))) {
+                normalized.add(analysis);
+                continue;
+            }
+
+            if (hasDetailedAiAnalysis(analysis)) {
+                normalized.add(analysis);
+                continue;
+            }
+
+            Long problemId = parseProblemId(analysis.get("problemId"));
+            List<StudentSubmissionAttempt> problemAttempts = attemptsByProblem.get(problemId);
+            if (problemId == null || problemAttempts == null || problemAttempts.isEmpty()) {
+                normalized.add(analysis);
+                continue;
+            }
+
+            Map<String, Object> fallback = buildRuleProblemAnalysis(problemId, problemAttempts);
+            fallback.put("fallbackReason", "AI_PROBLEM_ANALYSIS_INCOMPLETE");
+            normalized.add(fallback);
+        }
+        data.put("problemAnalyses", normalized);
+    }
+
+    @SuppressWarnings("unchecked")
+    private boolean hasDetailedAiAnalysis(Map<String, Object> analysis) {
+        Object rawCategories = analysis.get("errorCategories");
+        if (!(rawCategories instanceof List<?> categories)) return false;
+        for (Object item : categories) {
+            if (!(item instanceof Map<?, ?> rawCategory)) continue;
+            Map<String, Object> category = (Map<String, Object>) rawCategory;
+            String rootCause = safeString(category.get("rootCause"), "").trim();
+            String type = normalizeJudgeStatus(safeString(category.get("type"), "UNKNOWN"));
+            boolean confirmed = rootCause.startsWith("\u5df2\u786e\u8ba4\uff1a");
+            boolean pending = rootCause.startsWith("\u5f85\u9a8c\u8bc1\uff1a");
+            if (isDetailedAiCategory(category, rootCause, type, confirmed, pending)) return true;
+        }
+        return false;
+    }
+
+    @SuppressWarnings("unchecked")
+    private void guardUnprovenWrongAnswerClaims(
+            Map<String, Object> data,
+            List<StudentSubmissionAttempt> attempts) {
+        Map<Long, Integer> realErrorCountByProblem = new LinkedHashMap<>();
+        if (attempts != null) {
+            for (StudentSubmissionAttempt attempt : attempts) {
+                if (attempt == null || attempt.getProblemId() == null
+                        || isAcceptedStatus(attempt.getJudgeStatus())) continue;
+                realErrorCountByProblem.merge(attempt.getProblemId(), 1, Integer::sum);
+            }
+        }
+        Object rawAnalyses = data.get("problemAnalyses");
+        if (!(rawAnalyses instanceof List<?> analyses)) return;
+        LinkedHashSet<Long> guardedProblemIds = new LinkedHashSet<>();
+        for (Object item : analyses) {
+            if (!(item instanceof Map<?, ?> rawAnalysis)) continue;
+            Map<String, Object> analysis = (Map<String, Object>) rawAnalysis;
+            Long problemId = parseProblemId(analysis.get("problemId"));
+            Object rawCategories = analysis.get("errorCategories");
+            if (!(rawCategories instanceof List<?> categories)) continue;
+            boolean guarded = false;
+            for (Object categoryItem : categories) {
+                if (!(categoryItem instanceof Map<?, ?> rawCategory)) continue;
+                Map<String, Object> category = (Map<String, Object>) rawCategory;
+                String type = normalizeJudgeStatus(safeString(category.get("type"), "UNKNOWN"));
+                if (!"WRONG_ANSWER".equals(type)) continue;
+
+                int count = problemId != null
+                        ? realErrorCountByProblem.getOrDefault(problemId, 1)
+                        : 1;
+                category.put("count", count);
+                category.put("isSystemic", count >= 2);
+                category.put("rootCause", "待验证：当前只有判题状态、得分、题面和最新代码快照，"
+                        + "没有失败输入、期望输出及实际输出，不能确认唯一根因。"
+                        + "以下代码位置仅作为复现时的候选核查点。");
+
+                List<String> issues = new ArrayList<>();
+                issues.add("判题证据：本题出现 " + count
+                        + " 次未通过记录；现有数据没有给出具体失败用例。历史记录中的代码字段也不能证明每次提交内容完全相同。");
+                LinkedHashSet<String> candidates = new LinkedHashSet<>();
+                Object rawIssues = category.get("specificIssues");
+                if (rawIssues instanceof List<?> modelIssues) {
+                    for (Object modelIssue : modelIssues) {
+                        String candidate = sanitizePendingCandidate(safeString(modelIssue, ""));
+                        if (candidate.isBlank()) continue;
+                        candidates.add(candidate);
+                        if (candidates.size() >= 2) break;
+                    }
+                }
+                for (String candidate : candidates) {
+                    issues.add("候选核查点（未确认）：" + candidate
+                            + "；请结合题面和真实失败用例核对，当前不能判定该表达式就是根因。");
+                }
+                if (issues.size() == 1) {
+                    issues.add("候选核查点（未确认）：当前模型未定位到可靠代码表达式；"
+                            + "请逐项核对题面的输入类型、分支边界和输出格式。");
+                }
+                category.put("specificIssues", issues);
+                category.put("suggestions", List.of(
+                        "步骤1：逐个运行题面官方样例，记录输入、程序实际输出和按题面手工推导的结果。",
+                        "步骤2：围绕上面的候选表达式补充边界输入，定位第一组实际输出与手工结果不一致的用例。",
+                        "步骤3：只修改该失败用例对应的表达式，再用官方样例、失败用例和相邻边界值回归验证。"));
+                guarded = true;
+                if (problemId != null) guardedProblemIds.add(problemId);
+            }
+            if (guarded) {
+                analysis.put("overallAssessment", "本题存在真实未通过记录，但当前数据库没有保存失败测试点的输入、"
+                        + "期望输出和实际输出。下面展示的是基于真实题面与最新代码快照的候选核查点，不把推测冒充已确认根因。");
+            }
+        }
+        if (!guardedProblemIds.isEmpty()) {
+            guardTopLevelWrongAnswerSummary(data, guardedProblemIds, realErrorCountByProblem);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void guardTopLevelWrongAnswerSummary(
+            Map<String, Object> data,
+            LinkedHashSet<Long> guardedProblemIds,
+            Map<Long, Integer> realErrorCountByProblem) {
+        int totalErrorCount = guardedProblemIds.stream()
+                .mapToInt(problemId -> realErrorCountByProblem.getOrDefault(problemId, 1))
+                .sum();
+        data.put("overallAssessment", "真实判题记录显示 " + guardedProblemIds.size()
+                + " 道题共出现 " + totalErrorCount + " 次未通过。"
+                + "数据库没有保存失败输入、期望输出和实际输出，因此不能确认唯一根因；"
+                + "请按逐题卡片中的候选代码位置完成官方样例和边界用例复现。");
+
+        List<Map<String, Object>> categories = new ArrayList<>();
+        Object rawCategories = data.get("errorCategories");
+        if (rawCategories instanceof List<?> modelCategories) {
+            for (Object item : modelCategories) {
+                if (!(item instanceof Map<?, ?> rawCategory)) continue;
+                Map<String, Object> category = (Map<String, Object>) rawCategory;
+                String type = normalizeJudgeStatus(safeString(category.get("type"), "UNKNOWN"));
+                if (!"WRONG_ANSWER".equals(type)) categories.add(category);
+            }
+        }
+        Map<String, Object> guardedCategory = new LinkedHashMap<>();
+        guardedCategory.put("type", "WRONG_ANSWER");
+        guardedCategory.put("count", totalErrorCount);
+        guardedCategory.put("isSystemic", totalErrorCount >= 2);
+        guardedCategory.put("rootCause", "待验证：当前缺少失败输入、期望输出和实际输出，"
+                + "不能把代码审查候选项认定为真实失败根因。");
+        guardedCategory.put("specificIssues", List.of(
+                "判题证据：受影响题目和次数已按 problemId 从真实提交记录统计。",
+                "证据边界：逐题卡片只展示真实判题记录和当前代码快照中的候选位置。"));
+        guardedCategory.put("suggestions", List.of(
+                "步骤1：按逐题卡片运行官方样例并记录实际输出。",
+                "步骤2：围绕候选表达式补充边界输入，找到第一组真实失败用例。",
+                "步骤3：修改对应表达式后，用官方样例、失败用例和相邻边界值回归。"));
+        categories.add(guardedCategory);
+        data.put("errorCategories", categories);
+        data.put("learningSuggestions", List.of(Map.of(
+                "priority", totalErrorCount >= 2 ? "HIGH" : "MEDIUM",
+                "topic", "失败用例复现与边界验证",
+                "reason", "当前只有真实未通过记录，缺少判题器失败测试点明细",
+                "suggestedResources", "按逐题定位依据运行官方样例并补充相邻边界输入")));
+    }
+
+    private String sanitizePendingCandidate(String value) {
+        if (value == null || value.isBlank()) return "";
+        String sanitized = value.trim()
+                .replace("已确认：", "")
+                .replace("已确认:", "")
+                .replace("候选核查点（未确认）：", "")
+                .replace("候选核查点：", "")
+                .trim();
+        if (containsUnprovenHistoricalCodeClaim(sanitized)) return "";
+        int cutAt = sanitized.length();
+        String[] inferenceBoundaries = {
+                "，", "。", "；", ";", "导致", "因此", "所以", "从而",
+                "违反题面", "应为", "期望输出", "实际应"
+        };
+        for (String boundary : inferenceBoundaries) {
+            int index = sanitized.indexOf(boundary);
+            if (index > 0 && index < cutAt) cutAt = index;
+        }
+        sanitized = sanitized.substring(0, cutAt).trim();
+        sanitized = sanitized
+                .replace("条件错误", "条件")
+                .replace("逻辑错误", "逻辑")
+                .replace("边界错误", "边界");
+        while (sanitized.endsWith(",") || sanitized.endsWith(":")) {
+            sanitized = sanitized.substring(0, sanitized.length() - 1).trim();
+        }
+        return looksLikeObservableCodeReference(sanitized) ? limitText(sanitized, 80) : "";
+    }
+
+    private boolean containsUnprovenHistoricalCodeClaim(String value) {
+        String normalized = value.replaceAll("\\s+", "");
+        return normalized.contains("相同代码") || normalized.contains("每次提交")
+                || normalized.contains("历次提交") || normalized.contains("均得")
+                || normalized.matches(".*(?:多次|两次|三次|四次|五次|\\d+次)提交.*");
+    }
+
+    private boolean looksLikeObservableCodeReference(String value) {
+        if (value == null || value.isBlank()) return false;
+        String lower = value.toLowerCase();
+        return lower.contains("代码") || lower.contains("表达式") || lower.contains("条件")
+                || lower.contains("变量") || lower.contains("循环") || lower.contains("分支")
+                || lower.contains("声明") || lower.matches(".*第\\s*\\d+\\s*行.*")
+                || lower.contains("printf") || lower.contains("scanf")
+                || lower.contains("cout") || lower.contains("cin")
+                || lower.contains("int ") || lower.contains("double ")
+                || lower.contains("float ") || lower.contains("return ")
+                || lower.contains("==") || lower.contains("!=") || lower.contains("<=")
+                || lower.contains(">=") || lower.contains("%")
+                || lower.contains("[") || lower.contains("]")
+                || lower.contains("(") || lower.contains(")");
+    }
+
+    private boolean containsUncertaintyMarker(String text) {
+        return text.contains("可能") || text.contains("推测") || text.contains("需验证")
+                || text.contains("证据不足") || text.contains("？") || text.contains("?");
     }
 
     @SuppressWarnings("unchecked")
@@ -1385,7 +1780,7 @@ public class ErrorAnalysisService {
             category.put("isSystemic", count >= 2);
             category.put("rootCause", ruleRootCause(type));
             category.put("specificIssues", affectedProblems);
-            category.put("suggestions", ruleSuggestions(type));
+            category.put("suggestions", ruleSuggestions(type, safeAttempts));
             categories.add(category);
 
             Map<String, Object> learningSuggestion = new LinkedHashMap<>();
@@ -1482,6 +1877,50 @@ public class ErrorAnalysisService {
         return List.of(ruleResource(type));
     }
 
+    private List<String> ruleSuggestions(
+            String type,
+            List<StudentSubmissionAttempt> problemAttempts) {
+        if (!"COMPILE_ERROR".equals(type)) return ruleSuggestions(type);
+
+        String diagnostic = firstRealDiagnostic(problemAttempts);
+        if (!diagnostic.isBlank()) {
+            return List.of(
+                    "先按真实编译器诊断定位：" + limitText(diagnostic, 90),
+                    "检查该诊断对应的声明、括号或类型，再重新编译确认错误是否消失。");
+        }
+        return List.of(
+                "当前真实提交记录没有保存编译器诊断，暂时不能可靠指出行号；请重新提交并保留完整报错信息。",
+                "重新提交后对照最新代码逐处核对声明、括号和类型，确认编译器不再报错。");
+    }
+
+    private List<String> buildRuleSpecificIssues(
+            String type,
+            List<StudentSubmissionAttempt> problemAttempts) {
+        List<String> issues = new ArrayList<>();
+        issues.add("真实判题状态：" + type + "；题目：" + resolveProblemTitle(problemAttempts));
+        String diagnostic = firstRealDiagnostic(problemAttempts);
+        if (!diagnostic.isBlank()) {
+            issues.add("真实判题器诊断：" + limitText(diagnostic, 100));
+        } else if ("COMPILE_ERROR".equals(type)) {
+            issues.add("当前数据库没有保存编译器诊断，不能凭空指定错误行号；需要重新提交获取诊断。");
+        }
+        StudentSubmissionAttempt latest = latestAttempt(problemAttempts);
+        String latestCode = latest != null ? cleanCode(latest.getCode()) : "";
+        if (!latestCode.isBlank()) {
+            issues.add("当前题存在最新代码快照；修改时应对照该快照与真实诊断，不把历史提交代码混作当前代码。");
+        }
+        return issues;
+    }
+
+    private String firstRealDiagnostic(List<StudentSubmissionAttempt> problemAttempts) {
+        if (problemAttempts == null) return "";
+        for (StudentSubmissionAttempt attempt : problemAttempts) {
+            String diagnostic = extractRawDiagnostic(attempt != null ? attempt.getRawJson() : null);
+            if (!diagnostic.isBlank()) return diagnostic;
+        }
+        return "";
+    }
+
     private String buildRuleOverallAssessment(
             boolean allAccepted,
             List<StudentSubmissionAttempt> attempts,
@@ -1535,6 +1974,139 @@ public class ErrorAnalysisService {
         return data != null
                 && data.get("problemAnalyses") instanceof List<?> analyses
                 && !analyses.isEmpty();
+    }
+
+    private List<TeacherSubmissionProblemRow> findProblemRowsForAnalysis(
+            String studentNo,
+            int experimentId) {
+        try {
+            List<TeacherSubmissionProblemRow> rows = teacherExperimentQueryDao
+                    .findSubmissionProblemRows(studentNo, experimentId);
+            return rows != null ? rows : new ArrayList<>();
+        } catch (Exception e) {
+            logger.warn("Failed to load current problem states for error analysis: student={}, experiment={}, error={}",
+                    studentNo, experimentId, e.getMessage());
+            return new ArrayList<>();
+        }
+    }
+
+    private List<StudentSubmissionAttempt> findRawAttemptsForAnalysis(
+            String studentNo,
+            int experimentId) {
+        try {
+            List<StudentSubmissionAttempt> attempts = teacherExperimentQueryDao
+                    .findSubmissionAttemptsFromRaw(studentNo, experimentId);
+            logger.info("analyzeErrorFromDb: {} raw fallback rows for student={}, experiment={}",
+                    attempts != null ? attempts.size() : 0, studentNo, experimentId);
+            return attempts != null ? attempts : new ArrayList<>();
+        } catch (Exception e) {
+            logger.warn("Raw submission fallback query failed: student={}, experiment={}, error={}",
+                    studentNo, experimentId, e.getMessage());
+            return new ArrayList<>();
+        }
+    }
+
+    private void mergeRawAttempts(
+            List<StudentSubmissionAttempt> target,
+            List<StudentSubmissionAttempt> candidates) {
+        LinkedHashSet<String> rawEvidence = new LinkedHashSet<>();
+        LinkedHashSet<String> fallbackEvidence = new LinkedHashSet<>();
+        for (StudentSubmissionAttempt attempt : target) {
+            if (attempt == null || attempt.getProblemId() == null) continue;
+            String rawKey = rawAttemptEvidenceKey(attempt);
+            if (rawKey != null) rawEvidence.add(rawKey);
+            fallbackEvidence.add(fallbackAttemptEvidenceKey(attempt));
+        }
+        for (StudentSubmissionAttempt candidate : candidates) {
+            if (candidate == null || candidate.getProblemId() == null) continue;
+            String rawKey = rawAttemptEvidenceKey(candidate);
+            String fallbackKey = fallbackAttemptEvidenceKey(candidate);
+            if ((rawKey != null && rawEvidence.contains(rawKey))
+                    || fallbackEvidence.contains(fallbackKey)) continue;
+
+            target.add(candidate);
+            if (rawKey != null) rawEvidence.add(rawKey);
+            fallbackEvidence.add(fallbackKey);
+        }
+    }
+
+    private String rawAttemptEvidenceKey(StudentSubmissionAttempt attempt) {
+        String rawJson = attempt.getRawJson();
+        if (rawJson == null || rawJson.isBlank()) return null;
+        return attempt.getProblemId() + "|raw|" + rawJson.trim();
+    }
+
+    private String fallbackAttemptEvidenceKey(StudentSubmissionAttempt attempt) {
+        return attempt.getProblemId()
+                + "|" + normalizeJudgeStatus(attempt.getJudgeStatus())
+                + "|" + (attempt.getSubmittedAt() != null ? attempt.getSubmittedAt().getTime() : "")
+                + "|" + String.valueOf(attempt.getScore())
+                + "|" + String.valueOf(attempt.getRuntimeMs())
+                + "|" + String.valueOf(attempt.getMemoryKb());
+    }
+
+    private void appendCurrentProblemStates(
+            List<StudentSubmissionAttempt> attempts,
+            List<TeacherSubmissionProblemRow> problemRows) {
+        for (TeacherSubmissionProblemRow row : problemRows) {
+            if (!hasQuantifiableProblemState(row)) continue;
+            List<StudentSubmissionAttempt> problemAttempts = attempts.stream()
+                    .filter(attempt -> attempt != null && row.getProblemId().equals(attempt.getProblemId()))
+                    .collect(Collectors.toList());
+            StudentSubmissionAttempt latest = latestAttempt(problemAttempts);
+            if (matchesCurrentProblemState(latest, row)) continue;
+
+            StudentSubmissionAttempt current = new StudentSubmissionAttempt();
+            current.setProblemId(row.getProblemId());
+            current.setProblemTitle(row.getProblemTitle());
+            current.setJudgeStatus(row.getLatestStatus());
+            current.setSubmittedAt(row.getSubmitTime());
+            current.setCode(row.getCode());
+            attempts.add(current);
+        }
+    }
+
+    private boolean hasQuantifiableProblemState(TeacherSubmissionProblemRow row) {
+        return row != null
+                && row.getProblemId() != null
+                && row.getLatestStatus() != null
+                && !row.getLatestStatus().isBlank();
+    }
+
+    private boolean matchesCurrentProblemState(
+            StudentSubmissionAttempt attempt,
+            TeacherSubmissionProblemRow row) {
+        if (attempt == null) return false;
+        boolean sameStatus = normalizeJudgeStatus(attempt.getJudgeStatus())
+                .equals(normalizeJudgeStatus(row.getLatestStatus()));
+        String currentCode = cleanCode(row.getCode());
+        boolean sameCode = currentCode.isBlank() || currentCode.equals(cleanCode(attempt.getCode()));
+        return sameStatus && sameCode;
+    }
+
+    @SuppressWarnings("unchecked")
+    private boolean cacheCoversCurrentProblems(
+            Map<String, Object> responseBody,
+            List<TeacherSubmissionProblemRow> problemRows) {
+        if (!hasProblemAnalyses(responseBody)) return false;
+        LinkedHashSet<Long> expectedProblemIds = problemRows.stream()
+                .filter(this::hasQuantifiableProblemState)
+                .map(TeacherSubmissionProblemRow::getProblemId)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        if (expectedProblemIds.isEmpty()) return true;
+
+        Map<String, Object> data = extractDataMap(responseBody);
+        LinkedHashSet<Long> cachedProblemIds = new LinkedHashSet<>();
+        Object rawAnalyses = data != null ? data.get("problemAnalyses") : null;
+        if (rawAnalyses instanceof List<?> analyses) {
+            for (Object item : analyses) {
+                if (item instanceof Map<?, ?> analysis) {
+                    Long problemId = parseProblemId(((Map<String, Object>) analysis).get("problemId"));
+                    if (problemId != null) cachedProblemIds.add(problemId);
+                }
+            }
+        }
+        return cachedProblemIds.containsAll(expectedProblemIds);
     }
 
     @SuppressWarnings("unchecked")
@@ -1630,8 +2202,8 @@ public class ErrorAnalysisService {
             category.put("count", count);
             category.put("isSystemic", count >= 2);
             category.put("rootCause", ruleRootCause(type));
-            category.put("specificIssues", List.of(resolveProblemTitle(problemAttempts)));
-            category.put("suggestions", ruleSuggestions(type));
+            category.put("specificIssues", buildRuleSpecificIssues(type, problemAttempts));
+            category.put("suggestions", ruleSuggestions(type, problemAttempts));
             categories.add(category);
 
             Map<String, Object> suggestion = new LinkedHashMap<>();

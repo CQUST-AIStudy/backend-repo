@@ -23,6 +23,11 @@ public interface AiProvider {
     throw new UnsupportedOperationException("chat not implemented");
   }
 
+  /** Structured JSON completion for callers that must parse the response. */
+  default String chatJson(String prompt, String modelOverride, int maxTokens) {
+    return chat(prompt, modelOverride);
+  }
+
   // ---- Legacy compat (delegate to new methods) ----
   default DocumentAiResult classifyAndSummarize(DocumentAiInput input) {
     var r = classifyFile(new FileClassifyInput(input.documentId(), input.path(), input.text()));
