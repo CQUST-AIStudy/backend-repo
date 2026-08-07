@@ -12,6 +12,8 @@ COPY src src
 # 国内服务器拉 Maven 中央仓库极慢（曾致 backend 构建 20-40 分钟）：builder 内注入 aliyun 镜像，
 # 只影响镜像构建层，不改动仓库与本地开发配置。
 RUN mkdir -p /root/.m2 && printf '%s' '<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"><mirrors><mirror><id>aliyun</id><mirrorOf>central</mirrorOf><url>https://maven.aliyun.com/repository/public</url></mirror></mirrors></settings>' > /root/.m2/settings.xml
+# mvnw 自身下载 Maven 发行包也走中央仓库（曾致 wget 失败）：wrapper 的 distributionUrl 一并改写 aliyun
+RUN sed -i 's|https://repo.maven.apache.org/maven2|https://maven.aliyun.com/repository/public|g' .mvn/wrapper/maven-wrapper.properties
 RUN ./mvnw -B -Dmaven.test.skip=true package
 
 FROM eclipse-temurin:17-jre-jammy
