@@ -9,6 +9,9 @@ RUN chmod +x ./mvnw
 COPY src src
 # 运行镜像只需打包产物，跳过测试编译与执行（测试交给 CI/本地）；
 # 避免个别历史/他人遗留的测试编译问题阻断生产镜像构建。
+# 国内服务器拉 Maven 中央仓库极慢（曾致 backend 构建 20-40 分钟）：builder 内注入 aliyun 镜像，
+# 只影响镜像构建层，不改动仓库与本地开发配置。
+RUN mkdir -p /root/.m2 && printf '%s' '<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"><mirrors><mirror><id>aliyun</id><mirrorOf>central</mirrorOf><url>https://maven.aliyun.com/repository/public</url></mirror></mirrors></settings>' > /root/.m2/settings.xml
 RUN ./mvnw -B -Dmaven.test.skip=true package
 
 FROM eclipse-temurin:17-jre-jammy
