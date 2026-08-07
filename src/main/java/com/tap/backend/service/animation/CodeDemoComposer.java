@@ -72,7 +72,7 @@ public class CodeDemoComposer {
                             AnimationWorkflow.PYTHON_TUTOR.name());
                 }
             }
-            log.info("代码演示真实执行无有效轨迹，回退 LLM：success={}", trace.success());
+            log.warn("代码演示真实执行无可用轨迹，回退 LLM：success={}, err={}", trace.success(), trace.errorMessage());
         } catch (RuntimeException e) {
             log.warn("代码演示真实执行异常，回退 LLM：{}", e.getMessage());
         }
