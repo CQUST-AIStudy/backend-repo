@@ -62,7 +62,7 @@ public class ErrorAnalysisService {
     private static final String PROBLEM_DEEP_REPORT_TYPE = "ERROR_PROBLEM";
     private static final int PROBLEM_DEEP_MAX_CODE_CHARS = 8000;
     private static final int PROBLEM_DEEP_MAX_STATEMENT_CHARS = 4000;
-    private static final int PROBLEM_DEEP_MAX_OUTPUT_TOKENS = 12000;
+    private static final int PROBLEM_DEEP_MAX_OUTPUT_TOKENS = 24000;
     private static final long PROBLEM_DEEP_CACHE_HOURS = 24;
 
     @Autowired
