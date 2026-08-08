@@ -209,8 +209,15 @@ public class ErrorAnalysisController {
                 return ResponseEntity.badRequest().body(err);
             }
             boolean forceRefresh = Boolean.TRUE.equals(payload.get("forceRefresh"));
-            Map<String, Object> analysis = errorAnalysisService.analyzeProblemDeep(
+            // 非阻塞：命中缓存直接返回；未命中后台生成并先答 PROCESSING，前端轮询（外层代理 60s 会掐断同步长 AI 调用）
+            Map<String, Object> analysis = errorAnalysisService.getOrStartProblemDeep(
                     studentId, studentName, experimentId, problemId, forceRefresh);
+            if (analysis == null) {
+                Map<String, Object> processing = new HashMap<>();
+                processing.put("status", "PROCESSING");
+                processing.put("problemId", problemId);
+                return successResponse(processing);
+            }
             return successResponse(analysis);
         } catch (Exception e) {
             logger.error("analyzeProblemError failed: payload={}", payload, e);

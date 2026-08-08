@@ -20,11 +20,13 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpEntity;
@@ -89,6 +91,13 @@ public class ErrorAnalysisService {
 
     /** 学生级学习建议生成中防重集合：同一学号同时只允许一个生成任务，避免并发重复调微服务与重复落库 */
     private final java.util.Set<String> pendingLearningProfile = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /** 分题深度解析后台生成防重集合：并发点击/轮询不重复调 AI */
+    private final java.util.Set<String> pendingProblemDeep = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    @Autowired
+    @Qualifier("aiExecutor")
+    private Executor aiExecutor;
 
     // ==================== 异步管线（核心） ====================
 
@@ -354,6 +363,38 @@ public class ErrorAnalysisService {
      *   <li>AI 不可用时降级为规则分析；该题无代码时返回友好提示。</li>
      * </ul>
      */
+    /**
+     * 分题深度解析非阻塞入口：缓存/DB 命中直接返回最终结果；
+     * 未命中则启动后台生成并返回 null（调用方应答 PROCESSING，前端轮询）。
+     * 外层代理 60s 超时，同步 AI 深度解析常超时 504，故改为“立即返回 + 后台回填 + 前端轮询”。
+     */
+    public Map<String, Object> getOrStartProblemDeep(String studentNo, String studentName,
+                                                     int experimentId, long problemId, boolean forceRefresh) {
+        if (!forceRefresh) {
+            Map<String, Object> cached = getProblemDeepCache(studentNo, experimentId, problemId);
+            if (cached != null) return cached;
+            Map<String, Object> stored = findStoredProblemDeepAnalyses(studentNo, experimentId).get(problemId);
+            if (stored != null && hasUsableProblemDeepAnalysis(stored)) {
+                putProblemDeepCache(studentNo, experimentId, problemId, stored);
+                return stored;
+            }
+        }
+        String key = studentNo + ":" + experimentId + ":" + problemId;
+        if (pendingProblemDeep.add(key)) {
+            aiExecutor.execute(() -> {
+                try {
+                    analyzeProblemDeep(studentNo, studentName, experimentId, problemId, true);
+                } catch (Exception e) {
+                    logger.warn("background problem deep analysis failed: student={}, problem={}, err={}",
+                            studentNo, problemId, e.getMessage());
+                } finally {
+                    pendingProblemDeep.remove(key);
+                }
+            });
+        }
+        return null;
+    }
+
     public Map<String, Object> analyzeProblemDeep(String studentNo, String studentName,
                                                   int experimentId, long problemId, boolean forceRefresh) {
         if (!forceRefresh) {
