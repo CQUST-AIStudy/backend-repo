@@ -8,4 +8,6 @@ import java.util.Optional;
 public interface ScoreItemRepository extends JpaRepository<ScoreItemEntity, Long> {
     List<ScoreItemEntity> findAllBySubmissionId(Long submissionId);
     Optional<ScoreItemEntity> findBySubmissionIdAndDimensionId(Long submissionId, Long dimensionId);
+
+    boolean existsByDimensionId(Long dimensionId);
 }

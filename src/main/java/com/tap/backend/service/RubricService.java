@@ -5,6 +5,7 @@ import com.tap.backend.domain.user.UserEntity;
 import com.tap.backend.infra.storage.ObjectStorageService;
 import com.tap.backend.repo.GradingRubricRepository;
 import com.tap.backend.repo.GradingTaskRepository;
+import com.tap.backend.repo.ScoreItemRepository;
 import com.tap.backend.repo.UserRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -13,8 +14,11 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.IOException;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 @Service
@@ -25,17 +29,20 @@ public class RubricService {
     private final UserRepository userRepo;
     private final GradingWorkerClient workerClient;
     private final ObjectStorageService objectStorage;
+    private final ScoreItemRepository scoreItemRepo;
 
     public RubricService(GradingRubricRepository rubricRepo,
                          GradingTaskRepository taskRepo,
                          UserRepository userRepo,
                          GradingWorkerClient workerClient,
-                         ObjectStorageService objectStorage) {
+                         ObjectStorageService objectStorage,
+                         ScoreItemRepository scoreItemRepo) {
         this.rubricRepo = rubricRepo;
         this.taskRepo = taskRepo;
         this.userRepo = userRepo;
         this.workerClient = workerClient;
         this.objectStorage = objectStorage;
+        this.scoreItemRepo = scoreItemRepo;
     }
 
     @Transactional
@@ -83,7 +90,7 @@ public class RubricService {
             if (d.getName() == null || d.getName().isBlank() || d.getMaxScore() == null) {
                 continue;
             }
-            inputs.add(new DimensionInput(d.getName(), d.getDescription(), d.getMaxScore(), d.getWeight()));
+            inputs.add(new DimensionInput(null, d.getName(), d.getDescription(), d.getMaxScore(), d.getWeight()));
         }
         if (inputs.isEmpty()) {
             throw new IllegalArgumentException("Parsed dimensions are invalid");
@@ -149,17 +156,44 @@ public class RubricService {
         rubric.setDescription(description);
         rubric.setCustomPrompt(customPrompt);
 
-        rubric.getDimensions().clear();
+        // 维度按 id 原位更新（保留原 ID）：score_item.dimension_id 外键指向 rubric_dimension，
+        // 旧的 clear+重建会删除旧维度行，一旦存在评分记录必然触发 MySQL 1451
+        List<RubricDimensionEntity> current = new ArrayList<>(rubric.getDimensions());
+        Map<Long, RubricDimensionEntity> byId = new HashMap<>();
+        for (RubricDimensionEntity dim : current) byId.put(dim.getId(), dim);
+
+        Set<Long> keepIds = new HashSet<>();
+        List<RubricDimensionEntity> incoming = new ArrayList<>();
         for (int i = 0; i < dimensions.size(); i++) {
             DimensionInput d = dimensions.get(i);
-            RubricDimensionEntity dim = new RubricDimensionEntity();
-            dim.setRubric(rubric);
+            // 优先按 id 匹配；旧前端不传 id 时退化为按位置匹配，保证前后端版本不对齐也能原位更新
+            RubricDimensionEntity dim = d.id() != null ? byId.get(d.id()) : (i < current.size() ? current.get(i) : null);
+            if (dim != null && !rubric.getId().equals(dim.getRubric().getId())) dim = null;
+            if (dim == null) {
+                dim = new RubricDimensionEntity();
+                dim.setRubric(rubric);
+            } else {
+                keepIds.add(dim.getId());
+            }
             dim.setName(d.name());
             dim.setDescription(d.description());
             dim.setMaxScore(d.maxScore());
             dim.setWeight(d.weight());
             dim.setSortOrder(i);
-            rubric.getDimensions().add(dim);
+            incoming.add(dim);
+        }
+
+        // 新列表中移除的维度：已有评分记录则外键不允许删除，直接报友好错误
+        for (RubricDimensionEntity old : current) {
+            if (!keepIds.contains(old.getId())) {
+                if (scoreItemRepo.existsByDimensionId(old.getId())) {
+                    throw new IllegalArgumentException("维度“" + old.getName() + "”已有评分记录，不能删除，可修改其名称/权重/满分");
+                }
+                rubric.getDimensions().remove(old);
+            }
+        }
+        for (RubricDimensionEntity dim : incoming) {
+            if (dim.getId() == null) rubric.getDimensions().add(dim);
         }
 
         return rubricRepo.save(rubric);
@@ -217,7 +251,7 @@ public class RubricService {
         }
     }
 
-    public record DimensionInput(String name, String description,
+    public record DimensionInput(Long id, String name, String description,
                                   java.math.BigDecimal maxScore, Integer weight) {}
 
     private static String resolveImageExtension(String filename) {

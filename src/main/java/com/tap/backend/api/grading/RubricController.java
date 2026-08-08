@@ -163,7 +163,7 @@ public class RubricController {
             return List.of();
         }
         return dimensions.stream()
-                .map(d -> new DimensionInput(d.name(), d.description(), d.maxScore(), d.weight()))
+                .map(d -> new DimensionInput(d.id(), d.name(), d.description(), d.maxScore(), d.weight()))
                 .toList();
     }
 
@@ -210,6 +210,7 @@ public class RubricController {
     ) {}
 
     public record DimensionDto(
+            Long id,
             String name,
             String description,
             BigDecimal maxScore,
