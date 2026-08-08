@@ -30,6 +30,8 @@ public class PtaGradingController {
 
     public record OfferingRequest(Long offeringId, Boolean force) {}
 
+    public record StudentDetailRequest(Long offeringId, Long studentId) {}
+
     /** 预览：客观分 + 学生列表（不调 AI、不落库）。 */
     @PostMapping("/preview")
     public ResponseEntity<?> preview(@RequestBody OfferingRequest req, @AuthenticationPrincipal UserPrincipal p) {
@@ -54,6 +56,12 @@ public class PtaGradingController {
     @GetMapping("/detail/{id}")
     public ResponseEntity<?> detail(@PathVariable("id") Long id, @AuthenticationPrincipal UserPrincipal p) {
         return ResponseEntity.ok(ApiResponse.of(service.detail(id, p)));
+    }
+
+    /** 按学生详情：每题 PTA 判题状态 + 学生代码 + 题面（实时聚合，未生成评语也可看）。 */
+    @PostMapping("/student-detail")
+    public ResponseEntity<?> studentDetail(@RequestBody StudentDetailRequest req, @AuthenticationPrincipal UserPrincipal p) {
+        return ResponseEntity.ok(ApiResponse.of(service.studentDetail(req.offeringId(), req.studentId(), p)));
     }
 
     /** 发布该 offering 的批改结果给学生。 */

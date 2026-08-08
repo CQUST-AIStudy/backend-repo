@@ -150,6 +150,23 @@ public class PtaGradingService {
         return toView(e, true);
     }
 
+    /** 按学生详情：实时聚合每题 PTA 状态 + 代码 + 题面，不依赖 generate 是否已跑。 */
+    @Transactional(readOnly = true)
+    public Map<String, Object> studentDetail(Long offeringId, Long studentId, UserPrincipal principal) {
+        Long teacherId = teacherPrincipalResolver.requireTeacherId(principal);
+        requireOwnedOffering(offeringId, teacherId);
+        for (StudentAggregate a : aggregate(offeringId)) {
+            if (!a.studentId.equals(studentId)) continue;
+            Map<String, Object> v = a.toSummary();
+            v.put("problems", a.problems);
+            PtaGradingResultEntity e = repository.findByOfferingIdAndStudentId(offeringId, studentId).orElse(null);
+            v.put("comment", e == null ? null : e.getComment());
+            v.put("published", e != null && e.isPublished());
+            return v;
+        }
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND, "该学生在此题集下无 PTA 数据");
+    }
+
     /** 发布整个 offering 的批改结果给学生（置 published + 站内通知）。 */
     @Transactional
     public Map<String, Object> publish(Long offeringId, UserPrincipal principal) {
