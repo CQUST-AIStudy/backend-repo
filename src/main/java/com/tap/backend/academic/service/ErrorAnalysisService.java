@@ -62,7 +62,7 @@ public class ErrorAnalysisService {
     private static final String PROBLEM_DEEP_REPORT_TYPE = "ERROR_PROBLEM";
     private static final int PROBLEM_DEEP_MAX_CODE_CHARS = 8000;
     private static final int PROBLEM_DEEP_MAX_STATEMENT_CHARS = 4000;
-    private static final int PROBLEM_DEEP_MAX_OUTPUT_TOKENS = 6000;
+    private static final int PROBLEM_DEEP_MAX_OUTPUT_TOKENS = 12000;
     private static final long PROBLEM_DEEP_CACHE_HOURS = 24;
 
     @Autowired
@@ -347,7 +347,12 @@ public class ErrorAnalysisService {
             summaries.add(summary);
         }
         result.put("problemAnalyses", summaries);
-        result.put("problemDeepAnalyses", findStoredProblemDeepAnalyses(studentNo, experimentId));
+        // 历史落库可能含规则 mock 数据：只下发 AI 生成/NO_CODE 的真实结果
+        Map<Long, Map<String, Object>> deepUsable = new LinkedHashMap<>();
+        findStoredProblemDeepAnalyses(studentNo, experimentId).forEach((pid, a) -> {
+            if (isProblemDeepResultUsable(a)) deepUsable.put(pid, a);
+        });
+        result.put("problemDeepAnalyses", deepUsable);
         StudentSubmissionAttempt overallLatest = attempts != null ? latestAttempt(attempts) : null;
         result.put("latestCode", overallLatest != null ? cleanCode(overallLatest.getCode()) : null);
         result.put("latestJudgeStatus", overallLatest != null
@@ -372,21 +377,32 @@ public class ErrorAnalysisService {
                                                      int experimentId, long problemId, boolean forceRefresh) {
         if (!forceRefresh) {
             Map<String, Object> cached = getProblemDeepCache(studentNo, experimentId, problemId);
-            if (cached != null) return cached;
+            if (isProblemDeepResultUsable(cached)) return cached;
             Map<String, Object> stored = findStoredProblemDeepAnalyses(studentNo, experimentId).get(problemId);
-            if (stored != null && hasUsableProblemDeepAnalysis(stored)) {
+            if (isProblemDeepResultUsable(stored)) {
                 putProblemDeepCache(studentNo, experimentId, problemId, stored);
                 return stored;
+            }
+            // 失败冷却期内不再重复调 AI，直接答 FAILED，前端停止轮询并提示
+            if (isProblemDeepFailedRecently(studentNo, experimentId, problemId)) {
+                Map<String, Object> failed = new LinkedHashMap<>();
+                failed.put("status", "FAILED");
+                failed.put("problemId", problemId);
+                failed.put("message", "深度解析生成失败（AI 服务不可用或返回异常），请稍后重试");
+                return failed;
             }
         }
         String key = studentNo + ":" + experimentId + ":" + problemId;
         if (pendingProblemDeep.add(key)) {
             aiExecutor.execute(() -> {
                 try {
-                    analyzeProblemDeep(studentNo, studentName, experimentId, problemId, true);
+                    if (analyzeProblemDeep(studentNo, studentName, experimentId, problemId, true) == null) {
+                        markProblemDeepFailed(studentNo, experimentId, problemId);
+                    }
                 } catch (Exception e) {
                     logger.warn("background problem deep analysis failed: student={}, problem={}, err={}",
                             studentNo, problemId, e.getMessage());
+                    markProblemDeepFailed(studentNo, experimentId, problemId);
                 } finally {
                     pendingProblemDeep.remove(key);
                 }
@@ -399,13 +415,13 @@ public class ErrorAnalysisService {
                                                   int experimentId, long problemId, boolean forceRefresh) {
         if (!forceRefresh) {
             Map<String, Object> cached = getProblemDeepCache(studentNo, experimentId, problemId);
-            if (cached != null) {
+            if (isProblemDeepResultUsable(cached)) {
                 logger.info("analyzeProblemDeep: cache hit student={}, experiment={}, problem={}",
                         studentNo, experimentId, problemId);
                 return cached;
             }
             Map<String, Object> stored = findStoredProblemDeepAnalyses(studentNo, experimentId).get(problemId);
-            if (stored != null && hasUsableProblemDeepAnalysis(stored)) {
+            if (isProblemDeepResultUsable(stored)) {
                 putProblemDeepCache(studentNo, experimentId, problemId, stored);
                 return stored;
             }
@@ -458,9 +474,10 @@ public class ErrorAnalysisService {
             }
         }
         if (!aiGenerated) {
-            logger.warn("analyzeProblemDeep: falling back to rule analysis: student={}, problem={}",
+            // 按需求不做规则兜底：生成失败就是失败，不写 mock 内容入缓存/DB
+            logger.warn("analyzeProblemDeep: AI generation failed, return null (no mock fallback): student={}, problem={}",
                     studentNo, problemId);
-            analysis = buildRuleProblemAnalysis(problemId, problemAttempts);
+            return null;
         }
 
         // ── 回填元数据（前端展示与落库） ──
@@ -579,6 +596,37 @@ public class ErrorAnalysisService {
         String overall = safeString(analysis.get("overallAssessment"), "").trim();
         String detailed = safeString(analysis.get("detailedAnalysis"), "").trim();
         return overall.length() >= 10 || detailed.length() >= 20;
+    }
+
+    /** 只有 AI 生成或 NO_CODE 事实结果才算可用命中；历史规则 mock 数据不再当作深度解析 */
+    private boolean isProblemDeepResultUsable(Map<String, Object> analysis) {
+        if (analysis == null || analysis.isEmpty()) return false;
+        if ("NO_CODE".equals(analysis.get("generationMode"))) return true;
+        return Boolean.TRUE.equals(analysis.get("aiGenerated"));
+    }
+
+    private String problemDeepFailKey(String studentNo, int experimentId, long problemId) {
+        return REDIS_KEY_PREFIX + "problemdeep:fail:" + studentNo + ":" + experimentId + ":" + problemId;
+    }
+
+    /** 失败冷却 5 分钟：避免轮询反复触发 AI 调用 */
+    private boolean isProblemDeepFailedRecently(String studentNo, int experimentId, long problemId) {
+        if (redisTemplate == null) return false;
+        try {
+            return Boolean.TRUE.equals(redisTemplate.hasKey(problemDeepFailKey(studentNo, experimentId, problemId)));
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private void markProblemDeepFailed(String studentNo, int experimentId, long problemId) {
+        if (redisTemplate == null) return;
+        try {
+            redisTemplate.opsForValue().set(problemDeepFailKey(studentNo, experimentId, problemId),
+                    "1", 5, TimeUnit.MINUTES);
+        } catch (Exception e) {
+            logger.warn("Problem deep fail marker write failed: {}", e.getMessage());
+        }
     }
 
     /** 构建单题深度解析 prompt：题面 + 判题历史 + 带行号完整代码。 */
