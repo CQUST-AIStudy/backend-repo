@@ -5,12 +5,14 @@ import com.tap.backend.academic.dao.StudentAiReportQueryDao;
 import com.tap.backend.academic.entity.AiExperimentReport;
 import com.tap.backend.academic.teacherexperiment.AiReportContext;
 import com.tap.backend.academic.teacherexperiment.TeacherSubmissionProblemRow;
+import com.tap.backend.service.grading.StudentReflectionService;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class AiReportService {
@@ -18,16 +20,20 @@ public class AiReportService {
     private final StudentAiReportQueryDao queryDao;
     private final AiExperimentReportDao reportDao;
     private final AiReportGenerator generator;
+    private final StudentReflectionService studentReflectionService;
 
     public AiReportService(
             StudentAiReportQueryDao queryDao,
             AiExperimentReportDao reportDao,
-            AiReportGenerator generator) {
+            AiReportGenerator generator,
+            StudentReflectionService studentReflectionService) {
         this.queryDao = queryDao;
         this.reportDao = reportDao;
         this.generator = generator;
+        this.studentReflectionService = studentReflectionService;
     }
 
+    @Transactional
     public AiReportResult generate(String studentNo, int offeringId, Map<String, Object> userData) {
         AiReportContext context = queryDao.findContext(studentNo, offeringId);
         if (context == null || context.getOfferingId() == null || context.getStudentProfileId() == null) {
@@ -50,6 +56,8 @@ public class AiReportService {
             if (affectedRows <= 0) {
                 return AiReportResult.failure("报告保存失败");
             }
+            studentReflectionService.saveFromAiReport(
+                    context.getOfferingId(), context.getStudentProfileId(), report);
             return success(report, studentNo, safeUserData);
         } catch (AiReportException e) {
             log.error("AI report generation failed: studentNo={}, offeringId={}, errorCode={}",

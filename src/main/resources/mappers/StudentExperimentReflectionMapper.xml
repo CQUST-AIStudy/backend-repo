@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.tap.backend.academic.dao.StudentExperimentReflectionDao">
+    <resultMap id="reflectionResultMap" type="com.tap.backend.academic.entity.StudentExperimentReflection">
+        <id property="id" column="id"/>
+        <result property="offeringId" column="offering_id"/>
+        <result property="studentId" column="student_id"/>
+        <result property="reflectionText" column="reflection_text"/>
+        <result property="source" column="source"/>
+        <result property="createdAt" column="created_at"/>
+        <result property="updatedAt" column="updated_at"/>
+    </resultMap>
+
+    <select id="findByOfferingAndStudent" resultMap="reflectionResultMap">
+        SELECT id, offering_id, student_id, reflection_text, source, created_at, updated_at
+        FROM student_experiment_reflection
+        WHERE offering_id = #{offeringId} AND student_id = #{studentId}
+    </select>
+
+    <insert id="upsert">
+        INSERT INTO student_experiment_reflection
+            (offering_id, student_id, reflection_text, source)
+        VALUES
+            (#{offeringId}, #{studentId}, #{reflectionText}, #{source})
+        ON DUPLICATE KEY UPDATE
+            reflection_text = VALUES(reflection_text),
+            source = VALUES(source),
+            updated_at = CURRENT_TIMESTAMP(3)
+    </insert>
+</mapper>

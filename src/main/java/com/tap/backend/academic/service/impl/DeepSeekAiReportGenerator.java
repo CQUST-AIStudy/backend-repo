@@ -32,7 +32,9 @@ public class DeepSeekAiReportGenerator implements AiReportGenerator {
     public String generate(AiReportContext context, String code, Map<String, Object> userData) throws Exception {
         if (apiKey == null || apiKey.isBlank()) throw AiReportException.configMissing();
         if (code.length() > 6000) code = code.substring(0, 6000) + "\n... (代码过长，已截断)";
-        String systemPrompt = "你是数据结构课程助教。输出中文Markdown实验报告，必须依次包含二级标题：实验目的、实验环境、实验内容、实验总结。结合代码分析，但不得伪造运行结果或成绩。除非输入明确提供学校名称，否则不得猜测、虚构或提及任何学校名称。";
+        String systemPrompt = "你是数据结构课程助教。输出中文Markdown实验报告，必须依次包含二级标题：实验目的、实验环境、实验内容、实验总结。"
+                + "其中实验总结写成一段完整的学生心得，约180-260字，包含本次掌握的知识、代码或思路中的具体问题、调试反思和下一步改进计划；"
+                + "结合代码分析，但不得伪造运行结果、成绩或学生未提供的操作。除非输入明确提供学校名称，否则不得猜测、虚构或提及任何学校名称。";
         String userPrompt = "实验：" + context.getName() + "\n实验描述：" + value(context.getDescription())
                 + "\n学生：" + value(userData.get("studentName")) + "\n代码：\n```c\n" + code + "\n```";
         JsonObject bodyJson = new JsonObject();

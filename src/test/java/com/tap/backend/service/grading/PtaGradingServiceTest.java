@@ -31,10 +31,11 @@ class PtaGradingServiceTest {
     @Mock TeacherPrincipalResolver teacherPrincipalResolver;
     @Mock AnimationAiClient aiClient;
     @Mock NotificationService notificationService;
+    @Mock StudentReflectionService studentReflectionService;
 
     private PtaGradingService service() {
         return new PtaGradingService(repository, teacherPrincipalResolver, aiClient,
-                notificationService, new ObjectMapper());
+                notificationService, new ObjectMapper(), studentReflectionService);
     }
 
     // 客观分：Σbest/Σmax×100

@@ -13,6 +13,7 @@ import com.tap.backend.academic.dao.StudentAiReportQueryDao;
 import com.tap.backend.academic.entity.AiExperimentReport;
 import com.tap.backend.academic.teacherexperiment.AiReportContext;
 import com.tap.backend.academic.teacherexperiment.TeacherSubmissionProblemRow;
+import com.tap.backend.service.grading.StudentReflectionService;
 import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
@@ -26,11 +27,12 @@ class AiReportServiceTest {
     @Mock StudentAiReportQueryDao queryDao;
     @Mock AiExperimentReportDao reportDao;
     @Mock AiReportGenerator generator;
+    @Mock StudentReflectionService studentReflectionService;
     private AiReportService service;
 
     @BeforeEach
     void setUp() {
-        service = new AiReportService(queryDao, reportDao, generator);
+        service = new AiReportService(queryDao, reportDao, generator, studentReflectionService);
     }
 
     @Test

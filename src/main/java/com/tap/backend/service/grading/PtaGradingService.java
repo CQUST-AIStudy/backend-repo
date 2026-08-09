@@ -44,6 +44,7 @@ public class PtaGradingService {
     private final AnimationAiClient aiClient;
     private final NotificationService notificationService;
     private final ObjectMapper objectMapper;
+    private final StudentReflectionService studentReflectionService;
 
     @PersistenceContext
     private EntityManager em;
@@ -52,12 +53,14 @@ public class PtaGradingService {
                              TeacherPrincipalResolver teacherPrincipalResolver,
                              AnimationAiClient aiClient,
                              NotificationService notificationService,
-                             ObjectMapper objectMapper) {
+                             ObjectMapper objectMapper,
+                             StudentReflectionService studentReflectionService) {
         this.repository = repository;
         this.teacherPrincipalResolver = teacherPrincipalResolver;
         this.aiClient = aiClient;
         this.notificationService = notificationService;
         this.objectMapper = objectMapper;
+        this.studentReflectionService = studentReflectionService;
     }
 
     // ---- 教师侧 ----------------------------------------------------------
@@ -162,6 +165,7 @@ public class PtaGradingService {
             PtaGradingResultEntity e = repository.findByOfferingIdAndStudentId(offeringId, studentId).orElse(null);
             v.put("comment", e == null ? null : e.getComment());
             v.put("published", e != null && e.isPublished());
+            v.put("studentReflection", studentReflectionService.find(offeringId, studentId));
             return v;
         }
         throw new ResponseStatusException(HttpStatus.NOT_FOUND, "该学生在此题集下无 PTA 数据");
